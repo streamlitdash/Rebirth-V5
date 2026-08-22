@@ -574,8 +574,9 @@ The publisher refuses a partial or corrupt annual fixture. It stages only the
 conventional runtime files plus `rebirth`, `assets`, and `data`, validates the
 copy, and re-encodes only staged Parquet to fit cloud transport. Tests, tools,
 notebooks, design history, local output, and compatibility material are not in
-the runtime bundle. Plotly's configured application name is `rebirth-v4`; no
-public Plotly URL is asserted in this repository.
+the runtime bundle. Plotly's configured application name is `rebirth-v4`. Its
+private deployment is
+[https://6e5bc823-783b-44cb-b4e4-c4e5be489df7.plotly.app](https://6e5bc823-783b-44cb-b4e4-c4e5be489df7.plotly.app).
 
 ## 14. Rules for future changes
 

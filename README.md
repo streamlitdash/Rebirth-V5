@@ -80,9 +80,10 @@ set the Dash pathname-prefix variables explicitly.
 
 ## Publish
 
-Plotly Cloud publishing is an operator action; this repository does not claim a
-public Plotly URL. Authenticate the configured Plotly CLI, run the validation
-gate, then:
+The private Plotly deployment is
+[rebirth-v4](https://6e5bc823-783b-44cb-b4e4-c4e5be489df7.plotly.app); viewing
+it requires the owning Plotly account. To publish a reviewed update,
+authenticate the configured Plotly CLI, run the validation gate, then:
 
 ```powershell
 .\.venv\Scripts\python.exe publish.py
