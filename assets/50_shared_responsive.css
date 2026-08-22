@@ -1,0 +1,162 @@
+/* 13. Supporting panels ------------------------------------------------- */
+.unmapped-panel { margin-top: 14px; padding: 14px; border-radius: var(--radius); }
+.unmapped-empty { color: var(--text); font-weight: 800; }
+.error-log { display: none; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--negative); border-radius: 8px; background: var(--danger-surface); color: var(--negative); font-size: 12px; font-weight: 700; white-space: pre-wrap; }
+.error-log.has-errors { display: block; }
+
+.global-warning-summary {
+  display: none;
+}
+.global-warning-summary.has-warnings {
+  display: block;
+  margin: 10px 18px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: var(--warning-surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.global-warning-summary summary {
+  color: var(--warning);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.global-warning-summary ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.cube-initial-load-shell .initial-load-actions { margin: 12px 0; padding: 14px 16px; border-radius: var(--radius); }
+.cube-initial-load-shell .initial-load-message { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; font-weight: 650; }
+.cube-initial-load-shell .initial-load-retry { min-height: 36px; padding: 8px 14px; border: 1px solid #111111; border-radius: 8px; background: #111111; color: #FFFFFF; font-size: 12px; font-weight: 800; cursor: pointer; }
+
+.static-data-page { width: min(100%, 1680px); margin: 16px auto 40px; padding: 24px; }
+/* 14. Dark-mode component exceptions ----------------------------------- */
+:root[data-theme="dark"] .reload-risk-button,
+:root[data-theme="dark"] .force-risk-apply-button,
+:root[data-theme="dark"] .pl-action-send { border-color: #F5F7F9; background: #F5F7F9; color: #111111; }
+:root[data-theme="dark"] .refresh-portfolios-button { background: var(--index); color: #111111; }
+:root[data-theme="dark"] .market-view-status.is-live { background: #BFE4C7; color: #174C27; }
+:root[data-theme="dark"] .data-source-toggle::before { background: #4B535D; }
+:root[data-theme="dark"] .data-source-toggle.is-on::before { background: var(--index); }
+
+/* Pastels are deliberately invariant, with black text and solid rules. */
+:root[data-theme="dark"] :is(.risk-table, .aggregate-pl-table, .quick-search-pivot-table) :is(
+  .index-header,
+  .index-cell,
+  .aggregate-index,
+  .quick-search-pivot-index,
+  .quick-search-pivot-index-header
+) { background: #C4DEF5 !important; color: #111111 !important; }
+
+:root[data-theme="dark"] :is(.risk-table, .aggregate-pl-table, .quick-search-pivot-table) .total-column,
+:root[data-theme="dark"] .risk-table:not(.alt-risk-table):not(.credit-multi-table) :is(.pl-header, .pl-cell) { background: #FFFEE0 !important; color: #111111 !important; }
+:root[data-theme="dark"] .pl-send-table :is(.dash-header, .dash-cell)[data-dash-column="Risk Type"] { background: #C4DEF5 !important; color: #111111 !important; }
+:root[data-theme="dark"] .pl-send-editor-table .dash-cell.dropdown[data-dash-column="Risk Type"] .Select-control { background: #C4DEF5 !important; color: #111111 !important; }
+
+/* Explicit component contracts
+   These classes mostly compose the rules above, keeping a small direct rule
+   makes their ownership searchable without restoring duplicate theme layers. */
+.aggregate-pl-summary,
+.top-book-summary,
+.risk-readiness-summary { color: var(--text); }
+.aggregate-risk-type,
+.aggregate-total-index,
+.total-index { font-weight: 900; }
+.auto-refresh-toggle { flex: 0 0 auto; }
+.credit-view-tabs { min-width: 0; }
+.promotion-control { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--outline-soft); }
+.promotion-label { font-weight: 600; color: var(--text-muted); font-size: 13px; }
+/* Shared toggle container for promotion and region buttons */
+.toggle-controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--outline-soft); }
+.inline-toggles { margin-top: 0; margin-bottom: 0; border-top: none; }
+.region-toggle { min-width: 80px; overflow: auto; }
+.credit-multi-wrap { width: 100%; overflow: auto; }
+.credit-measure-note { color: var(--text-muted); font-size: 11px; }
+.credit-measure-header { text-align: right; }
+.credit-measure-cell-button,
+.top-book-metric-cell-button { width: 100%; }
+.detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.detail-panel { min-width: 0; }
+.detail-chart { width: 100%; min-width: 0; }
+.detail-tenor-view-radio { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.pl-send-table--editor { min-width: 0; }
+.quick-search-heading-copy,
+.quick-search-result-set { min-width: 0; }
+.quick-search-loading { min-height: 24px; }
+.quick-search-pivot-title { min-width: 0; }
+.refresh-function-live { min-width: 0; }
+.refresh-function-name,
+.refresh-function-source,
+.refresh-function-count,
+.refresh-function-hold { min-width: 0; }
+.risk-readiness-inventory-details,
+.risk-checker-inventory-details { min-width: 0; }
+.risk-view-card { min-width: 0; }
+
+/* 15. Responsive and accessibility ------------------------------------- */
+@media (max-width: 1100px) {
+  .workspace-toolbar { grid-template-columns: 1fr; }
+  .section-heading { grid-column: 1; }
+  .table-dimension-control { justify-content: flex-start; }
+  .controls { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+  .saved-filter-view-panel { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+  .saved-view-copy { grid-column: 1 / -1; }
+  .risk-table { min-width: 980px; }
+  .detail-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 920px) {
+  .quick-search-heading { grid-template-columns: 1fr; }
+  .top-promotions-header { grid-template-columns: 1fr; }
+  .quick-market-history-controls { grid-template-columns: 1fr; }
+  .date-control-grid { grid-template-columns: 1fr; }
+  .refresh-control-topline { grid-template-columns: 1fr; }
+  .operating-date-banner { justify-content: flex-start; }
+}
+
+@media (max-width: 760px) {
+  .cube-app-header { align-items: flex-start; flex-direction: column; gap: 4px; padding: 9px 14px; }
+  .cube-nav { width: 100%; overflow-x: auto; }
+  .cube-nav-link,
+  .cube-nav-link.app-nav-link { flex: 0 0 auto; }
+  .app-shell { padding: 10px 10px 28px; }
+  .controls { grid-template-columns: 1fr; padding: 13px; }
+  .controls.filter-controls,
+  .controls.pnl-filter-controls,
+  .saved-filter-view-panel { grid-template-columns: 1fr; }
+  .saved-view-copy { grid-column: 1; }
+  .control-field-wide { grid-column: auto; }
+  .filter-heading,
+  .aggregate-pl-header,
+  .force-risk-actions,
+  .market-view-force,
+  .pl-editor-toolbar { align-items: stretch; flex-direction: column; }
+  .date-card-stats,
+  .detail-plot-controls,
+  .quick-search-dimension-control { grid-template-columns: 1fr; }
+  .quick-search-dimension-control .quick-search-dimension-help { grid-column: 1; }
+  .quick-search-pivot-summary { grid-template-columns: auto minmax(0, 1fr); }
+  .quick-search-pivot-values { grid-column: 2; text-align: left; }
+  .quick-search-pivot-table .quick-search-hierarchy-index,
+  .quick-search-pivot-table .quick-search-pivot-index-header { min-width: 215px; }
+  .quick-search-pivot-table { grid-column: 2; }
+  .pl-editor-filter { flex-basis: auto; max-width: none; }
+  .pl-send-actions button { flex: 1 1 180px; }
+  .cube-global-loader { right: 12px; bottom: 12px; }
+}
+
+@media (max-width: 520px) {
+  .cube-refresh-strip { padding: 10px; }
+  .refresh-portfolios-button,
+  .reload-risk-button,
+  .refresh-pl-button { flex: 1 1 calc(50% - 4px); }
+  .refresh-product-card { grid-template-columns: auto minmax(0, 1fr); }
+  .refresh-product-card :is(#refresh-progress-source, #refresh-progress-count, #refresh-progress-hold) { justify-self: start; }
+  .operating-date-banner { display: grid; grid-template-columns: 1fr; }
+  .operating-date-card,
+  .operating-market-date { min-width: 0; }
+}

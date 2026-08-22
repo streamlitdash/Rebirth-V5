@@ -9,32 +9,36 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import dcc, html
 
-from core.s08_saved_views import SavedFilterView
-from core.s03_search import MARKET_RESULT_COLUMNS, SearchCatalog
-from pages.risk import callbacks as events_module
-from shared.constants import (
+from rebirth.services.saved_views import SavedFilterView
+from rebirth.domain.search import MARKET_RESULT_COLUMNS, SearchCatalog
+from rebirth.pages.risk import explorer_callbacks as events_module
+from rebirth.ui.constants import (
     DEFAULT_VIEW_DIMENSION,
     DIMENSION_FILTER_IDS,
     FILTER_DIMENSION_FIELDS,
     VIEW_DIMENSION_FIELDS,
 )
-from shared.aggregation import (
+from rebirth.ui.aggregation import (
     apply_filters,
     dimension_title,
     prepare_risk_data,
     selected_dimension,
 )
-from pages.risk.common import RISK_SAVED_VIEW_CONTROLS
-from pages.risk.view import build_layout
-from shared.components import build_aggregate_pl_table
-from shared.factory import build_app
-from pages.risk.search_callbacks import _render_quick_search_pivot
-from pages.risk.state import (
+from rebirth.pages.risk.common import RISK_SAVED_VIEW_CONTROLS
+from rebirth.pages.risk.promotion import (
+    PromotionBasis,
+    calculate_current_view_promotion,
+)
+from rebirth.pages.risk.view import build_layout
+from rebirth.ui.components import build_aggregate_pl_table
+from rebirth.app.factory import build_app
+from rebirth.pages.risk.search_callbacks import _render_quick_search_pivot
+from rebirth.pages.risk.state import (
     _RiskDataCache,
     _top_book_action_view_token,
     filter_unmapped_portfolios,
 )
-from shared.saved_views import saved_view_apply_request
+from rebirth.ui.filter_views import saved_view_apply_request
 
 
 def _raw_risk_frame() -> pd.DataFrame:
@@ -303,8 +307,8 @@ def test_clear_cache_drops_only_reconstructable_risk_views() -> None:
     assert builds == [1, 2]
 
 
-def test_risk_promotion_is_recomputed_after_position_filters() -> None:
-    """A globally promoted exposure can fall below threshold in one view."""
+def test_risk_promotion_changes_only_after_explicit_generation() -> None:
+    """Ordinary filters retain baseline; one explicit generation is immutable."""
 
     raw = _raw_risk_frame()
     raw["Risk"] = [600.0, 600.0]
@@ -313,7 +317,7 @@ def test_risk_promotion_is_recomputed_after_position_filters() -> None:
     cache = _RiskDataCache(prepare_risk_data(raw), revision=7)
 
     global_view = cache.filtered(None, "IR", "delta", ["Risk"], {})
-    book_view = cache.filtered(
+    baseline_book_view = cache.filtered(
         None,
         "IR",
         "delta",
@@ -322,11 +326,45 @@ def test_risk_promotion_is_recomputed_after_position_filters() -> None:
     )
 
     assert global_view["risk"].sum() == 1_200.0
-    assert global_view["display bucket"].eq("USD-SOFR").all()
-    assert global_view["promotion reason"].eq("Big Risk").all()
-    assert book_view["risk"].sum() == 600.0
-    assert book_view["display bucket"].eq("Other").all()
-    assert book_view["promotion reason"].eq("").all()
+    assert global_view["display bucket"].eq("Other").all()
+    assert baseline_book_view["risk"].sum() == 600.0
+    assert baseline_book_view["display bucket"].eq("Other").all()
+
+    basis = PromotionBasis.build(
+        7,
+        risk_type="IR",
+        ir_family="delta",
+        splits=["Risk"],
+        filters={field.key: [] for field in FILTER_DIMENSION_FIELDS},
+    )
+    generation = calculate_current_view_promotion(
+        global_view,
+        basis,
+        identifier="test-generation",
+    )
+    generation_store = cache.publish_promotion_generation(generation)
+    generated_global = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {},
+        promotion_generation=generation_store,
+    )
+    generated_book = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"portfolio": ["BOOK-A"]},
+        promotion_generation=generation_store,
+    )
+
+    assert generated_global["display bucket"].eq("USD-SOFR").all()
+    assert generated_global["promotion reason"].eq("Big Risk").all()
+    # Filtering does not silently calculate a new 600/1000 classification.
+    assert generated_book["display bucket"].eq("USD-SOFR").all()
+    assert generated_book["promotion reason"].eq("Big Risk").all()
 
 
 def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edits(
@@ -374,6 +412,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
     result = callback(
         1,
         request,
+        None,
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         None,
@@ -399,6 +438,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
     coalesced = callback(
         2,
         request,
+        None,
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         None,
@@ -408,13 +448,14 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
 
     manual = [[] for _field in FILTER_DIMENSION_FIELDS]
     manual[2] = ["BOOK-B"]
-    superseded = callback(3, request, *manual, [], None)
+    superseded = callback(3, request, None, *manual, [], None)
     assert superseded[5] == ["BOOK-B"]
     assert superseded[-1] == []
 
     acknowledged = callback(
         4,
         request,
+        None,
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         request["request_id"],
@@ -485,7 +526,7 @@ def test_quick_market_history_targets_are_mounted_and_have_single_owners() -> No
         ("quick-market-history-period", "value"),
         ("quick-market-history-date-range", "start_date"),
         ("quick-market-history-date-range", "end_date"),
-        ("quick-market-summary", "n_clicks"),
+        ("risk-workspace-tabs", "value"),
         ("data-revision-store", "data"),
     }
 
@@ -583,7 +624,71 @@ def test_warm_risk_layout_pre_renders_default_tables_and_filter_state() -> None:
 
     assert any(isinstance(item, html.Table) for item in _walk(risk_grid.children))
     assert any(isinstance(item, html.Table) for item in _walk(aggregate_grid.children))
-    assert filter_values.data == [None] * len(FILTER_DIMENSION_FIELDS)
+    assert filter_values.data == [[] for _field in FILTER_DIMENSION_FIELDS]
+
+
+def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> None:
+    prepared = prepare_risk_data(_raw_risk_frame())
+    layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
+    components = list(_walk(layout))
+    workspace = next(
+        item
+        for item in components
+        if isinstance(item, dcc.Tabs) and item.id == "risk-workspace-tabs"
+    )
+
+    assert workspace.value == "aggregate-pl"
+    assert [(tab.label, tab.value) for tab in workspace.children] == [
+        ("Aggregate P&L", "aggregate-pl"),
+        ("Quick Risk", "quick-risk"),
+        ("Quick Market", "quick-market"),
+        ("Top Promotions", "top-promotions"),
+    ]
+    ids = {str(getattr(item, "id", "")) for item in components}
+    assert {
+        "aggregate-pl-grid",
+        "quick-search-details",
+        "quick-market-details",
+        "top-promotions-grid",
+        "top-promotions-rank-by",
+    } <= ids
+    assert "top-book-details" not in ids
+    assert "top-book-grid" not in ids
+    assert "top-book-summary" not in ids
+
+
+def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == "top-promotions-grid"
+            and output.component_property == "children"
+            for output in _callback_outputs(item)
+        )
+    )
+    inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    callback = metadata["callback"].__wrapped__
+
+    closed_grid, closed_status = callback(
+        "aggregate-pl",
+        "score",
+        1,
+        None,
+        [],
+        *([None] * len(FILTER_DIMENSION_FIELDS)),
+        [],
+    )
+
+    assert closed_grid is None
+    assert "Select Top Promotions" in closed_status
+    assert ("risk-workspace-tabs", "value") in inputs
+    assert ("top-promotions-rank-by", "value") in inputs
+    assert ("promotion-generation-store", "data") in inputs
+    assert not any(
+        str(component_id).startswith("top-book") for component_id, _ in inputs
+    )
 
 
 def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
@@ -683,7 +788,7 @@ def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() 
 
     for output_id in (
         "aggregate-pl-grid",
-        "top-book-grid",
+        "top-promotions-grid",
         "unmapped-books-grid",
         "quick-search-results",
     ):

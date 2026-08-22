@@ -1,203 +1,48 @@
-"""Deployment-bundle and Plotly Cloud command regression tests."""
+"""V4 runtime bundle and Plotly publish boundary regression tests."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
+import shutil
 import tomllib
 from pathlib import Path
 
-import s03_publish as publishing
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
 
-
-def test_stage_bundle_uses_conventional_runtime_names(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    original_ignore = publishing._deployment_ignore
-    history_root = (publishing.PROJECT / "data" / "histo").resolve()
-
-    def skip_large_history(directory: str, names: list[str]) -> set[str]:
-        if Path(directory).resolve() == history_root:
-            return set(names)
-        return original_ignore(directory, names)
-
-    monkeypatch.setattr(publishing, "_deployment_ignore", skip_large_history)
-    staged = publishing.stage_bundle(tmp_path / "runtime")
-
-    assert (staged / "app.py").read_bytes() == (
-        publishing.PROJECT / "s01_app.py"
-    ).read_bytes()
-    assert (staged / "gunicorn.conf.py").read_bytes() == (
-        publishing.PROJECT / "s04_server.py"
-    ).read_bytes()
-    assert (staged / "requirements.txt").is_file()
-    requirements = (staged / "requirements.txt").read_text(encoding="utf-8")
-    assert "tzdata==" in requirements
-    for page_module in (
-        "__init__.py",
-        "not_found_404.py",
-    ):
-        assert (staged / "pages" / page_module).read_bytes() == (
-            publishing.PROJECT / "pages" / page_module
-        ).read_bytes()
-    assert (staged / "pages" / "risk" / "__init__.py").read_bytes() == (
-        publishing.PROJECT / "pages" / "risk" / "__init__.py"
-    ).read_bytes()
-    assert (staged / "pages" / "static_data" / "__init__.py").read_bytes() == (
-        publishing.PROJECT / "pages" / "static_data" / "__init__.py"
-    ).read_bytes()
-    for page_module in (
-        "__init__.py",
-        "aggregate_callbacks.py",
-        "common.py",
-        "editor.py",
-        "history.py",
-        "history_callbacks.py",
-        "send_callbacks.py",
-        "validation.py",
-        "view.py",
-    ):
-        assert (staged / "pages" / "pnl" / page_module).read_bytes() == (
-            publishing.PROJECT / "pages" / "pnl" / page_module
-        ).read_bytes()
-    for page_module in ("__init__.py", "callbacks.py", "view.py"):
-        assert (staged / "pages" / "stock" / page_module).read_bytes() == (
-            publishing.PROJECT / "pages" / "stock" / page_module
-        ).read_bytes()
-    for shared_module in (
-        "__init__.py",
-        "aggregation.py",
-        "components.py",
-        "constants.py",
-        "contracts.py",
-        "factory.py",
-        "saved_views.py",
-        "startup.py",
-    ):
-        assert (staged / "shared" / shared_module).read_bytes() == (
-            publishing.PROJECT / "shared" / shared_module
-        ).read_bytes()
-    for relative_path in (
-        Path("adapters/s01_common.py"),
-        Path("adapters/s02_ir.py"),
-        Path("adapters/s03_fx.py"),
-        Path("adapters/s04_credit.py"),
-        Path("adapters/s05_stock.py"),
-        Path("adapters/s06_new_positions.py"),
-        Path("adapters/s07_cross_gamma.py"),
-        Path("adapters/s08_commo.py"),
-        Path("core/s06_reporting.py"),
-        Path("core/s07_stock.py"),
-        Path("core/s08_saved_views.py"),
-        Path("core/s09_cross_gamma.py"),
-        Path("core/s10_new_trades.py"),
-        Path("core/s11_risk_archive.py"),
-        Path("feeds/s01_sources.py"),
-    ):
-        assert (staged / relative_path).read_bytes() == (
-            publishing.PROJECT / relative_path
-        ).read_bytes()
-    assert "=== REAL IR CONNECTORS (COMMENTED OUT)" in (
-        staged / "adapters" / "s02_ir.py"
-    ).read_text(encoding="utf-8")
-    assert "=== ACTIVE CSV FALLBACK" in (staged / "feeds" / "s01_sources.py").read_text(
-        encoding="utf-8"
-    )
-    assert (staged / "data" / "histo").is_dir()
-    assert not any((staged / "data" / "histo").iterdir())
-    assert not any(path.name == "_disabled" for path in staged.rglob("_disabled"))
-    assert not any(staged.rglob("*.disabled"))
-    assert not (staged / "ui").exists()
-    assert not any((staged / "pages").rglob("__pycache__"))
-    assert not (staged / "s03_publish.py").exists()
-    assert not (staged / "tests").exists()
-    assert not (staged / "README.md").exists()
-
-
-def test_markdown_documents_stay_in_governed_locations() -> None:
-    ignored_directories = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-    }
-    markdown_files: list[Path] = []
-    for directory, names, files in os.walk(publishing.PROJECT):
-        names[:] = sorted(name for name in names if name not in ignored_directories)
-        markdown_files.extend(
-            (Path(directory) / name).relative_to(publishing.PROJECT)
-            for name in files
-            if Path(name).suffix.casefold() == ".md"
-        )
-
-    allowed_root_files = {
-        Path("README.md"),
-        Path("rebirth_cohesive_implementation_guide.md"),
-        Path("rebirth_full_cold_start_and_performance_guide.md"),
-    }
-    v3_root = Path("docs/rebirth-v3")
-    unexpected = [
-        path
-        for path in markdown_files
-        if path not in allowed_root_files and not path.is_relative_to(v3_root)
-    ]
-
-    assert not unexpected
-    assert allowed_root_files <= set(markdown_files)
-    assert v3_root / "README.md" in markdown_files
-
-
-def test_v3_readme_local_markdown_links_exist() -> None:
-    v3_root = publishing.PROJECT / "docs" / "rebirth-v3"
-    index = v3_root / "README.md"
-    links = re.findall(r"\[[^]]+\]\(([^)]+)\)", index.read_text(encoding="utf-8"))
-
-    for link in links:
-        if link.startswith(("#", "http://", "https://")):
-            continue
-        relative_target = link.split("#", 1)[0]
-        target = (index.parent / relative_target).resolve()
-        assert target.is_relative_to(publishing.PROJECT.resolve())
-        assert target.is_file(), f"Missing local V3 documentation link: {link}"
+import publish as publishing
 
 
 def _write_fixture_leaf(
     history_root: Path,
     market_date: str,
     *,
-    fixture_tag: str = publishing.DETERMINISTIC_HISTORY_FIXTURE,
-    schema_version: int = 4,
+    revision: int = 1,
 ) -> Path:
     leaf = history_root / market_date
     leaf.mkdir(parents=True)
     digests: dict[str, str] = {}
-    for file_name in (
-        "risk.parquet",
-        "colossus.parquet",
-        "market.parquet",
-        "stock.parquet",
-    ):
-        payload = f"synthetic {market_date} {file_name}\n".encode()
+    for file_name in publishing._DETERMINISTIC_HISTORY_FILES:
+        payload = f"fixture {market_date} {file_name}\n".encode()
         (leaf / file_name).write_bytes(payload)
         digests[file_name] = hashlib.sha256(payload).hexdigest()
-    manifest = {
-        "schema_version": schema_version,
+    marker = {
+        "schema_version": 4,
         "market_date": market_date,
         "market_status": "OFFICIAL",
-        "revision": 1,
+        "revision": revision,
         "refreshed_at": f"{market_date}T17:30:00+00:00",
         "risk_rows": 10_000,
         "colossus_rows": 5_000,
         "risk_columns": ["Source Type", "Risk"],
         "colossus_columns": ["Portfolio", "PL"],
         "sha256": digests,
-        "fixture": fixture_tag,
-        "risk_dates": {f"source/{index}": market_date for index in range(16)},
+        "fixture": publishing.DETERMINISTIC_HISTORY_FIXTURE,
+        "risk_dates": {
+            source: market_date for source in publishing._DETERMINISTIC_RISK_SOURCES
+        },
         "market_rows": 5_000,
         "market_columns": ["Source Type", "Current"],
         "stock_date": market_date,
@@ -205,86 +50,171 @@ def _write_fixture_leaf(
         "stock_columns": ["CRDS", "Market Value"],
     }
     (leaf / "_SUCCESS").write_text(
-        json.dumps(manifest, sort_keys=True),
+        json.dumps(marker, sort_keys=True),
         encoding="utf-8",
     )
     return leaf
 
 
-def test_stage_bundle_includes_only_exact_tagged_v4_history_leaves(
+def test_project_release_boundary_is_conventional_and_v4_owned() -> None:
+    assert publishing.RUNTIME_FILES == (
+        "app.py",
+        "gunicorn.conf.py",
+        "requirements.txt",
+    )
+    assert publishing.RUNTIME_DIRECTORIES == ("rebirth", "assets", "data")
+    for relative_path in (*publishing.RUNTIME_FILES, *publishing.RUNTIME_DIRECTORIES):
+        assert (publishing.PROJECT / relative_path).exists()
+    assert tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8")) == {
+        "name": "rebirth-v4"
+    }
+
+
+def test_checked_in_history_is_the_exact_262_day_v4_archive() -> None:
+    assert len(publishing.EXPECTED_HISTORY_DATES) == 262
+    assert publishing.EXPECTED_HISTORY_DATES[0] == "2025-08-21"
+    assert publishing.EXPECTED_HISTORY_DATES[-1] == "2026-08-21"
+    leaves = publishing._validate_history_archive(publishing.PROJECT / "data" / "histo")
+    assert len(leaves) == 262
+
+
+def test_archive_validation_rejects_partial_corrupt_or_reordered_revisions(
+    tmp_path: Path,
+) -> None:
+    dates = ("2026-08-20", "2026-08-21")
+    history = tmp_path / "histo"
+    _write_fixture_leaf(history, dates[0], revision=1)
+    second = _write_fixture_leaf(history, dates[1], revision=2)
+    assert len(publishing._validate_history_archive(history, expected_dates=dates)) == 2
+
+    (second / "risk.parquet").write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="failed validation"):
+        publishing._validate_history_archive(history, expected_dates=dates)
+
+    shutil.rmtree(second)
+    with pytest.raises(ValueError, match="exactly 2 dated leaves"):
+        publishing._validate_history_archive(history, expected_dates=dates)
+
+    _write_fixture_leaf(history, dates[1], revision=1)
+    with pytest.raises(ValueError, match="failed validation"):
+        publishing._validate_history_archive(history, expected_dates=dates)
+
+
+def test_stage_bundle_contains_only_the_minimal_v4_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     project = tmp_path / "project"
-    for source_name in publishing.RUNTIME_FILES:
-        source = project / source_name
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(f"fixture {source_name}\n", encoding="utf-8")
-    for directory_name in publishing.RUNTIME_DIRECTORIES:
-        (project / directory_name).mkdir(parents=True, exist_ok=True)
-    history = project / "data" / "histo"
-
-    fixture_date = "2026-08-10"
-    _write_fixture_leaf(history, fixture_date)
-    _write_fixture_leaf(history, "2026-08-11", schema_version=3)
-    _write_fixture_leaf(history, "2026-08-12", fixture_tag="runtime-user-data")
-    partial = _write_fixture_leaf(history, "2026-08-13")
-    (partial / "stock.parquet").unlink()
-    corrupt = _write_fixture_leaf(history, "2026-08-14")
-    (corrupt / "market.parquet").write_bytes(b"changed")
-    _write_fixture_leaf(history, "2026-02-31")
-    legacy = history / "2026-08-15"
-    legacy.mkdir()
-    for name in ("risk.csv", "colossus.csv", "market.csv", "stock.csv"):
-        (legacy / name).write_text("legacy\n", encoding="utf-8")
-    (legacy / "_SUCCESS").write_text("{}", encoding="utf-8")
-    pending = history / ".2026-08-16.pending-test"
-    pending.mkdir()
-    (pending / "risk.parquet").write_bytes(b"partial")
-    notes = history / "notes"
-    notes.mkdir()
-    (notes / "README.txt").write_text("not a history leaf\n", encoding="utf-8")
-    (history / "catalog.txt").write_text("root file\n", encoding="utf-8")
+    project.mkdir()
+    for name in publishing.RUNTIME_FILES:
+        (project / name).write_text(f"{name}\n", encoding="utf-8")
+    (project / "rebirth").mkdir()
+    (project / "rebirth" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "rebirth" / "__pycache__").mkdir()
+    (project / "rebirth" / "__pycache__" / "stale.pyc").write_bytes(b"stale")
+    (project / "assets").mkdir()
+    (project / "assets" / "ui.js").write_text("// ui\n", encoding="utf-8")
+    (project / "data").mkdir()
+    (project / "data" / "spot.csv").write_text("value\n1\n", encoding="utf-8")
+    history_date = "2026-08-21"
+    _write_fixture_leaf(project / "data" / "histo", history_date)
+    (project / "tests").mkdir()
+    (project / "legacy.py").write_text("legacy\n", encoding="utf-8")
 
     monkeypatch.setattr(publishing, "PROJECT", project)
+    monkeypatch.setattr(publishing, "EXPECTED_HISTORY_DATES", (history_date,))
     staged = publishing.stage_bundle(tmp_path / "runtime")
-    staged_history = staged / "data" / "histo"
 
-    assert {path.name for path in staged_history.iterdir()} == {fixture_date}
-    assert {path.name for path in (staged_history / fixture_date).iterdir()} == {
-        "risk.parquet",
-        "colossus.parquet",
-        "market.parquet",
-        "stock.parquet",
-        "_SUCCESS",
+    assert {path.name for path in staged.iterdir()} == {
+        *publishing.RUNTIME_FILES,
+        *publishing.RUNTIME_DIRECTORIES,
     }
+    assert not (staged / "tests").exists()
+    assert not (staged / "legacy.py").exists()
+    assert not any(staged.rglob("__pycache__"))
+    assert (staged / "data" / "histo" / history_date / "_SUCCESS").is_file()
 
 
-def test_publish_uses_plotly_native_entrypoint_discovery(
-    tmp_path: Path, monkeypatch
+def test_cloud_optimization_preserves_source_rows_and_updates_staged_hashes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    history_date = "2026-08-21"
+    source = tmp_path / "source"
+    leaf = _write_fixture_leaf(source / "data" / "histo", history_date)
+    table = pa.table(
+        {
+            "Identity": [f"ID-{index % 20:02d}" for index in range(6_001)],
+            "Value": [float(index) / 3.0 for index in range(6_001)],
+        }
+    )
+    for file_name in publishing._DETERMINISTIC_HISTORY_FILES:
+        pq.write_table(table, leaf / file_name, compression=None, row_group_size=1_000)
+    marker_path = leaf / "_SUCCESS"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["sha256"] = {
+        name: publishing._file_sha256(leaf / name)
+        for name in publishing._DETERMINISTIC_HISTORY_FILES
+    }
+    marker_path.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
+    original = {
+        path.relative_to(source): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    runtime = tmp_path / "runtime"
+    shutil.copytree(source, runtime)
+    monkeypatch.setattr(publishing, "EXPECTED_HISTORY_DATES", (history_date,))
+
+    publishing._optimize_cloud_history(runtime)
+
+    assert all(
+        (source / path).read_bytes() == payload for path, payload in original.items()
+    )
+    optimized_leaf = runtime / "data" / "histo" / history_date
+    optimized_marker = json.loads(
+        (optimized_leaf / "_SUCCESS").read_text(encoding="utf-8")
+    )
+    for file_name in publishing._DETERMINISTIC_HISTORY_FILES:
+        path = optimized_leaf / file_name
+        parquet = pq.ParquetFile(path)
+        assert parquet.metadata.num_rows == len(table)
+        assert parquet.metadata.num_row_groups == 1
+        assert optimized_marker["sha256"][file_name] == publishing._file_sha256(path)
+    assert not list(optimized_leaf.glob(".*.cloud.tmp"))
+
+
+def test_publish_uses_native_v4_entrypoint_discovery(
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "plotly-cloud.toml"
+    config.write_text('name = "rebirth-v4"\n', encoding="utf-8")
 
-    def capture(command, *, cwd, check):
-        captured.update(command=command, cwd=cwd, check=check)
-
-    def stage_empty_bundle(destination: Path) -> Path:
+    def stage(destination: Path) -> Path:
         destination.mkdir(parents=True)
         return destination
 
-    monkeypatch.setattr(publishing.subprocess, "run", capture)
-    monkeypatch.setattr(publishing, "stage_bundle", stage_empty_bundle)
-    publishing.publish(keep_bundle=tmp_path)
+    def optimize(staged: Path) -> None:
+        captured["optimized"] = staged
+
+    def run(command, *, cwd, check) -> None:
+        captured.update(command=command, cwd=cwd, check=check)
+
+    monkeypatch.setattr(publishing, "PROJECT", project)
+    monkeypatch.setattr(publishing, "CONFIG", config)
+    monkeypatch.setattr(publishing, "stage_bundle", stage)
+    monkeypatch.setattr(publishing, "_optimize_cloud_history", optimize)
+    monkeypatch.setattr(publishing.subprocess, "run", run)
+    publishing.publish(keep_bundle=tmp_path / "kept")
 
     command = captured["command"]
     assert isinstance(command, list)
+    assert command[command.index("--name") + 1] == "rebirth-v4"
+    assert command[command.index("--project-path") + 1] == str(captured["optimized"])
     assert "--entrypoint-module" not in command
-    assert command[command.index("--name") + 1] == "rebirth-v3"
-    assert captured["cwd"] == publishing.PROJECT
+    assert captured["cwd"] == project
     assert captured["check"] is True
-
-
-def test_plotly_config_starts_without_an_inherited_application_identity() -> None:
-    config = tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8"))
-
-    assert config == {"name": "rebirth-v3"}

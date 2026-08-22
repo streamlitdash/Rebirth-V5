@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from feeds import s01_sources as sources
+from rebirth.services import sources
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 
 INLINE_ADAPTERS = {
-    PROJECT / "adapters" / "s01_common.py": {
+    PROJECT / "rebirth" / "adapters" / "common.py": {
         "start": "=== REAL CONNECTOR IMPLEMENTATION (COMMENTED OUT)",
         "end": "=== ACTIVE FIXTURE/CSV COMPATIBILITY HELPERS",
         "symbols": ("run_async", "max_workers=1", "asyncio.new_event_loop"),
     },
-    PROJECT / "adapters" / "s02_ir.py": {
+    PROJECT / "rebirth" / "adapters" / "ir.py": {
         "start": "=== REAL IR CONNECTORS (COMMENTED OUT)",
         "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": (
@@ -30,7 +30,7 @@ INLINE_ADAPTERS = {
             "build_ir_bond_adapter",
         ),
     },
-    PROJECT / "adapters" / "s03_fx.py": {
+    PROJECT / "rebirth" / "adapters" / "fx.py": {
         "start": "=== REAL FX CONNECTORS (COMMENTED OUT)",
         "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": (
@@ -39,7 +39,7 @@ INLINE_ADAPTERS = {
             "build_fx_vega_adapter",
         ),
     },
-    PROJECT / "adapters" / "s04_credit.py": {
+    PROJECT / "rebirth" / "adapters" / "credit.py": {
         "start": "=== REAL CREDIT CONNECTOR (COMMENTED OUT)",
         "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": ("build_credit_delta_adapter",),
@@ -78,7 +78,7 @@ def test_recovered_adapter_bodies_are_inline_and_comment_only() -> None:
         for symbol in expected["symbols"]:
             assert symbol in region
 
-    assert not any((PROJECT / "adapters" / "_disabled").glob("**/*"))
+    assert not any((PROJECT / "rebirth" / "adapters" / "_disabled").glob("**/*"))
 
 
 def test_recovered_adapter_body_can_be_uncommented_without_future_import_error() -> (
@@ -105,7 +105,7 @@ def test_recovered_adapter_body_can_be_uncommented_without_future_import_error()
 
 
 def test_recovered_feed_blocks_are_adjacent_comment_only_switches() -> None:
-    text = (PROJECT / "feeds" / "s01_sources.py").read_text(encoding="utf-8")
+    text = (PROJECT / "rebirth" / "services" / "sources.py").read_text(encoding="utf-8")
     regions = (
         ("=== REAL PRODUCT IMPORTS", "=== END REAL PRODUCT IMPORTS"),
         ("=== REAL RISK CHECKER", "=== END REAL RISK CHECKER"),
@@ -130,11 +130,11 @@ def test_recovered_feed_blocks_are_adjacent_comment_only_switches() -> None:
     ):
         assert recovered_text in text
 
-    assert not any((PROJECT / "feeds" / "_disabled").glob("**/*"))
+    assert not any((PROJECT / "rebirth" / "services" / "_disabled").glob("**/*"))
 
 
 def test_each_feed_switch_is_immediately_followed_by_its_active_fallback() -> None:
-    text = (PROJECT / "feeds" / "s01_sources.py").read_text(encoding="utf-8")
+    text = (PROJECT / "rebirth" / "services" / "sources.py").read_text(encoding="utf-8")
     risk_end = text.index("=== END REAL RISK CHECKER")
     portfolio_end = text.index("=== END REAL PORTFOLIO MAPPING")
     assert text.index("=== ACTIVE CSV FALLBACK", risk_end) > risk_end
@@ -147,9 +147,9 @@ def test_each_feed_switch_is_immediately_followed_by_its_active_fallback() -> No
 def test_active_product_registration_still_reads_the_fake_csv_boundary() -> None:
     adapter = sources.get_product_connector_adapters()["ir/delta"]
 
-    assert adapter.risk.__module__ == "feeds.s01_sources"
-    assert adapter.market_open.__module__ == "feeds.s01_sources"
-    assert adapter.market_status.__module__ == "feeds.s01_sources"
+    assert adapter.risk.__module__ == "rebirth.services.sources"
+    assert adapter.market_open.__module__ == "rebirth.services.sources"
+    assert adapter.market_status.__module__ == "rebirth.services.sources"
 
     risk = adapter.risk(pd.Timestamp("2026-08-14"))
     assert not risk.empty

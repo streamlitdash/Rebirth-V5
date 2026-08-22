@@ -5,7 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from core.s02_pipeline import (
+from rebirth.domain.calculations import get_product_market
+from rebirth.domain.products import (
     CURRENT,
     GROUP,
     MARKET_AVAILABLE,
@@ -22,9 +23,8 @@ from core.s02_pipeline import (
     SOURCE_TYPE,
     SPLIT,
     UNDERLYING,
-    get_product_market,
 )
-from core.s10_new_trades import (
+from rebirth.domain.new_trades import (
     CASHFLOW,
     CASH_FLOW,
     CASH_FLOW_MARKET_STATUS,
@@ -46,18 +46,18 @@ from core.s10_new_trades import (
     build_new_trade_rows,
     validate_new_trade_rows,
 )
-from feeds.s01_sources import (
+from rebirth.services.sources import (
     build_production_refresh_manager,
     get_new_trades,
     get_product_connector_adapters,
 )
-from pages.risk.tables import new_trade_detail_frame
-from shared.aggregation import (
+from rebirth.pages.risk.workspace_tables import new_trade_detail_frame
+from rebirth.ui.aggregation import (
     apply_credit_measure,
     credit_measure_available,
     prepare_risk_data,
 )
-from pages.risk.state import (
+from rebirth.pages.risk.state import (
     _new_trade_detail_requested,
     _new_trade_details_for_selection,
 )
@@ -293,11 +293,11 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
     published_cashflow = _trade(trace, CASHFLOW_ID)
     assert published_cashflow[RISK] == published_cashflow[PL] == 50_000.0
 
-    other_details = _new_trade_details_for_selection(
+    baseline_details = _new_trade_details_for_selection(
         refreshed.combined_pl,
         {
             "risk greek": "Delta",
-            "display bucket": "Other",
+            "display bucket": "FAKE_REPLACE_ME - CDX IG",
             "split": NEW_TRADES_SPLIT,
         },
         "Credit",
@@ -305,12 +305,12 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
         [NEW_TRADES_SPLIT],
         {},
     )
-    assert other_details[TRADE_ID].tolist() == [TRADED_CREDIT_ID]
+    assert baseline_details[TRADE_ID].tolist() == [TRADED_CREDIT_ID]
     assert new_trade_detail_frame(
-        other_details,
+        baseline_details,
         {
             "risk greek": "Delta",
-            "display bucket": "Other",
+            "display bucket": "FAKE_REPLACE_ME - CDX IG",
             "split": NEW_TRADES_SPLIT,
         },
     )["trade id"].tolist() == [TRADED_CREDIT_ID]

@@ -9,15 +9,15 @@ from types import SimpleNamespace
 
 import pandas as pd
 from dash import no_update
-from feeds.s01_sources import build_production_refresh_manager
-from pages.risk import callbacks as risk_callbacks
-from pages.risk import state as risk_state
-from shared.startup import STARTUP_COORDINATOR_CONFIG_KEY
-from shared.components import (
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages.risk import refresh_callbacks as risk_callbacks
+from rebirth.pages.risk import state as risk_state
+from rebirth.app.startup import STARTUP_COORDINATOR_CONFIG_KEY
+from rebirth.ui.components import (
     build_initial_load_layout,
     build_shared_refresh_shell,
 )
-from shared.factory import build_app
+from rebirth.app.factory import build_app
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -127,8 +127,9 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
 
 
 def test_clear_cache_reuses_the_refresh_progress_lifecycle() -> None:
-    source = (Path(__file__).parents[1] / "assets" / "s02_app.js").read_text(
-        encoding="utf-8"
+    assets = Path(__file__).parents[1] / "assets"
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(assets.glob("*.js"))
     )
 
     assert 'refreshTrigger.id === "clear-cache-button" ? "reset"' in source
@@ -456,8 +457,9 @@ def test_operating_dates_stay_neutral_before_the_cold_start_commits() -> None:
 
 
 def test_browser_defers_revision_until_a_financial_page_can_consume_it() -> None:
-    source = (Path(__file__).parents[1] / "assets" / "s02_app.js").read_text(
-        encoding="utf-8"
+    assets = Path(__file__).parents[1] / "assets"
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(assets.glob("*.js"))
     )
     assert 'document.getElementById("shared-refresh-shell")' in source
     assert "shell.getClientRects().length > 0" in source

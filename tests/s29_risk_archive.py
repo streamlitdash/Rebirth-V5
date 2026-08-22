@@ -12,16 +12,18 @@ import duckdb
 import pandas as pd
 import pytest
 
-import core.s11_risk_archive as archive_module
-from core.archive_sql import (
+from rebirth.history import archive_io as archive_io_module
+from rebirth.history import archive_queries as archive_query_module
+from rebirth.history import (
     PL_HISTORY_DEPTH,
     PL_HISTORY_LABEL,
+    PL_HISTORY_MAX_RAW_ROWS,
     PL_HISTORY_MAX_SERIES_ROWS,
     PL_HISTORY_SUMMARY_COLUMNS,
     SQLPLHistoryRepository,
     open_history_database,
 )
-from core.s04_pl import (
+from rebirth.domain.pnl import (
     ACTIVITY,
     CATEGORY,
     COLOSSUS_TYPE,
@@ -36,8 +38,8 @@ from core.s04_pl import (
     SUB_CATEGORY,
     select_pl_history_series,
 )
-from core.s01_schema import UNMAPPED_VALUE
-from core.s11_risk_archive import (
+from rebirth.domain.schema import UNMAPPED_VALUE
+from rebirth.history import (
     ARCHIVE_FILE_NAMES,
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_FILE_NAME,
@@ -63,12 +65,12 @@ from core.s11_risk_archive import (
     project_archive_to_pl_history,
     validate_market_archive_frame,
 )
-from core.s07_stock import STOCK_COLUMNS, STOCK_IDENTITY_COLUMNS
-from pages.pnl.history import (
+from rebirth.domain.stock import STOCK_COLUMNS, STOCK_IDENTITY_COLUMNS
+from rebirth.pages.pnl.history import (
     pl_history_path_token,
     summarize_visible_pl_history,
 )
-from tools.s03_archive_official_risk import (
+from tools.archive_snapshot import (
     DEFAULT_ARCHIVE_ROOT,
     resolve_archive_root,
     run_scheduled_archive,
@@ -495,6 +497,20 @@ def test_sql_pl_repository_matches_projected_history_and_stays_bounded(
         ordered_summary(pandas_summary),
         check_dtype=False,
     )
+    pd.testing.assert_frame_equal(
+        ordered_summary(hierarchy.summary),
+        ordered_summary(pandas_summary.loc[pandas_summary[PL_HISTORY_DEPTH].le(1)]),
+        check_dtype=False,
+    )
+    selected_activity = str(expected[ACTIVITY].iloc[0])
+    filtered_expected = expected.loc[expected[ACTIVITY].eq(selected_activity)]
+    filtered_hierarchy = repository.hierarchy(filters={ACTIVITY: [selected_activity]})
+    pd.testing.assert_frame_equal(
+        ordered_summary(filtered_hierarchy.summary),
+        ordered_summary(summarize_visible_pl_history(filtered_expected)),
+        check_dtype=False,
+    )
+    assert filtered_hierarchy.row_count == len(filtered_expected)
 
     paths = expected.loc[:, list(HISTORY_IDENTITY_COLUMNS)].drop_duplicates()
     for raw_path in paths.itertuples(index=False, name=None):
@@ -516,6 +532,37 @@ def test_sql_pl_repository_matches_projected_history_and_stays_bounded(
     assert len(total) <= PL_HISTORY_MAX_SERIES_ROWS
     assert set(total["Market Date"]) == {"2026-08-14", "2026-08-17"}
     assert "2026-08-15" not in set(total["Market Date"])
+
+    raw = repository.raw_rows()
+    assert list(raw.rows.columns) == list(PL_HISTORY_COLUMNS)
+    assert raw.row_count == len(expected)
+    assert len(raw.rows) <= PL_HISTORY_MAX_RAW_ROWS
+    assert raw.pl_total == pytest.approx(expected["PL"].sum())
+    raw_daily = (
+        raw.rows.groupby(["Market Date", HISTORY_TYPE], as_index=False)["PL"]
+        .sum()
+        .sort_values(["Market Date", HISTORY_TYPE], kind="stable")
+        .reset_index(drop=True)
+    )
+    total_daily = total.sort_values(
+        ["Market Date", HISTORY_TYPE], kind="stable"
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(raw_daily, total_daily, check_dtype=False)
+
+    registered = {
+        row[0]
+        for row in repository._connection.execute(
+            "SELECT table_name FROM information_schema.tables"
+        ).fetchall()
+    }
+    assert {"_risk_files", "_colossus_files"} <= registered
+    assert {
+        "_market_files",
+        "_stock_files",
+        "_pl_fact",
+        "_pl_identity",
+        "_pl_projection",
+    }.isdisjoint(registered)
 
     first_connection = repository._connection
     assert first_connection is not None
@@ -577,7 +624,7 @@ def test_v4_parquet_bytes_and_zstd_encoding_are_deterministic(tmp_path: Path) ->
         first_path = first.path / file_name
         second_path = second.path / file_name
         assert first_path.read_bytes() == second_path.read_bytes()
-        parquet = archive_module.pq.ParquetFile(first_path)
+        parquet = archive_io_module.pq.ParquetFile(first_path)
         compressions = {
             parquet.metadata.row_group(group).column(column).compression
             for group in range(parquet.metadata.num_row_groups)
@@ -678,8 +725,8 @@ def test_specialized_stock_reader_avoids_generic_frame_materialization(
     snapshot = _snapshot()
     snapshot.stock_frame = _stock()
     archive_official_snapshot(snapshot, lambda _date: _colossus(), tmp_path)
-    archive_module._load_stock_leaf_cached.cache_clear()
-    original_read_table = archive_module.pq.read_table
+    archive_io_module._load_stock_leaf_cached.cache_clear()
+    original_read_table = archive_io_module.pq.read_table
     stock_reads = 0
 
     def counted_read_table(source, *args, **kwargs):
@@ -688,7 +735,7 @@ def test_specialized_stock_reader_avoids_generic_frame_materialization(
             stock_reads += 1
         return original_read_table(source, *args, **kwargs)
 
-    monkeypatch.setattr(archive_module.pq, "read_table", counted_read_table)
+    monkeypatch.setattr(archive_io_module.pq, "read_table", counted_read_table)
 
     assert load_risk_archive(tmp_path, "2026-08-14").stock_rows == 1
     assert stock_reads == 0
@@ -709,8 +756,8 @@ def test_stock_identity_query_pushes_exact_parquet_predicate(
         ignore_index=True,
     )
     archive_official_snapshot(snapshot, lambda _date: _colossus(), tmp_path)
-    archive_module._load_stock_leaf_cached.cache_clear()
-    original_read_table = archive_module.pq.read_table
+    archive_io_module._load_stock_leaf_cached.cache_clear()
+    original_read_table = archive_io_module.pq.read_table
     stock_filters: list[object] = []
 
     def counted_read_table(source, *args, **kwargs):
@@ -718,7 +765,7 @@ def test_stock_identity_query_pushes_exact_parquet_predicate(
             stock_filters.append(kwargs.get("filters"))
         return original_read_table(source, *args, **kwargs)
 
-    monkeypatch.setattr(archive_module.pq, "read_table", counted_read_table)
+    monkeypatch.setattr(archive_io_module.pq, "read_table", counted_read_table)
     identity = {
         column: str(snapshot.stock_frame.iloc[0][column])
         for column in STOCK_IDENTITY_COLUMNS
@@ -916,8 +963,8 @@ def test_market_identity_query_avoids_pnl_files_and_caches_only_selected_leaf(
     monkeypatch,
 ) -> None:
     archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
-    archive_module._load_market_identity_leaf_cached.cache_clear()
-    original_read_table = archive_module.pq.read_table
+    archive_query_module._load_market_identity_leaf_cached.cache_clear()
+    original_read_table = archive_io_module.pq.read_table
     market_reads: list[dict[str, object]] = []
 
     def counted_read_table(source, *args, **kwargs):
@@ -930,9 +977,9 @@ def test_market_identity_query_avoids_pnl_files_and_caches_only_selected_leaf(
             )
         return original_read_table(source, *args, **kwargs)
 
-    monkeypatch.setattr(archive_module.pq, "read_table", counted_read_table)
+    monkeypatch.setattr(archive_io_module.pq, "read_table", counted_read_table)
     monkeypatch.setattr(
-        archive_module,
+        archive_query_module,
         "_load_completed_leaf",
         lambda _path: (_ for _ in ()).throw(
             AssertionError("market query must not load Risk or Colossus")
@@ -962,8 +1009,8 @@ def test_risk_identity_query_pushes_parquet_predicate_and_projection(
     monkeypatch,
 ) -> None:
     archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
-    archive_module._load_risk_identity_leaf_cached.cache_clear()
-    original_read_table = archive_module.pq.read_table
+    archive_query_module._load_risk_identity_leaf_cached.cache_clear()
+    original_read_table = archive_io_module.pq.read_table
     risk_reads: list[dict[str, object]] = []
 
     def counted_read_table(source, *args, **kwargs):
@@ -976,7 +1023,7 @@ def test_risk_identity_query_pushes_parquet_predicate_and_projection(
             )
         return original_read_table(source, *args, **kwargs)
 
-    monkeypatch.setattr(archive_module.pq, "read_table", counted_read_table)
+    monkeypatch.setattr(archive_io_module.pq, "read_table", counted_read_table)
 
     first = load_risk_history_for_identity(
         tmp_path,
@@ -1405,8 +1452,8 @@ def test_pl_history_projection_caches_each_immutable_leaf(
     monkeypatch,
 ) -> None:
     archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
-    archive_module._project_completed_leaf_cached.cache_clear()
-    original = archive_module._load_completed_leaf
+    archive_query_module._project_completed_leaf_cached.cache_clear()
+    original = archive_query_module._load_completed_leaf
     calls = 0
 
     def counted(path: Path):
@@ -1414,7 +1461,7 @@ def test_pl_history_projection_caches_each_immutable_leaf(
         calls += 1
         return original(path)
 
-    monkeypatch.setattr(archive_module, "_load_completed_leaf", counted)
+    monkeypatch.setattr(archive_query_module, "_load_completed_leaf", counted)
 
     first = load_shared_pl_history(tmp_path)
     second = load_shared_pl_history(tmp_path)

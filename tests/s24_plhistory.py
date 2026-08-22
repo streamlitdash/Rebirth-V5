@@ -7,7 +7,7 @@ from collections.abc import Iterable
 import pandas as pd
 from dash import dcc, html
 
-from core.s04_pl import (
+from rebirth.domain.pnl import (
     ACTIVITY,
     CATEGORY,
     COLOSSUS_TYPE,
@@ -21,7 +21,7 @@ from core.s04_pl import (
     SUB_CATEGORY,
     select_pl_history_series,
 )
-from pages.pnl.history import (
+from rebirth.pages.pnl.history import (
     DAILY_P_PERIOD,
     MTD_PERIOD,
     PL_HISTORY_METRIC_CELL_TYPE,

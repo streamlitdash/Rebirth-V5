@@ -9,15 +9,11 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import html
 
-from core.s02_pipeline import (
-    PRODUCT_SPECS_BY_SOURCE_TYPE,
-    RiskRefreshManager,
-    checker_date_for,
-    market_date_for,
-    risk_date_for,
-)
-from tools.s01_fixtures import build_datasets, validate_datasets
-from pages.risk.view import build_risk_date_editor
+from rebirth.domain.calculations import checker_date_for, market_date_for, risk_date_for
+from rebirth.domain.products import PRODUCT_SPECS_BY_SOURCE_TYPE
+from rebirth.services.refresh import RiskRefreshManager
+from tools.fixtures import build_datasets, validate_datasets
+from rebirth.pages.risk.view import build_risk_date_editor
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -63,9 +59,9 @@ def _snapshot() -> SimpleNamespace:
 
 
 def test_force_date_lock_waits_for_dash_to_receive_the_click() -> None:
-    source = (Path(__file__).parents[1] / "assets" / "s02_app.js").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        Path(__file__).parents[1] / "assets" / "40_refresh_lifecycle.js"
+    ).read_text(encoding="utf-8")
     start = source.index("const startRefreshProgress = (mode) =>")
     state_created = source.index("refreshProgressState = {", start)
     deferred_lock = source.index("const stateForDateActionLock", state_created)

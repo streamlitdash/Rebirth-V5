@@ -12,33 +12,43 @@ import pandas as pd
 import pytest
 from dash import no_update
 
-from core import history as history_module
-from core.history import (
+from rebirth.history import repository as history_module
+from rebirth.history import (
     HISTORY_CANONICAL_CELL_BUDGET,
     HISTORY_HANDOFF_SCHEMA_VERSION,
     HISTORY_RAW_ROW_BUDGET,
     ORDERED,
     ArchiveHistoryRepository,
+    HistoryCatalogEntry,
     HistoryAxisOrder,
     HistoryBundle,
     HistoryHandoff,
     HistoryIdentity,
+    HistoryIdentityCatalog,
     HistoryOrdering,
     HistoryQuery,
     HistoryValidationError,
     RiskFilterView,
 )
-from core.s03_search import ResolvedHistoryIdentity
-from feeds.s01_sources import build_production_refresh_manager
-from pages.data.callbacks import (
+from rebirth.domain.search import ResolvedHistoryIdentity
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages.data.callbacks import (
+    load_archive_catalog,
     poll_archive_generation,
     query_history_bundle,
     serialize_history_bundle,
 )
-from pages.data.view import build_data_page
-from pages.risk.handoff import build_history_handoff
-from shared.constants import FILTER_DIMENSION_FIELDS
-from shared.factory import build_app
+from rebirth.pages.data.selection import (
+    catalog_key_for_handoff,
+    direct_history_handoff,
+    risk_greek_options,
+    risk_type_options,
+    underlying_options,
+)
+from rebirth.pages.data.view import build_data_page
+from rebirth.pages.risk.handoff import build_history_handoff
+from rebirth.ui.constants import FILTER_DIMENSION_FIELDS
+from rebirth.app.factory import build_app
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -200,6 +210,38 @@ class _Repository:
         return replace(self.bundle, query=query)
 
 
+def _catalog() -> HistoryIdentityCatalog:
+    return HistoryIdentityCatalog(
+        generation="generation-a",
+        entries=(
+            HistoryCatalogEntry(
+                kind="risk",
+                identity=HistoryIdentity(
+                    source_types=("ir/delta", "ir/gamma"),
+                    risk_type="IR",
+                    risk_greek="Delta",
+                    underlying="EUR",
+                    identity_mode="reported",
+                ),
+                source_revision=11,
+                snapshot_date=date(2026, 8, 21),
+            ),
+            HistoryCatalogEntry(
+                kind="market",
+                identity=HistoryIdentity(
+                    source_types=("ir/delta",),
+                    risk_type="IR",
+                    risk_greek="Delta",
+                    underlying="EUR",
+                    identity_mode="underlying",
+                ),
+                source_revision=11,
+                snapshot_date=date(2026, 8, 21),
+            ),
+        ),
+    )
+
+
 def test_quick_handoff_uses_catalog_identity_and_active_filter_view() -> None:
     resolved = ResolvedHistoryIdentity(
         kind="risk",
@@ -248,6 +290,68 @@ def test_quick_handoff_uses_catalog_identity_and_active_filter_view() -> None:
     )
     assert market.metric == "current"
     assert market.filter_view is None
+
+
+def test_direct_selectors_build_the_same_strict_handoff_contract() -> None:
+    catalog = _catalog()
+    raw_catalog = catalog.to_mapping()
+    risk_entry = catalog.entries[0]
+
+    assert risk_type_options(raw_catalog, "risk", "reported") == [
+        {"label": "IR", "value": "IR"}
+    ]
+    assert risk_greek_options(raw_catalog, "risk", "reported", "IR") == [
+        {"label": "Delta", "value": "Delta"}
+    ]
+    assert underlying_options(
+        raw_catalog,
+        "risk",
+        "reported",
+        "IR",
+        "Delta",
+    ) == [{"label": "EUR", "value": risk_entry.key}]
+
+    handoff = direct_history_handoff(
+        raw_catalog,
+        risk_entry.key,
+        kind="risk",
+        reset_generation=7,
+    )
+
+    assert isinstance(handoff, HistoryHandoff)
+    assert handoff.identity.source_types == ("ir/delta", "ir/gamma")
+    assert handoff.metric == "risk"
+    assert handoff.filter_view is None
+    assert handoff.reset_generation == 7
+    assert HistoryHandoff.from_mapping(handoff.to_mapping()) == handoff
+    assert catalog_key_for_handoff(raw_catalog, handoff.to_mapping()) == risk_entry.key
+
+
+def test_catalog_loading_is_bounded_to_identity_metadata() -> None:
+    catalog = _catalog()
+
+    class CatalogRepository:
+        def __init__(self):
+            self.calls = 0
+
+        def catalog(self):
+            self.calls += 1
+            return catalog
+
+    repository = CatalogRepository()
+    payload, status = load_archive_catalog(
+        repository,
+        {"generation": "generation-a", "reset_generation": 0},
+    )
+
+    assert repository.calls == 1
+    assert payload == {
+        "generation": "generation-a",
+        "risk_count": 1,
+        "market_count": 1,
+    }
+    assert "1 Risk and 1 Market" in status
+    assert set(payload) == {"generation", "risk_count", "market_count"}
 
 
 def test_query_reads_once_and_rejects_a_stale_reset_before_read() -> None:
@@ -411,25 +515,116 @@ def test_unchanged_generation_poll_is_no_update(
     assert generation_calls == 1
 
 
+def test_direct_data_route_initializes_generation_without_a_quick_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = ArchiveHistoryRepository(tmp_path)
+    monkeypatch.setattr(repository, "generation", lambda: "generation-direct")
+    monkeypatch.setattr(repository, "clear_for_reset_generation", lambda _reset: False)
+
+    state, status = poll_archive_generation(
+        repository,
+        None,
+        {"generation": None, "reset_generation": None},
+        0,
+    )
+
+    assert state == {"generation": "generation-direct", "reset_generation": 0}
+    assert status == ""
+
+
 def test_playback_and_selected_date_filter_are_clientside() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     metadata = _callback_metadata(app, "data-history-chart", "figure")
     input_ids = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    output = metadata["output"]
+    outputs = list(output) if isinstance(output, (list, tuple)) else [output]
 
     assert "callback" not in metadata
-    assert ("data-history-bundle-store", "data") in input_ids
-    assert ("data-player-interval", "n_intervals") in input_ids
-    assert ("data-raw-table", "data") in input_ids
-    assert ("data-raw-table", "columns") in input_ids
-    assert ("data-player-visibility-store", "data") in input_ids
+    assert {
+        ("data-history-bundle-store", "data"),
+        ("data-history-projection", "value"),
+        ("data-history-slice", "value"),
+        ("data-history-date-a", "value"),
+        ("data-history-date-b", "value"),
+        ("data-player-interval", "n_intervals"),
+        ("data-raw-table", "data"),
+        ("data-raw-table", "columns"),
+        ("data-player-visibility-store", "data"),
+    } <= input_ids
+    assert all(item.component_id.startswith("data-") for item in outputs)
 
-    source = (Path(__file__).resolve().parents[1] / "assets" / "s02_app.js").read_text(
-        encoding="utf-8"
-    )
-    assert "dataPlayback" in source
-    assert "dataHistoryBounds" in source
-    assert "record[dateColumn]" in source
-    assert "document.hidden" in source
+    base = _callback_metadata(app, "data-history-projection", "options")
+    assert "callback" not in base
+    assert {(item["id"], item["property"]) for item in base["inputs"]} == {
+        ("data-history-bundle-store", "data")
+    }
+    slices = _callback_metadata(app, "data-history-slice", "options")
+    assert "callback" not in slices
+    assert {(item["id"], item["property"]) for item in slices["inputs"]} == {
+        ("data-history-bundle-store", "data"),
+        ("data-history-projection", "value"),
+    }
+
+    source = (
+        Path(__file__).resolve().parents[1] / "assets" / "10_data_playback.js"
+    ).read_text(encoding="utf-8")
+    for projection in (
+        "zero_timeline",
+        "one_surface",
+        "one_tenor",
+        "one_compare",
+        "two_surface",
+        "two_swap",
+        "two_option",
+        "two_compare",
+    ):
+        assert projection in source
+    for behavior in (
+        "dataProjectionBase",
+        "dataProjectionSlice",
+        "dataHistoryBounds",
+        "dataDifference",
+        "record[dateColumn]",
+        "document.hidden",
+        '"data-history-chart", String(bundle.key || "")',
+        "selectedProjection, selectedSlice, selectedA, selectedB",
+        "if (changedIdentity)",
+        "playing = false",
+        "connectgaps: false",
+        'categoryorder: "array"',
+        "camera: CAMERA",
+        "cmin: bounds[0], cmax: bounds[1]",
+        "uirevision: playerKey",
+        'scene: "scene2"',
+        'scene: "scene3"',
+    ):
+        assert behavior in source
+
+
+def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -> None:
+    app = build_app(refresh_manager=build_production_refresh_manager())
+    request = _callback_metadata(app, "data-history-request-store", "data")
+    request_inputs = {(item["id"], item["property"]) for item in request["inputs"]}
+    assert {
+        ("data-history-handoff-store", "data"),
+        ("data-load-history-button", "n_clicks"),
+        ("data-unlock-identity-button", "n_clicks"),
+        ("data-history-kind-tabs", "value"),
+    } <= request_inputs
+
+    load = _callback_metadata(app, "data-history-bundle-store", "data")
+    load_inputs = {(item["id"], item["property"]) for item in load["inputs"]}
+    assert ("data-history-request-store", "data") in load_inputs
+    assert ("data-history-handoff-store", "data") not in load_inputs
+    assert {
+        ("data-history-projection", "value"),
+        ("data-history-slice", "value"),
+        ("data-history-date-a", "value"),
+        ("data-history-date-b", "value"),
+        ("data-player-slider", "value"),
+    }.isdisjoint(load_inputs)
 
 
 def test_data_route_and_factory_layout_are_archive_lazy(
@@ -440,6 +635,7 @@ def test_data_route_and_factory_layout_are_archive_lazy(
 
     monkeypatch.setattr(ArchiveHistoryRepository, "read", forbidden)
     monkeypatch.setattr(ArchiveHistoryRepository, "generation", forbidden)
+    monkeypatch.setattr(ArchiveHistoryRepository, "catalog", forbidden)
     app = build_app(refresh_manager=build_production_refresh_manager())
     root = app.layout() if callable(app.layout) else app.layout
     root_components = list(_walk(root))
@@ -468,8 +664,19 @@ def test_data_route_and_factory_layout_are_archive_lazy(
     }
     assert {
         "data-page",
+        "data-history-kind-tabs",
+        "data-risk-type",
+        "data-risk-greek",
+        "data-underlying",
+        "data-load-history-button",
+        "data-unlock-identity-button",
         "data-history-chart",
+        "data-history-projection",
+        "data-history-slice",
+        "data-history-date-a",
+        "data-history-date-b",
         "data-selected-table",
+        "data-raw-table",
         "data-player-visibility-store",
     } <= page_ids
     assert {"/proxy/", "/proxy/pnl", "/proxy/stock"} <= hrefs

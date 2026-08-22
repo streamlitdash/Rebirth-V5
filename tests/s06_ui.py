@@ -10,32 +10,38 @@ import pandas as pd
 import pytest
 from dash import dash_table, dcc, html
 
-from pages.risk.charts import (
+from rebirth.pages.risk.charts import (
     build_detail_panel_with_state,
     build_tenor_heatmap,
     detail_tenor_view_state,
 )
-from pages.risk.search import (
-    QUICK_SEARCH_HIERARCHY_DEPTH,
+from rebirth.pages.risk.quick_market import (
     build_quick_market_history_result,
     build_quick_market_result,
     build_quick_market_search,
-    build_quick_search,
-    build_quick_search_pivot,
     quick_market_history_cell_state,
     quick_market_history_date_window,
     quick_market_history_identity,
 )
-from pages.risk.tables import (
-    build_new_trade_detail_table,
+from rebirth.pages.risk.quick_risk import (
+    QUICK_SEARCH_HIERARCHY_DEPTH,
+    build_quick_search,
+    build_quick_search_pivot,
+)
+from rebirth.pages.risk.explorer_tables import (
     build_small_table,
-    build_top_book_exposures,
     build_tree_rows,
     metric_header,
 )
-from pages.risk.view import build_unmapped_books_table
-from shared.aggregation import ordered_unique, row_key
-from pages.risk.search_callbacks import (
+from rebirth.pages.risk.workspace_tables import (
+    build_new_trade_detail_table,
+    build_top_book_exposures,
+    build_top_promotions_table,
+    top_promotions_frame,
+)
+from rebirth.pages.risk.view import build_unmapped_books_table
+from rebirth.ui.aggregation import ordered_unique, row_key
+from rebirth.pages.risk.search_callbacks import (
     _prune_quick_search_indexes,
     _render_quick_search_pivot,
 )
@@ -1090,7 +1096,7 @@ def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     assert "aria-expanded" not in toggles[3].to_plotly_json()["props"]
 
     stylesheet = (
-        Path(__file__).resolve().parents[1] / "assets" / "s01_style.css"
+        Path(__file__).resolve().parents[1] / "assets" / "20_controls_tables.css"
     ).read_text(encoding="utf-8")
     selector = stylesheet.split(".hierarchy-total-row > *", maxsplit=1)[1].split(
         "}", maxsplit=1
@@ -1155,7 +1161,7 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
     assert leaf_spacer.to_plotly_json()["props"]["aria-hidden"] == "true"
 
     browser_source = (
-        Path(__file__).resolve().parents[1] / "assets" / "s02_app.js"
+        Path(__file__).resolve().parents[1] / "assets" / "50_risk_events.js"
     ).read_text(encoding="utf-8")
     assert 'toggle.textContent = expanded ? "\\u2212" : "\\u25b8";' in browser_source
 
@@ -1221,3 +1227,67 @@ def test_top_book_cells_use_real_metric_classes_and_shared_tree_semantics() -> N
         "metric-class(column, [])" not in str(cell.className) for cell in metric_cells
     )
     assert all("metric-cell" in str(cell.className).split() for cell in metric_cells)
+
+
+def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "risk type": "IR",
+                "risk greek": "Delta",
+                "reported underlying": "USD-SOFR",
+                "promotion reason": "Big Risk",
+                "promotion score": 1.25,
+                "risk": 500.0,
+                "drisk": 2.0,
+                "pl": 1.0,
+            },
+            {
+                "risk type": "FX",
+                "risk greek": "Delta",
+                "reported underlying": "EURUSD",
+                "promotion reason": "Big PL",
+                "promotion score": 2.5,
+                "risk": 10.0,
+                "drisk": 1.0,
+                "pl": -20.0,
+            },
+            {
+                "risk type": "Credit",
+                "risk greek": "Delta",
+                "reported underlying": "IGNORED",
+                "promotion reason": "",
+                "promotion score": 99.0,
+                "risk": 10_000.0,
+                "drisk": 10_000.0,
+                "pl": 10_000.0,
+            },
+        ]
+    )
+
+    ranked = top_promotions_frame(frame, rank_by="score")
+    component = build_top_promotions_table(frame, rank_by="score")
+    table = next(item for item in _walk(component) if isinstance(item, html.Table))
+
+    assert ranked["Rank"].tolist() == [1, 2]
+    assert ranked["Reported Underlying"].tolist() == ["EURUSD", "USD-SOFR"]
+    assert ranked["Promotion Score"].tolist() == [2.5, 1.25]
+    assert _table_headers(component) == [
+        "Rank",
+        "Promotion Reason",
+        "Risk Type",
+        "Risk Greek",
+        "Reported Underlying",
+        "Risk",
+        "dRisk",
+        "P&L",
+        "Promotion Score",
+    ]
+    assert table.to_plotly_json()["props"]["aria-label"] == (
+        "Top Promotions flat ranked table"
+    )
+    assert not any(
+        isinstance(item, html.Button)
+        or "row-toggle" in str(getattr(item, "className", ""))
+        for item in _walk(component)
+    )

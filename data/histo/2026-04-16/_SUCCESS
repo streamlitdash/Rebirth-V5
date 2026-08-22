@@ -98,8 +98,8 @@
   "sha256": {
     "colossus.parquet": "19a06f9849312ed052f776aa9113578058de765c87e3844d2a9244776c051e4e",
     "market.parquet": "269f5d9561b210032a21dbeea252a2e824d2e75b7a2e2ed1780385d6bbb92b9c",
-    "risk.parquet": "bc1f2c12a145e33987562ca4ea4705dc19fc96125a4ba8aec37de91856391ed4",
-    "stock.parquet": "5e4ad5b9595fc2e62da9e3de1e7124905718a54e5a9711b266adb9ab8447dab5"
+    "risk.parquet": "a05bb72c8d0a3c9491f074c2b187c674057f3551a318a216f365448fe82fc0c5",
+    "stock.parquet": "56d131fcfaf067f3a2aace9527628dabf63e6fb7b79981c572237f21beb7b2a2"
   },
   "stock_columns": [
     "CRDS",

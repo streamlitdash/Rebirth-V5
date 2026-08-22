@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adapters.s06_new_positions import (
+from rebirth.adapters.new_positions import (
     CASHFLOW,
     CASH_FLOW,
     CASH_FLOW_RISK_GREEK,
@@ -30,8 +30,15 @@ from adapters.s06_new_positions import (
     get_new_positions,
     validate_new_positions,
 )
-from core.s01_schema import TENOR_OPTION, TENOR_SWAP
-from core.s02_pipeline import PL, PORTFOLIO, RISK, RISK_GREEK, RISK_TYPE, UNDERLYING
+from rebirth.domain.schema import TENOR_OPTION, TENOR_SWAP
+from rebirth.domain.products import (
+    PL,
+    PORTFOLIO,
+    RISK,
+    RISK_GREEK,
+    RISK_TYPE,
+    UNDERLYING,
+)
 
 
 def _market_row(

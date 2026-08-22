@@ -5,7 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from core.s02_pipeline import (
+from rebirth.domain.calculations import checker_date_for, market_date_for, risk_date_for
+from rebirth.domain.products import (
     AGE,
     AGE_DEFAULTED,
     MMM_FILE,
@@ -13,11 +14,8 @@ from core.s02_pipeline import (
     RISK_GREEK,
     RISK_TYPE,
     SOURCE_TYPE,
-    RiskRefreshManager,
-    checker_date_for,
-    market_date_for,
-    risk_date_for,
 )
+from rebirth.services.refresh import RiskRefreshManager
 
 
 @pytest.mark.parametrize(

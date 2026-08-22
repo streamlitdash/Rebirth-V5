@@ -14,8 +14,8 @@ from dash import dash_table, html, no_update
 from flask import Flask
 from plotly.utils import PlotlyJSONEncoder
 
-from adapters import s05_stock as stock_adapter
-from adapters.s05_stock import (
+from rebirth.adapters import stock as stock_adapter
+from rebirth.adapters.stock import (
     GetStock,
     STOCK_ARCHIVE_ROOT,
     STOCK_COLUMNS,
@@ -27,8 +27,8 @@ from adapters.s05_stock import (
     load_stock_history,
     validate_stock_frame,
 )
-from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, UNMAPPED_VALUE
-from core.s07_stock import (
+from rebirth.domain.schema import PORTFOLIO_MAPPED_COLUMN, UNMAPPED_VALUE
+from rebirth.domain.stock import (
     CURRENT_MARKET_VALUE_COLUMN,
     MAPPED_STOCK_COMPARISON_COLUMNS,
     MARKET_VALUE_CHANGE_COLUMN,
@@ -52,37 +52,49 @@ from core.s07_stock import (
     summarize_stock_hierarchy,
     summarize_visible_stock_hierarchy,
 )
-from core.s08_saved_views import SavedFilterView
-from feeds.s01_sources import build_production_refresh_manager
-from pages import PAGE_SERVICES_CONFIG_KEY
-from pages.stock import callbacks as stock_callbacks
-from pages.stock import layout as stock_page_layout
-from pages.stock.view import (
+from rebirth.services.saved_views import SavedFilterView
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages import PAGE_SERVICES_CONFIG_KEY
+from rebirth.pages.stock import callbacks as stock_callbacks
+from rebirth.pages.stock import layout as stock_page_layout
+from rebirth.pages.stock.data import (
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
-    STOCK_HIERARCHY_TOGGLE_TYPE,
     StockPageData,
-    build_stock_history_figure,
-    build_stock_history_table,
-    build_stock_hierarchy_with_state,
-    build_stock_page,
-    build_stock_page_from_data,
-    build_stock_page_from_sources,
-    build_stock_page_shell,
-    build_stock_table,
     default_stock_dates,
     normalize_stock_date_pair,
+)
+from rebirth.pages.stock.history import (
+    SQLStockHistoryRepository,
+    build_stock_history_figure,
+    build_stock_history_table,
     normalize_stock_history_frame,
     stock_history_date_range,
     stock_history_identity_from_token,
     stock_history_identity_options,
+)
+from rebirth.pages.stock.tables import (
+    STOCK_HIERARCHY_TOGGLE_TYPE,
+    build_stock_hierarchy_with_state,
+    build_stock_table,
     stock_hierarchy_path_token,
     toggle_stock_hierarchy_open_tokens,
 )
-from shared.constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
-from shared.factory import build_app
-from shared.saved_views import saved_view_apply_request
-from shared.startup import STARTUP_COORDINATOR_CONFIG_KEY
+from rebirth.pages.stock.view import (
+    build_stock_page,
+    build_stock_page_from_data,
+    build_stock_page_from_sources,
+    build_stock_page_shell,
+)
+from rebirth.ui.constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from rebirth.app.factory import build_app
+from rebirth.ui.filter_views import saved_view_apply_request
+from rebirth.app.startup import STARTUP_COORDINATOR_CONFIG_KEY
+from tools.fixtures import (
+    HISTORICAL_MARKET_DATES,
+    _materialize_history_leaf,
+    build_official_history_fixture,
+)
 
 
 def _stock(rows: list[list[object]] | None = None) -> pd.DataFrame:
@@ -394,6 +406,32 @@ def test_stock_history_loader_adds_dates_only_when_invoked() -> None:
     ]
 
 
+def test_sql_stock_history_repository_is_lazy_exact_and_payload_bounded(
+    tmp_path,
+) -> None:
+    fixture = build_official_history_fixture(HISTORICAL_MARKET_DATES[-1])
+    _materialize_history_leaf(fixture, tmp_path)
+    repository = SQLStockHistoryRepository(tmp_path)
+
+    assert repository._connection is None
+    catalog = repository.catalog("BOOK-0001", limit=7)
+
+    assert 0 < len(catalog.options) <= 7
+    assert catalog.minimum_date == fixture.market_date
+    assert catalog.maximum_date == fixture.market_date
+    assert catalog.date_count == 1
+    identity = stock_history_identity_from_token(catalog.options[0]["value"])
+    rows = repository.rows(identity, fixture.market_date, fixture.market_date)
+    assert len(rows) == 1
+    assert rows[STOCK_DATE_COLUMN].dt.strftime("%Y-%m-%d").tolist() == [
+        fixture.market_date
+    ]
+    for column, value in identity.items():
+        assert rows[column].eq(value).all()
+    repository.clear()
+    assert repository._connection is None
+
+
 def test_stock_history_loader_projects_one_exact_identity() -> None:
     first = get_stock("2026-08-20")
     identity = first.loc[0, list(STOCK_IDENTITY_COLUMNS)].to_dict()
@@ -515,7 +553,16 @@ def test_stock_history_page_is_lazy_and_rendering_uses_only_server_cache() -> No
         "stock-history-identity",
         "options",
     )
-    options, selected, load_disabled = sync_identities(loaded_dates, None, None)
+    (
+        options,
+        selected,
+        load_disabled,
+        minimum,
+        maximum,
+        default_start,
+        default_end,
+        catalog,
+    ) = sync_identities("history", loaded_dates, None, None, None)
     assert options
     assert load_disabled is False
     assert history_calls == []
@@ -526,8 +573,15 @@ def test_stock_history_page_is_lazy_and_rendering_uses_only_server_cache() -> No
         "2026-08-20",
         "stock-history-test",
         selected,
+        "1y",
+        default_start,
+        default_end,
+        catalog,
     )
-    expected_start, expected_end = stock_history_date_range("2026-08-20")
+    expected_start, expected_end = stock_history_date_range(
+        maximum,
+        minimum_date=minimum,
+    )
     selected_identity = stock_history_identity_from_token(selected)
     assert history_calls == [(selected_identity, expected_start, expected_end)]
     assert token == {
@@ -535,11 +589,12 @@ def test_stock_history_page_is_lazy_and_rendering_uses_only_server_cache() -> No
         "identity": selected,
         "start_date": expected_start.date().isoformat(),
         "end_date": expected_end.date().isoformat(),
+        "period": "1y",
     }
     assert "Loaded 261 historical observations" in status
 
     render = _callback_for_output(app, "stock-history-chart", "figure")
-    figure, table = render(selected, "Quantity", token, loaded_dates)
+    figure, table = render(selected, "Quantity", token)
     assert history_calls == [(selected_identity, expected_start, expected_end)]
     assert len(figure.data[0].x) == 261
     assert isinstance(table, dash_table.DataTable)
@@ -577,10 +632,14 @@ def test_stock_history_identity_options_are_server_filtered_and_bounded() -> Non
         "options",
     )
 
-    options, selected, disabled = sync_identities(loaded[2], None, None)
-    searched, preserved, _disabled = sync_identities(
+    options, selected, disabled, *_range = sync_identities(
+        "history", loaded[2], None, None, None
+    )
+    searched, preserved, _disabled, *_range = sync_identities(
+        "history",
         loaded[2],
         "CRDS-74",
+        None,
         selected,
     )
 
@@ -616,6 +675,14 @@ def test_stock_history_failure_is_feature_local() -> None:
         "2026-08-20",
         "broken-stock-history",
         selected,
+        "1y",
+        "2025-08-21",
+        "2026-08-20",
+        {
+            "minimum_date": "2025-08-21",
+            "maximum_date": "2026-08-20",
+            "date_count": 261,
+        },
     )
 
     assert token is None
@@ -1264,6 +1331,42 @@ def test_stock_default_dates_use_business_day_offsets(
 
 
 @pytest.mark.parametrize(
+    ("preset", "expected_start"),
+    [
+        ("wtd", "2026-08-17"),
+        ("mtd", "2026-08-01"),
+        ("ytd", "2026-01-01"),
+        ("1y", "2025-10-15"),
+        ("all", "2025-10-15"),
+    ],
+)
+def test_stock_history_periods_are_clamped_to_archive_bounds(
+    preset: str,
+    expected_start: str,
+) -> None:
+    start, end = stock_history_date_range(
+        "2026-08-21",
+        preset=preset,
+        minimum_date="2025-10-15",
+    )
+
+    assert start.date().isoformat() == expected_start
+    assert end.date().isoformat() == "2026-08-21"
+
+
+def test_stock_history_custom_period_uses_the_selected_start() -> None:
+    start, end = stock_history_date_range(
+        "2026-08-21",
+        preset="custom",
+        minimum_date="2025-10-15",
+        start_date="2026-07-04",
+    )
+
+    assert start.date().isoformat() == "2026-07-04"
+    assert end.date().isoformat() == "2026-08-21"
+
+
+@pytest.mark.parametrize(
     ("current", "prior"),
     [("2026-08-14", "2026-08-14"), ("2026-08-14", "2026-08-15")],
 )
@@ -1665,6 +1768,65 @@ def test_newer_date_intent_supersedes_a_blocked_stock_load() -> None:
     ]
 
 
+def test_same_date_retry_coalesces_with_a_blocked_stock_load() -> None:
+    load_started = Event()
+    release_load = Event()
+
+    def stock_source(_stock_date: pd.Timestamp) -> pd.DataFrame:
+        if not load_started.is_set():
+            load_started.set()
+            if not release_load.wait(timeout=3):
+                raise TimeoutError("test did not release the blocked Stock load")
+        return _stock()
+
+    app = build_app(
+        refresh_manager=build_production_refresh_manager(),
+        stock_source=stock_source,
+        stock_portfolio_source=lambda _date: _config(),
+    )
+    callback = _callback_for_input(app, "stock-load-trigger")
+    original: list[tuple] = []
+    thread = Thread(
+        target=lambda: original.append(
+            callback(
+                1,
+                "0",
+                0,
+                -1,
+                None,
+                "2026-08-14",
+                "2026-08-13",
+                [],
+                *([[]] * len(STOCK_FILTER_FIELDS)),
+                "same-stock-request",
+            )
+        )
+    )
+    thread.start()
+    assert load_started.wait(timeout=3)
+
+    busy_retry = callback(
+        2,
+        "0",
+        0,
+        -1,
+        None,
+        "2026-08-14",
+        "2026-08-13",
+        [],
+        *([[]] * len(STOCK_FILTER_FIELDS)),
+        "same-stock-request",
+    )
+    assert busy_retry[:3] == (no_update, no_update, no_update)
+    assert busy_retry[3] is False
+
+    release_load.set()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert original[0][2]["current_date"] == "2026-08-14"
+    assert original[0][3] is True
+
+
 def test_pending_saved_stock_view_survives_a_busy_load_and_applies_on_retry() -> None:
     load_started = Event()
     release_load = Event()
@@ -1808,6 +1970,15 @@ def test_stock_enabled_callback_map_has_single_output_owners() -> None:
     assert len(owners[("stock-page-content", "children")]) == 1
     assert len(owners[("stock-loaded-dates", "data")]) == 1
     assert len(owners[("stock-load-trigger", "disabled")]) == 1
+    stock_load_registration = next(
+        registration
+        for registration in app._callback_list
+        if any(item["id"] == "stock-load-trigger" for item in registration["inputs"])
+    )
+    assert stock_load_registration["running"] == {
+        "running": {"stock-load-trigger.interval": 60_000},
+        "runningOff": {"stock-load-trigger.interval": 1_000},
+    }
     assert len(owners[("stock-hierarchy-open-paths", "data")]) == 1
     assert len(owners[("stock-hierarchy-view", "children")]) == 1
     assert len(owners[("stock-table-panel", "children")]) == 1

@@ -15,17 +15,17 @@ import pytest
 from dash import page_registry
 from dash.exceptions import UnsupportedRelativePath
 
-from feeds.s01_sources import build_production_refresh_manager
-from pages.pnl.common import PL_FILTER_FIELDS
-from pages.static_data import (
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages.pnl.common import PL_FILTER_FIELDS
+from rebirth.pages.static_data import (
     STATIC_FILE_OPTIONS,
     build_static_data_page,
     build_static_data_table,
 )
-from shared import factory
-from shared import startup as events
-from shared.factory import build_app
-from shared.startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
+from rebirth.app import factory
+from rebirth.app import startup as events
+from rebirth.app.factory import build_app
+from rebirth.app.startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -386,7 +386,7 @@ def test_public_endpoint_urls_do_not_reuse_internal_route_prefix() -> None:
 
 def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
     source = (
-        Path(__file__).resolve().parent.parent / "assets" / "s02_app.js"
+        Path(__file__).resolve().parent.parent / "assets" / "40_refresh_lifecycle.js"
     ).read_text(encoding="utf-8")
 
     assert "the refresh is still being followed" not in source
@@ -523,21 +523,21 @@ def test_long_financial_callback_cannot_own_live_revision() -> None:
     assert commit_revision.children == manager.health.revision
 
 
-def test_composed_app_defaults_to_one_second_risk_product_hold(monkeypatch) -> None:
+def test_composed_app_defaults_to_no_artificial_risk_product_hold(monkeypatch) -> None:
     monkeypatch.delenv("RISK_PRODUCT_DELAY_SECONDS", raising=False)
-    from s01_app import create_app
+    from app import create_app
 
     app = create_app()
     coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
 
-    assert coordinator._manager.stage_delays == {"risk_product": 1.0}
+    assert coordinator._manager.stage_delays == {"risk_product": 0.0}
 
 
 def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     monkeypatch,
 ) -> None:
-    import core.archive_sql as archive_sql_module
-    import s01_app as app_module
+    from rebirth.history import sql as archive_sql_module
+    import app as app_module
 
     history_root = (Path(app_module.__file__).parent / "data" / "histo").resolve()
     archive_access: list[tuple[str, Path]] = []
@@ -547,7 +547,8 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     original_read_csv = pd.read_csv
     original_read_parquet = pd.read_parquet
     original_get_stock = app_module.get_stock
-    original_load_stock_history = app_module.load_stock_history
+    original_stock_history_repository = app_module.SQLStockHistoryRepository
+    stock_history_repositories: list[object] = []
 
     def is_history_path(value: object) -> bool:
         try:
@@ -580,14 +581,10 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
         source_calls.append("stock")
         return original_get_stock(stock_date)
 
-    def tracked_load_stock_history(root, start_date, end_date, *, identity=None):
-        source_calls.append("stock_history")
-        return original_load_stock_history(
-            root,
-            start_date,
-            end_date,
-            identity=identity,
-        )
+    def tracked_stock_history_repository(root):
+        repository = original_stock_history_repository(root)
+        stock_history_repositories.append(repository)
+        return repository
 
     monkeypatch.setattr(Path, "iterdir", tracked_iterdir)
     monkeypatch.setattr(Path, "read_text", tracked_read_text)
@@ -596,8 +593,8 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     monkeypatch.setattr(app_module, "get_stock", tracked_get_stock)
     monkeypatch.setattr(
         app_module,
-        "load_stock_history",
-        tracked_load_stock_history,
+        "SQLStockHistoryRepository",
+        tracked_stock_history_repository,
     )
     monkeypatch.setattr(
         archive_sql_module,
@@ -618,13 +615,15 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     assert coordinator._manager.health.revision == 0
     assert archive_access == []
     assert source_calls == []
+    assert len(stock_history_repositories) == 1
+    assert stock_history_repositories[0]._root.resolve() == history_root
 
 
 def test_composed_app_binds_quick_market_history_to_shared_pl_root(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    import s01_app as app_module
+    import app as app_module
 
     captured: dict[str, object] = {}
     expected_loader = object()
@@ -638,18 +637,13 @@ def test_composed_app_binds_quick_market_history_to_shared_pl_root(
         captured["app_kwargs"] = kwargs
         return SimpleNamespace()
 
-    def load_identity_history(root, start_date, end_date, *, identity=None):
-        captured["stock_history_call"] = (
-            root,
-            identity,
-            start_date,
-            end_date,
-        )
+    def bind_stock_history(root):
+        captured["stock_history_root"] = root
         return expected_stock_history
 
     monkeypatch.setenv("PL_HISTORICAL_PATH", str(tmp_path))
     monkeypatch.setattr(app_module, "build_market_history_loader", bind_history)
-    monkeypatch.setattr(app_module, "load_stock_history", load_identity_history)
+    monkeypatch.setattr(app_module, "SQLStockHistoryRepository", bind_stock_history)
     monkeypatch.setattr(app_module, "build_app", capture_app)
 
     result = app_module.create_app()
@@ -663,27 +657,8 @@ def test_composed_app_binds_quick_market_history_to_shared_pl_root(
     assert isinstance(history_repository, app_module.SQLPLHistoryRepository)
     assert history_repository.root == tmp_path.resolve()
     assert app_kwargs["market_history_loader"] is expected_loader
-    identity = {
-        "CRDS": "CRDS-1",
-        "CPTY": "CPTY-A",
-        "Portfolio": "BOOK_A",
-        "Instrument": "EURUSD",
-        "Currency": "USD",
-    }
-    assert (
-        app_kwargs["stock_history_source"](
-            identity,
-            "2025-08-21",
-            "2026-08-20",
-        )
-        is expected_stock_history
-    )
-    assert captured["stock_history_call"] == (
-        tmp_path.resolve(),
-        identity,
-        "2025-08-21",
-        "2026-08-20",
-    )
+    assert app_kwargs["stock_history_source"] is expected_stock_history
+    assert captured["stock_history_root"] == tmp_path.resolve()
 
 
 def test_every_callback_output_has_one_nonduplicate_owner() -> None:
@@ -931,19 +906,22 @@ def test_repeated_apps_keep_native_page_services_isolated() -> None:
     )
 
     assert tuple(page_registry) == (
-        "pages.risk",
-        "pages.data",
-        "pages.stock",
-        "pages.pnl",
-        "pages.static_data",
-        "pages.not_found_404",
+        "rebirth.pages.risk",
+        "rebirth.pages.data",
+        "rebirth.pages.stock",
+        "rebirth.pages.pnl",
+        "rebirth.pages.static_data",
+        "rebirth.pages.not_found_404",
     )
-    assert page_registry["pages.static_data"]["name"] == "Statics"
-    assert page_registry["pages.static_data"]["title"] == "Cube — Statics"
-    assert page_registry["pages.pnl"]["relative_path"] == "/warm/pnl"
-    assert page_registry["pages.data"]["relative_path"] == "/warm/data"
-    assert page_registry["pages.stock"]["relative_path"] == "/warm/stock"
-    assert page_registry["pages.static_data"]["relative_path"] == "/warm/static-data"
+    assert page_registry["rebirth.pages.static_data"]["name"] == "Statics"
+    assert page_registry["rebirth.pages.static_data"]["title"] == "Cube — Statics"
+    assert page_registry["rebirth.pages.pnl"]["relative_path"] == "/warm/pnl"
+    assert page_registry["rebirth.pages.data"]["relative_path"] == "/warm/data"
+    assert page_registry["rebirth.pages.stock"]["relative_path"] == "/warm/stock"
+    assert (
+        page_registry["rebirth.pages.static_data"]["relative_path"]
+        == "/warm/static-data"
+    )
     assert cold_app.get_relative_path("/pnl") == "/cold/pnl"
     assert cold_app.get_relative_path("/data") == "/cold/data"
     assert warm_app.get_relative_path("/stock") == "/warm/stock"

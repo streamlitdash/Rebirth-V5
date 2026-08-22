@@ -12,16 +12,16 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html
 
-from core.s11_risk_archive import archive_official_snapshot
-from core.s04_pl import HISTORY_MAPPING_STATUS
-from core.s01_schema import UNMAPPED_VALUE
-from pages.pnl import validation as validate_pl_module
-from pages.pnl.common import (
+from rebirth.history import archive_official_snapshot
+from rebirth.domain.pnl import HISTORY_MAPPING_STATUS
+from rebirth.domain.schema import UNMAPPED_VALUE
+from rebirth.pages.pnl import validation as validate_pl_module
+from rebirth.pages.pnl.common import (
     PL_FILTER_IDS,
     apply_pl_filters,
     pl_external_filter_map,
 )
-from pages.pnl.validation import (
+from rebirth.pages.pnl.validation import (
     build_validate_pl_comparison,
     build_validate_pl_table,
     build_validate_pl_section,
@@ -29,8 +29,8 @@ from pages.pnl.validation import (
     register_validate_pl_callbacks,
     toggle_validate_pl_open_paths,
 )
-from pages.pnl.view import build_pl_filter_bar, build_pl_send_sections
-from tools.s01_fixtures import FAKE_NOTICE, HISTORICAL_MARKET_DATES, HISTORY_END_DATE
+from rebirth.pages.pnl.view import build_pl_filter_bar, build_pl_send_sections
+from tools.fixtures import FAKE_NOTICE, HISTORICAL_MARKET_DATES, HISTORY_END_DATE
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -355,25 +355,38 @@ def test_validate_pl_open_state_is_page_local_normalized_and_prunes_descendants(
     assert toggle_validate_pl_open_paths([risk_type, greek], risk_type) == []
 
 
-def test_validate_pl_is_a_lazy_section_immediately_above_histo_pl() -> None:
+def test_validate_pl_stays_lazy_on_current_before_history_workspace() -> None:
     section = build_validate_pl_section()
     picker = next(
         component
         for component in _walk(section)
         if isinstance(component, dcc.Dropdown) and component.id == "pl-validate-date"
     )
+    sections = build_pl_send_sections()
     summaries = [
         component.children
-        for component in _walk(html.Div(build_pl_send_sections()))
+        for component in _walk(html.Div(sections))
         if isinstance(component, html.Summary)
     ]
+    history_index = next(
+        index
+        for index, component in enumerate(sections)
+        if getattr(component, "id", None) == "pnl-history-workspace"
+    )
+    explorer_index = next(
+        index
+        for index, component in enumerate(sections)
+        if getattr(component, "id", None) == "pnl-explorer"
+    )
 
     assert isinstance(section, html.Details)
     assert section.children[0].children == "Validate P&L"
     assert picker.options == []
     assert picker.value is None
     assert picker.disabled is True
-    assert summaries.index("Validate P&L") + 1 == summaries.index("Histo P&L")
+    assert "Validate P&L" in summaries
+    assert "Histo P&L" not in summaries
+    assert explorer_index < history_index == len(sections) - 1
 
 
 def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(

@@ -5,13 +5,20 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from core.s01_schema import (
+from rebirth.domain.schema import (
     TENOR_OPTION,
     TENOR_OPTION_ORDER,
     TENOR_SWAP,
     TENOR_SWAP_ORDER,
 )
-from core.s02_pipeline import (
+from rebirth.domain.calculations import (
+    get_product_market,
+    get_product_market_status,
+    get_product_pl,
+    get_product_risk,
+)
+from rebirth.domain.governance import apply_thresholds
+from rebirth.domain.products import (
     CURRENT,
     MARKET_AVAILABLE,
     MARKET_STATUS,
@@ -19,13 +26,8 @@ from core.s02_pipeline import (
     OPEN,
     PL,
     PRODUCT_SPECS,
-    apply_thresholds,
-    get_product_market,
-    get_product_market_status,
-    get_product_pl,
-    get_product_risk,
 )
-from core.s03_search import build_search_catalog
+from rebirth.domain.search import build_search_catalog
 
 
 SPEC = PRODUCT_SPECS["irdelta"]

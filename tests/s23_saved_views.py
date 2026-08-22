@@ -12,21 +12,22 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from core.s08_saved_views import (
+from rebirth.services.saved_views import (
     SHARED_SAVED_VIEW_SCOPE,
     SavedFilterViewRepository,
     SavedViewConflictError,
     SavedViewValidationError,
 )
-from feeds.s01_sources import build_production_refresh_manager
-from pages.pnl.common import PL_SAVED_VIEW_CONTROLS
-from pages.stock import callbacks as stock_callbacks
-from pages.stock.view import STOCK_SAVED_VIEW_CONTROLS
-from pages.risk.common import RISK_SAVED_VIEW_CONTROLS
-from shared import factory as factory_module
-from shared import saved_views as saved_views_module
-from shared.constants import FILTER_DIMENSION_FIELDS
-from shared.saved_views import (
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages.pnl.common import PL_SAVED_VIEW_CONTROLS
+from rebirth.pages.stock import callbacks as stock_callbacks
+from rebirth.pages.stock.data import STOCK_SAVED_VIEW_CONTROLS
+from rebirth.pages.risk.common import RISK_SAVED_VIEW_CONTROLS
+from rebirth.pages.risk.filter_defaults import DEFAULT_RISK_FILTER_LABEL
+from rebirth.app import factory as factory_module
+from rebirth.ui import filter_views as saved_views_module
+from rebirth.ui.constants import FILTER_DIMENSION_FIELDS
+from rebirth.ui.filter_views import (
     BASE_SAVED_VIEW_ID,
     BASE_SAVED_VIEW_LABEL,
     base_saved_filter_view,
@@ -107,7 +108,7 @@ def test_filter_order_is_the_same_explicit_five_column_contract() -> None:
         "stock-saved-view-selector",
         "pnl-saved-view-selector",
     }
-    css = (Path(__file__).parents[1] / "assets" / "s01_style.css").read_text()
+    css = (Path(__file__).parents[1] / "assets" / "20_controls_tables.css").read_text()
     assert ".controls.filter-controls" in css
     assert "grid-template-columns: repeat(5, minmax(120px, 1fr));" in css
     assert ".saved-filter-view-disclosure[open]" in css
@@ -339,11 +340,11 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
         for item in components
         if getattr(item, "id", None) == RISK_SAVED_VIEW_CONTROLS.current_label_id
     )
-    assert current_label.children == BASE_SAVED_VIEW_LABEL
+    assert current_label.children == DEFAULT_RISK_FILTER_LABEL
     assert selector.value == BASE_SAVED_VIEW_ID
     assert selector.clearable is False
     assert selector.options[0] == {
-        "label": BASE_SAVED_VIEW_LABEL,
+        "label": DEFAULT_RISK_FILTER_LABEL,
         "value": BASE_SAVED_VIEW_ID,
     }
     assert name.debounce is False
@@ -546,8 +547,13 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             *([[]] * len(FILTER_KEYS)),
             [],
         )
+        base_label = (
+            DEFAULT_RISK_FILTER_LABEL
+            if controls is RISK_SAVED_VIEW_CONTROLS
+            else BASE_SAVED_VIEW_LABEL
+        )
         assert options == [
-            {"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID},
+            {"label": base_label, "value": BASE_SAVED_VIEW_ID},
             {"label": named.name, "value": named.identifier},
         ]
         assert selected == BASE_SAVED_VIEW_ID
@@ -651,7 +657,7 @@ def test_callbacks_save_update_delete_and_apply_base(
             BASE_SAVED_VIEW_ID,
             [{"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID}],
         )
-        == BASE_SAVED_VIEW_LABEL
+        == DEFAULT_RISK_FILTER_LABEL
     )
     monkeypatch.setattr(
         saved_views_module,
@@ -715,9 +721,11 @@ def test_callbacks_save_update_delete_and_apply_base(
         *(updated_filters[key] for key in FILTER_KEYS),
         [],
     )
-    assert deleted[0] == [{"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID}]
+    assert deleted[0] == [
+        {"label": DEFAULT_RISK_FILTER_LABEL, "value": BASE_SAVED_VIEW_ID}
+    ]
     assert deleted[1] == BASE_SAVED_VIEW_ID
-    assert current_label(deleted[1], deleted[0]) == BASE_SAVED_VIEW_LABEL
+    assert current_label(deleted[1], deleted[0]) == DEFAULT_RISK_FILTER_LABEL
     assert "Deleted view: Morning" in deleted[3]
     assert repository.list("stock") == ()
 

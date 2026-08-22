@@ -1,0 +1,133 @@
+/* 09. Aggregate P&L and Top Promotions ---------------------------------- */
+.aggregate-pl-details,
+.top-book-details { margin-top: 18px; }
+.aggregate-pl-panel { margin: 0; overflow: hidden; border: 0; border-radius: 0; }
+.aggregate-pl-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 13px 18px; border-bottom: 1px solid var(--outline); background: var(--surface-soft); }
+.aggregate-pl-title { color: var(--text); font-size: 16px; font-weight: 850; }
+.aggregate-pl-table-wrap { overflow-x: auto; }
+.aggregate-pl-table th,
+.aggregate-pl-table td { text-align: right; }
+.aggregate-pl-table .aggregate-index { text-align: left; }
+.aggregate-greek { padding-left: 52px !important; }
+.aggregate-pl-number { color: var(--text); font-variant-numeric: tabular-nums; }
+.top-book-panel { padding: 14px; border: 0; border-radius: 0; }
+.top-book-cross-wrap { padding: 8px 10px 12px; }
+.top-book-cross-table .group-kind-label > :not(.index-cell) { background: var(--surface) !important; color: var(--text) !important; }
+.quick-search-tab-body { margin: 0; border: 1px solid var(--outline); border-radius: var(--radius); background: var(--surface); }
+.top-promotions-panel { padding-bottom: 12px; }
+.top-promotions-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px); align-items: end; gap: 18px; padding: 14px 16px; border-bottom: 1px solid var(--outline); background: var(--surface-soft); }
+.top-promotions-heading-copy h2 { margin: 0; color: var(--text); font-size: 17px; }
+.top-promotions-heading-copy p { margin: 3px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.top-promotions-rank-control label { display: block; margin-bottom: 6px; }
+.top-promotions-status,
+.top-promotions-count { padding: 10px 16px 0; color: var(--text-muted); font-size: 11px; }
+.top-promotions-table-wrap { max-width: 100%; overflow: auto; padding: 10px 16px 4px; }
+.top-promotions-table { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.top-promotions-table th,
+.top-promotions-table td { padding: 8px 10px; border-bottom: 1px solid var(--outline-soft); background: var(--surface); text-align: left; white-space: nowrap; }
+.top-promotions-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-muted); font-weight: 850; }
+.top-promotions-table .promotion-rank { width: 64px; text-align: center; font-weight: 850; }
+.top-promotions-table .promotion-number { text-align: right; }
+
+/* 10. Quick Risk / Market Search ---------------------------------------- */
+.quick-search-shell { margin: 14px 0; }
+.quick-search-shell.quick-search-pivot-details { overflow: visible; }
+.quick-search-pivot-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 46px; padding: 11px 13px; }
+.quick-search-pivot-details[open] > .quick-search-pivot-summary { border-bottom: 1px solid var(--outline); }
+.quick-search-pivot-values { color: var(--text-muted); font-size: 11px; font-weight: 700; text-align: right; }
+.quick-search-pivot-body { padding: 16px; }
+.quick-search-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 560px); align-items: end; gap: 18px; margin-bottom: 14px; }
+.quick-search-heading h2 { margin: 0; color: var(--text); font-size: 17px; }
+.quick-search-heading p,
+.quick-search-pivot-description { margin: 3px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.quick-search-pivot-description { margin-bottom: 10px; }
+.quick-search-selector-control,
+.quick-search-combine-dropdown,
+.quick-search-dimensions { min-width: 0; }
+.quick-search-selector-control > label { display: block; margin-bottom: 6px; }
+.quick-search-selector-help,
+.quick-search-dimension-help { display: block; margin-top: 5px; color: var(--text-muted); font-size: 11px; line-height: 1.35; }
+.quick-search-dimension-control { display: grid; grid-template-columns: minmax(110px, auto) minmax(260px, 1fr); align-items: center; gap: 6px 12px; max-width: 960px; }
+.quick-search-dimension-control .quick-search-dimension-help { grid-column: 2; margin-top: 0; }
+.quick-search-metric-dropdown { min-width: 180px; }
+.quick-search-results { min-height: 20px; margin-top: 12px; }
+.quick-search-hint,
+.quick-search-empty,
+.quick-search-error,
+.quick-search-result-count { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.quick-search-error { color: var(--negative); }
+.quick-search-result-count { margin-bottom: 6px; font-weight: 750; }
+.quick-market-history-details { margin-top: 16px; overflow: hidden !important; border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); }
+.quick-market-history-controls { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(260px, 1fr) minmax(250px, 1fr); align-items: start; gap: 14px; padding: 14px 14px 8px; }
+.quick-market-history-control { min-width: 0; }
+.quick-market-history-control > label { display: block; margin-bottom: 6px; }
+.quick-market-history-date-range { width: 100%; }
+.quick-market-history-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin: 6px 14px 4px; }
+.quick-market-history-heading .quick-search-dimension-help { margin-top: 0; }
+#quick-market-history-chart { min-height: 40px; margin: 0 8px 8px; }
+
+.quick-search-pivot-table-wrap { width: 100%; max-width: 100%; max-height: min(54vh, 540px); overflow: auto; border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); overscroll-behavior: contain; scrollbar-gutter: stable; }
+.quick-search-pivot-table { min-width: max-content; font-size: 11px; }
+.quick-search-pivot-table th,
+.quick-search-pivot-table td { min-width: 112px; max-width: 260px; overflow: hidden; text-align: right; text-overflow: ellipsis; }
+.quick-search-pivot-table .quick-search-pivot-index,
+.quick-search-pivot-table .quick-search-pivot-index-header { min-width: 126px; max-width: 240px; text-align: left; font-weight: 800; }
+.quick-search-pivot-table .quick-search-hierarchy-index,
+.quick-search-pivot-table .quick-search-pivot-index-header { min-width: 250px; max-width: 420px; }
+.quick-search-pivot-table .quick-search-first-index { position: sticky; left: 0; z-index: 2; }
+.quick-search-pivot-table thead .quick-search-first-index { z-index: 5; }
+.quick-search-hierarchy-toggle-spacer { display: inline-block; width: 20px; height: 20px; margin: 0 6px 0 0; vertical-align: middle; }
+.quick-search-hierarchy-root > .quick-search-hierarchy-index { font-weight: 900; }
+.quick-search-pivot-metric-header { min-width: 126px; }
+.quick-search-number { text-align: right !important; font-variant-numeric: tabular-nums; }
+.quick-search-pivot-table .quick-search-pl-column { background: var(--total) !important; color: #111111 !important; font-weight: 700 !important; }
+.quick-search-pivot-table .quick-search-pl-column.number-negative,
+.quick-search-pivot-table .quick-search-pl-column.number-negative * { color: var(--negative) !important; }
+
+/* 11. Detail metrics and charts ----------------------------------------- */
+.detail-shell { margin-top: 14px; padding: 18px; border-radius: var(--radius); }
+.detail-plot-controls { display: grid; grid-template-columns: repeat(3, minmax(160px, 220px)); justify-content: end; gap: 12px; margin-bottom: 12px; }
+.detail-plot-control { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.detail-panel-body h2 { margin: 0; color: var(--text); font-size: 18px; }
+.detail-subtitle,
+.detail-note,
+.detail-tenor-coverage { margin-top: 4px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.detail-grid { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(360px, 0.9fr); align-items: start; gap: 14px; margin-top: 12px; }
+.detail-chart-stack,
+.chart-stack { display: grid; gap: 12px; }
+.detail-chart-card { min-width: 0; padding: 8px; border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); }
+.detail-chart-title { margin: 2px 4px 0; color: var(--text); font-size: 12px; }
+.detail-table-wrap { max-height: 500px; overflow: auto; border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); }
+.detail-table th { text-align: left; font-size: 11px; text-transform: uppercase; }
+.detail-table td + td,
+.detail-table th + th { border-left: 1px solid var(--outline-soft); }
+.detail-table tbody tr:nth-child(even) td { background: var(--surface-soft); }
+.detail-tenor,
+.detail-source,
+.detail-underlying { text-align: left; }
+.detail-number { text-align: right; }
+.detail-table-empty { padding: 24px !important; color: var(--text-muted); text-align: center; }
+.empty-detail,
+.empty-state { color: var(--text-muted); }
+.empty-state { display: grid; min-height: 180px; padding: 28px; place-items: center; gap: 5px; text-align: center; }
+
+/* 11b. Force all Plotly graph containers to fixed 600px height --------- */
+.js-plotly-plot {
+  height: 600px !important;
+}
+
+/* Heatmap overrides: taller tenor surface graphs */
+.tenor-surface-graph .js-plotly-plot .plotly {
+  height: 600px !important;
+}
+
+/* 11c. Reduce Plotly hover tooltip font size ---------------------------- */
+.js-plotly-plot .plotly .hovertext span {
+  font-size: 10px !important;
+}
+
+:root[data-theme="dark"] .js-plotly-plot .plotly .main-svg { background: transparent !important; }
+:root[data-theme="dark"] .js-plotly-plot .plotly .bg { fill: var(--surface) !important; }
+:root[data-theme="dark"] .js-plotly-plot .plotly text { fill: var(--text) !important; color: var(--text) !important; }
+:root[data-theme="dark"] .modebar { background: var(--surface-raised) !important; }
+:root[data-theme="dark"] .modebar-btn path { fill: var(--text-muted) !important; }

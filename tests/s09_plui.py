@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from core.archive_sql import PLHistoryHierarchyResult, PLHistorySeriesResult
-from core.s04_pl import (
+from rebirth.history import PLHistoryHierarchyResult, PLHistorySeriesResult
+from rebirth.domain.pnl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
     PL_SEND_COLUMNS,
@@ -20,14 +20,14 @@ from core.s04_pl import (
     load_pl_history,
     select_pl_history_series,
 )
-from core.s05_storage import LocalCsvAdjustmentRepository
-from feeds.s01_sources import build_production_refresh_manager
-from pages.pnl import aggregate_callbacks as pl_aggregate_events
-from pages.pnl import editor as pl_editor
-from pages.pnl import history_callbacks as pl_history_events
-from pages.pnl import send_callbacks as pl_send_events
-from pages.pnl.aggregate_callbacks import register_pl_aggregate_callbacks
-from pages.pnl.common import (
+from rebirth.services.adjustments import LocalCsvAdjustmentRepository
+from rebirth.services.sources import build_production_refresh_manager
+from rebirth.pages.pnl import aggregate_callbacks as pl_aggregate_events
+from rebirth.pages.pnl import editor as pl_editor
+from rebirth.pages.pnl import history_callbacks as pl_history_events
+from rebirth.pages.pnl import send_callbacks as pl_send_events
+from rebirth.pages.pnl.aggregate_callbacks import register_pl_aggregate_callbacks
+from rebirth.pages.pnl.common import (
     DISPLAY_COLUMNS,
     PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_EXCLUDE_ID,
@@ -37,7 +37,7 @@ from pages.pnl.common import (
     PL_SAVED_VIEW_CONTROLS,
     PLSendConfig,
 )
-from pages.pnl.history import (
+from rebirth.pages.pnl.history import (
     DAILY_P_PERIOD,
     MTD_PERIOD,
     PL_HISTORY_METRIC_CELL_TYPE,
@@ -46,16 +46,16 @@ from pages.pnl.history import (
     pl_history_path_token,
     summarize_visible_pl_history,
 )
-from pages.pnl.validation import register_validate_pl_callbacks
-from pages.pnl.view import (
+from rebirth.pages.pnl.validation import register_validate_pl_callbacks
+from rebirth.pages.pnl.view import (
     build_pl_aggregate_table,
     build_pl_filter_bar,
     build_pl_page,
     build_pl_send_sections,
 )
-from shared.aggregation import format_number, prepare_risk_data
-from shared.factory import build_app
-from shared.saved_views import build_saved_filter_view_bar
+from rebirth.ui.aggregation import format_number, prepare_risk_data
+from rebirth.app.factory import build_app
+from rebirth.ui.filter_views import build_saved_filter_view_bar
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -318,7 +318,13 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
     )
     assert [
         item.children for item in _walk(explorer) if isinstance(item, html.Summary)
-    ] == ["Validate P&L", "Histo P&L"]
+    ] == ["Validate P&L"]
+    history_workspace = next(
+        item
+        for item in _walk(html.Div(sections))
+        if getattr(item, "id", None) == "pnl-history-workspace"
+    )
+    assert "Raw historical rows" in _text(history_workspace)
     explorer_ids = _string_ids(explorer)
     assert set(PL_FILTER_IDS.values()).isdisjoint(explorer_ids)
     assert PL_FILTER_EXCLUDE_ID not in explorer_ids
@@ -352,7 +358,10 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
-        "pl-history-summary",
+        "pnl-workspace-tabs",
+        "pnl-current-workspace",
+        "pnl-history-workspace",
+        "pl-history-raw-table",
     } <= ids
     mounted_filter_ids = [
         getattr(item, "id", None)
@@ -893,14 +902,16 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-summary"),
+        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
     )
-    closed = history_callback(0, [], [], [], [], [], [], [], [], [], [], [], [], {})
+    closed = history_callback(
+        "current", [], [], [], [], [], [], [], [], [], [], [], [], {}
+    )
     assert all(value is no_update for value in closed)
 
     monkeypatch.setattr(pl_history_events, "load_pl_history", real_loader)
     table, status, minimum, maximum, open_paths, comparisons, selection = (
-        history_callback(1, [], [], [], [], [], [], [], [], [], [], [], [], {})
+        history_callback("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
     )
     assert isinstance(table, html.Div)
     assert "Expand only the branches you need" in status
@@ -945,7 +956,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         ),
     )
     expanded = history_callback(
-        1,
+        "history",
         [],
         [1],
         [],
@@ -980,7 +991,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         ),
     )
     compared = history_callback(
-        1,
+        "history",
         [],
         [],
         [1],
@@ -1030,7 +1041,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         ),
     )
     selected = history_callback(
-        1,
+        "history",
         [],
         [],
         [],
@@ -1058,7 +1069,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         ),
     )
     collapsed_comparison = history_callback(
-        1,
+        "history",
         [],
         [],
         [2],
@@ -1099,7 +1110,7 @@ def test_histo_accepts_a_lazy_canonical_history_function(
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-summary"),
+        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
     )
     monkeypatch.setattr(
         pl_history_events,
@@ -1110,7 +1121,7 @@ def test_histo_accepts_a_lazy_canonical_history_function(
     )
 
     table, status, *_state = history_callback(
-        1, [], [], [], [], [], [], [], [], [], [], [], [], {}
+        "history", [], [], [], [], [], [], [], [], [], [], [], [], {}
     )
 
     assert isinstance(table, html.Div)
@@ -1127,9 +1138,9 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-summary"),
+        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
     )
-    hierarchy_callback(1, [], [], [], [], [], [], [], [], [], [], [], [], {})
+    hierarchy_callback("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("chart interaction reloaded P&L history")
@@ -1142,6 +1153,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         SimpleNamespace(triggered_id="pl-history-range-wtd"),
     )
     both = chart_callback(
+        "history",
         {"path": ["Unmapped", "IR"]},
         "both",
         [],
@@ -1156,6 +1168,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         0,
         None,
         None,
+        False,
         {"preset": "all"},
     )
     assert both[1] == {
@@ -1189,6 +1202,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         SimpleNamespace(triggered_id="pl-history-series-selector"),
     )
     colossus = chart_callback(
+        "history",
         {"path": ["Unmapped", "IR"]},
         "colossus",
         [],
@@ -1203,9 +1217,11 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         0,
         both[7],
         both[8],
+        False,
         both[1],
     )
     predict = chart_callback(
+        "history",
         {"path": ["Unmapped", "IR"]},
         "predict",
         [],
@@ -1220,6 +1236,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         0,
         both[7],
         both[8],
+        False,
         both[1],
     )
     assert [trace.name for trace in colossus[0].data] == [COLOSSUS_TYPE]
@@ -1274,6 +1291,9 @@ def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
                 "2026-07-19",
             )
 
+        def raw_rows(self, **_kwargs):
+            raise AssertionError("closed raw-row disclosure performed an archive query")
+
     source = BoundedHistory()
     app, _manager = _registered_pl_app(
         tmp_path,
@@ -1290,10 +1310,10 @@ def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-summary"),
+        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
     )
 
-    rendered = hierarchy(1, [], [], [], [], [], [], [], [], [], [], [], [], {})
+    rendered = hierarchy("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
 
     assert "8 filtered rows" in rendered[1]
     assert len(source.hierarchy_calls) == 1
@@ -1304,6 +1324,7 @@ def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
         SimpleNamespace(triggered_id="pl-history-series-selector"),
     )
     plotted = chart(
+        "history",
         {"path": ["Unmapped", "IR"]},
         "both",
         [],
@@ -1318,10 +1339,13 @@ def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
         0,
         None,
         None,
+        False,
         {"preset": "all"},
     )
     assert len(source.series_calls) == 1
     assert "4 observed daily points" in plotted[2]
+    assert plotted[10] == []
+    assert plotted[11] == "Open Raw historical rows to query the selected scope."
     assert plotted[9] == select_pl_history_series(
         expected,
         ("Unmapped", "IR"),
@@ -1333,7 +1357,20 @@ def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
         SimpleNamespace(triggered_id="clear-cache-complete-store"),
     )
     cleared = hierarchy(
-        1, {"generation": 1}, [], [], [], [], [], [], [], [], [], [], [], {}
+        "history",
+        {"generation": 1},
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {},
     )
     assert all(value is no_update for value in cleared)
     assert source.clear_calls == 1
@@ -1348,10 +1385,10 @@ def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-summary"),
+        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
     )
     rendered = hierarchy(
-        1,
+        "history",
         [],
         [],
         [],
@@ -1385,7 +1422,7 @@ def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
         SimpleNamespace(triggered_id=PL_FILTER_IDS["portfolio"]),
     )
     reset = hierarchy(
-        1,
+        "history",
         [],
         [],
         [],
@@ -1409,6 +1446,7 @@ def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
         SimpleNamespace(triggered_id="pl-history-series-selector"),
     )
     plotted = chart(
+        "history",
         {"path": ["Unmapped", "IR"]},
         "both",
         [],
@@ -1423,6 +1461,7 @@ def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
         0,
         None,
         None,
+        False,
         {"preset": "all"},
     )
     assert "2 observed daily points" in plotted[2]
@@ -1476,6 +1515,7 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
     )
     chart_inputs = {(item["id"], item["property"]) for item in chart["inputs"]}
     assert {
+        ("pnl-workspace-tabs", "value"),
         ("pl-history-selection-store", "data"),
         ("pl-history-series-selector", "value"),
         *{(component_id, "value") for component_id in PL_FILTER_IDS.values()},
@@ -1486,6 +1526,7 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
         ("pl-history-range-all", "n_clicks"),
         ("pl-history-date-range", "start_date"),
         ("pl-history-date-range", "end_date"),
+        ("pl-history-raw-details", "open"),
     } == chart_inputs
     assert [str(output) for output in chart["output"]] == [
         "pl-history-chart.figure",
@@ -1498,6 +1539,8 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
         "pl-history-date-range.start_date",
         "pl-history-date-range.end_date",
         "pl-history-observations-table.data",
+        "pl-history-raw-table.data",
+        "pl-history-raw-status.children",
     ]
 
 
@@ -1545,7 +1588,8 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
-        "pl-history-summary",
+        "pnl-history-workspace",
+        "pl-history-raw-table",
         "pl-adjustment-revision-store",
     } <= with_ids
     assert "pl-preview-summary" not in with_ids

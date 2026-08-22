@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adapters.s04_credit import CREDIT_DELTA_CURRENT, CREDIT_DELTA_OPEN
-from adapters.s07_cross_gamma import build_cross_gamma_adapter, get_cross_gamma
-from core.s01_schema import TENOR_OPTION_ORDER, TENOR_SWAP, TENOR_SWAP_ORDER
-from core.s02_pipeline import (
+from rebirth.adapters.credit import CREDIT_DELTA_CURRENT, CREDIT_DELTA_OPEN
+from rebirth.adapters.cross_gamma import build_cross_gamma_adapter, get_cross_gamma
+from rebirth.domain.schema import TENOR_OPTION_ORDER, TENOR_SWAP, TENOR_SWAP_ORDER
+from rebirth.domain.products import (
     CURRENT,
     DRISK,
     GROUP,
@@ -30,9 +30,9 @@ from core.s02_pipeline import (
     SPLIT,
     UNDERLYING,
     ProductConnectorAdapter,
-    RiskRefreshManager,
 )
-from core.s09_cross_gamma import (
+from rebirth.services.refresh import RiskRefreshManager
+from rebirth.domain.cross_gamma import (
     CROSS_GAMMA_COLUMNS,
     CROSS_GAMMA_RELEASE_COLUMNS,
     CROSS_GAMMA_SENSITIVITY,
@@ -55,14 +55,14 @@ from core.s09_cross_gamma import (
     cross_gamma_market_scope,
     validate_cross_gamma_rows,
 )
-from feeds.s01_sources import (
+from rebirth.services.sources import (
     get_portfolio_config,
     get_product_connector_adapters,
     get_reported_underlyings,
     get_risk_checker,
     get_risk_thresholds,
 )
-from shared.aggregation import (
+from rebirth.ui.aggregation import (
     apply_credit_measure,
     credit_measure_available,
     filter_ir_family,

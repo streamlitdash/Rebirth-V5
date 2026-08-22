@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from core.s02_pipeline import (
+from rebirth.domain.products import (
     CASH_FLOW_PRODUCT_SPEC,
     DIRECT_PL_CLASSIFICATIONS,
     DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE,
@@ -24,21 +24,21 @@ from core.s02_pipeline import (
     RISK_THRESHOLD,
     SOURCE_TYPE,
     SPLIT,
-    RiskRefreshManager,
 )
-from core.s09_cross_gamma import (
+from rebirth.services.refresh import RiskRefreshManager
+from rebirth.domain.cross_gamma import (
     CROSS_GAMMA_COLUMNS,
     XGAMMA_SOURCE_RISK_GREEKS,
     XGAMMA_SPLIT,
 )
-from core.s10_new_trades import (
+from rebirth.domain.new_trades import (
     CASHFLOW,
     MARKET,
     NEW_TRADES_SPLIT,
     NEW_TRADE_COLUMNS,
     ROW_TYPE,
 )
-from feeds.s01_sources import (
+from rebirth.services.sources import (
     get_cross_gamma_sensitivities,
     get_new_trades,
     get_portfolio_config,

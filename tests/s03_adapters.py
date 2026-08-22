@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from adapters.s02_ir import (
+from rebirth.adapters.ir import (
     IR_DELTA_CURRENT,
     IR_DELTA_OPEN,
     IR_DELTA_RISK,
@@ -17,13 +17,13 @@ from adapters.s02_ir import (
     IR_DELTAVEGA_RISK,
     build_ir_adapters,
 )
-from adapters.s08_commo import (
+from rebirth.adapters.commodities import (
     COMMO_DELTA_CURRENT,
     COMMO_DELTA_OPEN,
     COMMO_DELTA_RISK,
     build_commo_adapter,
 )
-from adapters.s04_credit import (
+from rebirth.adapters.credit import (
     CREDIT_DELTA_CURRENT,
     CREDIT_DELTA_OPEN,
     CREDIT_DELTA_RISK,
@@ -31,31 +31,34 @@ from adapters.s04_credit import (
     CREDIT_DELTA_RISK_REGION_BASE,
     build_credit_adapter,
 )
-from core.s02_pipeline import (
-    MARKET_STATUS,
-    OFFICIAL,
-    PRODUCT_SPECS,
+from rebirth.domain.calculations import (
     get_product_market_status,
     get_product_risk,
 )
+from rebirth.domain.products import MARKET_STATUS, OFFICIAL, PRODUCT_SPECS
 
 
-ADAPTERS = Path(__file__).resolve().parents[1] / "adapters"
+ADAPTERS = Path(__file__).resolve().parents[1] / "rebirth" / "adapters"
 
 
-def test_adapter_module_numbers_are_unique_and_sequential() -> None:
+def test_v4_adapter_modules_have_descriptive_single_owners() -> None:
     expected = [
-        "s01_common.py",
-        "s02_ir.py",
-        "s03_fx.py",
-        "s04_credit.py",
-        "s05_stock.py",
-        "s06_new_positions.py",
-        "s07_cross_gamma.py",
-        "s08_commo.py",
+        "commodities.py",
+        "common.py",
+        "credit.py",
+        "cross_gamma.py",
+        "fx.py",
+        "ir.py",
+        "new_positions.py",
+        "stock.py",
     ]
 
-    assert sorted(path.name for path in ADAPTERS.glob("s[0-9][0-9]_*.py")) == expected
+    assert (
+        sorted(
+            path.name for path in ADAPTERS.glob("*.py") if path.name != "__init__.py"
+        )
+        == expected
+    )
 
 
 def _frame(columns: tuple[str, ...], rows: list[list[object]]) -> pd.DataFrame:

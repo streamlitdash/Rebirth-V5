@@ -5,10 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from shared.constants import ROW_TOGGLE_CLOSED_GLYPH, ROW_TOGGLE_OPEN_GLYPH
+from rebirth.ui.constants import ROW_TOGGLE_CLOSED_GLYPH, ROW_TOGGLE_OPEN_GLYPH
 
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+def _stylesheet() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((_ROOT / "assets").glob("*.css"))
+    )
 
 
 def test_python_table_toggles_share_one_authoritative_glyph_contract() -> None:
@@ -16,11 +23,11 @@ def test_python_table_toggles_share_one_authoritative_glyph_contract() -> None:
     assert ROW_TOGGLE_CLOSED_GLYPH == "▸"
 
     for relative_path in (
-        Path("pages/risk/search.py"),
-        Path("pages/risk/tables.py"),
-        Path("shared/components.py"),
-        Path("pages/stock/view.py"),
-        Path("pages/pnl/history.py"),
+        Path("rebirth/pages/risk/quick_risk.py"),
+        Path("rebirth/pages/risk/explorer_tables.py"),
+        Path("rebirth/ui/components.py"),
+        Path("rebirth/pages/stock/tables.py"),
+        Path("rebirth/pages/pnl/history.py"),
     ):
         source = (_ROOT / relative_path).read_text(encoding="utf-8")
         assert "ROW_TOGGLE_OPEN_GLYPH" in source
@@ -37,7 +44,7 @@ def _css_rule(source: str, selector: str) -> str:
 
 
 def test_row_toggles_share_fixed_glyph_geometry() -> None:
-    source = (_ROOT / "assets" / "s01_style.css").read_text(encoding="utf-8")
+    source = _stylesheet()
     rule = _css_rule(
         source,
         ".row-toggle,\n.aggregate-row-toggle,\n.quick-search-hierarchy-toggle",
@@ -62,10 +69,10 @@ def test_row_toggles_share_fixed_glyph_geometry() -> None:
 
 
 def test_table_borders_are_solid_and_hierarchy_uses_width_for_emphasis() -> None:
-    stylesheet = (_ROOT / "assets" / "s01_style.css").read_text(encoding="utf-8")
+    stylesheet = _stylesheet()
     semantic_sources = "\n".join(
         path.read_text(encoding="utf-8")
-        for root in (_ROOT / "pages", _ROOT / "shared")
+        for root in (_ROOT / "rebirth" / "pages", _ROOT / "pages", _ROOT / "shared")
         for path in sorted(root.rglob("*.py"))
     )
     border_pattern = re.compile(
@@ -81,7 +88,7 @@ def test_table_borders_are_solid_and_hierarchy_uses_width_for_emphasis() -> None
 
 
 def test_dark_theme_styles_date_inputs_and_calendar_surface() -> None:
-    stylesheet = (_ROOT / "assets" / "s01_style.css").read_text(encoding="utf-8")
+    stylesheet = _stylesheet()
 
     for selector in (
         ".SingleDatePickerInput",
@@ -97,7 +104,7 @@ def test_dark_theme_styles_date_inputs_and_calendar_surface() -> None:
 
 
 def test_quick_risk_client_sync_preserves_canonical_disclosure_state() -> None:
-    source = (_ROOT / "assets" / "s02_app.js").read_text(encoding="utf-8")
+    source = (_ROOT / "assets" / "50_risk_events.js").read_text(encoding="utf-8")
     start = source.index("const syncQuickSearchHierarchy")
     end = source.index("const toggleQuickSearchHierarchy", start)
     sync = source[start:end]

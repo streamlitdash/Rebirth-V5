@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import core.history as history_module
-from core.history import (
+from rebirth.history import sql_store as history_store_module
+from rebirth.history import (
     HISTORY_HANDOFF_SCHEMA_VERSION,
     ORDER_AMBIGUOUS,
     ORDERED,
@@ -25,9 +25,9 @@ from core.history import (
     RiskFilterView,
     resolve_actual_period_dates,
 )
-from core.s02_pipeline import PRODUCT_SPECS_BY_SOURCE_TYPE
-from core.s03_search import SearchCatalog
-from core.s11_risk_archive import (
+from rebirth.domain.products import PRODUCT_SPECS_BY_SOURCE_TYPE
+from rebirth.domain.search import SearchCatalog
+from rebirth.history import (
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_COLUMNS,
     MARKET_ARCHIVE_COLUMNS,
@@ -598,8 +598,8 @@ def test_repository_is_lazy_bounded_and_generation_includes_new_leaves(
     repository = ArchiveHistoryRepository(tmp_path, max_rows=1)
     before = repository.generation()
     monkeypatch.setattr(
-        history_module,
-        "load_risk_history_for_identity",
+        repository._store,
+        "available_dates",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("read invoked")),
     )
     with pytest.raises(RuntimeError, match="read invoked"):
@@ -625,3 +625,45 @@ def test_repository_is_lazy_bounded_and_generation_includes_new_leaves(
         repository.read(HistoryQuery(_handoff("ir/delta")))
     repository.clear_reconstructable_cache()
     assert (tmp_path / "2026-08-03" / "_SUCCESS").is_file()
+
+
+def test_catalog_and_exact_reads_share_one_validated_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cells = _cells("ir/delta", ("1Y", "N/A", 0, pd.NA, 3.0))
+    _archive_day(
+        tmp_path,
+        "2026-08-03",
+        "ir/delta",
+        _risk_frame("ir/delta", cells),
+        _market_frame("ir/delta", cells, "2026-08-03"),
+    )
+    calls = 0
+    real_open = history_store_module.open_history_query_database
+
+    def counted_open(root):
+        nonlocal calls
+        calls += 1
+        return real_open(root)
+
+    monkeypatch.setattr(
+        history_store_module,
+        "open_history_query_database",
+        counted_open,
+    )
+    repository = ArchiveHistoryRepository(tmp_path)
+    catalog = repository.catalog()
+    risk = next(
+        entry
+        for entry in catalog.entries
+        if entry.kind == "risk" and entry.identity.identity_mode == "reported"
+    )
+    market = next(entry for entry in catalog.entries if entry.kind == "market")
+
+    risk_bundle = repository.read(HistoryQuery(risk.to_handoff()))
+    market_bundle = repository.read(HistoryQuery(market.to_handoff()))
+
+    assert calls == 1
+    assert risk_bundle.raw_rows["Risk"].tolist() == [3.0]
+    assert market_bundle.raw_rows["Current"].tolist() == [3.0]

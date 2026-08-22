@@ -6,12 +6,12 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from core.s02_pipeline import apply_thresholds
-from core.s03_search import (
+from rebirth.domain.governance import apply_baseline_promotions, apply_thresholds
+from rebirth.domain.search import (
     MARKET_RESULT_COLUMNS,
     SearchCatalog,
 )
-from core.s06_reporting import (
+from rebirth.domain.reporting import (
     REPORTED_UNDERLYING,
     REPORTED_UNDERLYING_COLUMNS,
     attach_reported_underlying,
@@ -218,6 +218,73 @@ def test_thresholds_promote_a_reported_underlying_total() -> None:
     assert promoted["Display Bucket"].eq("CNx").all()
     assert promoted["Promotion Reason"].eq("Big Risk").all()
     assert promoted["Promotion Score"].eq(1.2).all()
+
+
+def test_baseline_promotion_scopes_calculation_without_dropping_rows() -> None:
+    positions = pd.DataFrame(
+        [
+            ["usd-a1", "IR", "Delta", "USD", "Desk", True, "Activity 1", 60.0],
+            ["usd-a4", "IR", "Delta", "USD", "Desk", True, "Activity 4", 60.0],
+            ["gbp-a1", "IR", "Delta", "GBP", "Desk", True, "Macro", 110.0],
+            ["gbp-a4", "IR", "Delta", "GBP", "Desk", True, "Activity 4", 500.0],
+            ["jpy-a4", "IR", "Delta", "JPY", "Desk", True, "Activity 4", 150.0],
+            [
+                "chf-unmapped",
+                "IR",
+                "Delta",
+                "CHF",
+                "Unmapped",
+                False,
+                "FAKE_REPLACE_ME - Activity 1",
+                1_000.0,
+            ],
+        ],
+        columns=[
+            "Row",
+            "Risk Type",
+            "Risk Greek",
+            REPORTED_UNDERLYING,
+            "Group",
+            "Portfolio Mapped",
+            "Activity",
+            "Risk",
+        ],
+    )
+    positions["dRisk"] = 0.0
+    positions["PL"] = 0.0
+    thresholds = pd.DataFrame(
+        [["IR", "Delta", 100.0, 100.0, 100.0]],
+        columns=[
+            "Risk Type",
+            "Risk Greek",
+            "Risk Threshold",
+            "dRisk Threshold",
+            "PL Threshold",
+        ],
+    )
+
+    promoted = apply_baseline_promotions(positions, thresholds)
+
+    assert promoted["Row"].tolist() == positions["Row"].tolist()
+    assert promoted["Risk"].tolist() == positions["Risk"].tolist()
+    assert (
+        promoted[["Risk Threshold", "dRisk Threshold", "PL Threshold"]]
+        .eq(100.0)
+        .all()
+        .all()
+    )
+
+    by_row = promoted.set_index("Row")
+    assert by_row.loc["usd-a1", "Promotion Score"] == pytest.approx(0.6)
+    assert by_row.loc["usd-a4", "Promotion Score"] == pytest.approx(0.6)
+    assert by_row.loc["usd-a4", "Promotion Reason"] == ""
+    assert by_row.loc["gbp-a1", "Promotion Score"] == pytest.approx(1.1)
+    assert by_row.loc["gbp-a4", "Promotion Score"] == pytest.approx(1.1)
+    assert by_row.loc["gbp-a4", "Promotion Reason"] == "Big Risk"
+    assert by_row.loc["jpy-a4", "Display Bucket"] == "Other"
+    assert by_row.loc["jpy-a4", "Promotion Reason"] == ""
+    assert by_row.loc["jpy-a4", "Promotion Score"] == 0.0
+    assert by_row.loc["chf-unmapped", "Promotion Score"] == 0.0
 
 
 def test_quick_risk_uses_reported_identity_but_quick_market_stays_raw() -> None:

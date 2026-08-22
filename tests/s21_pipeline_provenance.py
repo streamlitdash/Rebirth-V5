@@ -1,18 +1,22 @@
-"""Regression tests for recovered pipeline references kept inline."""
+"""Regression tests for recovered references kept with their V4 owners."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from core.s02_pipeline import MMM_FILE, PRODUCT_SPECS, risk_date_for
+from rebirth.domain.calculations import risk_date_for
+from rebirth.domain.products import MMM_FILE, PRODUCT_SPECS
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-PIPELINE = PROJECT / "core" / "s02_pipeline.py"
+PIPELINE_FILES = (
+    PROJECT / "rebirth" / "domain" / "products.py",
+    PROJECT / "rebirth" / "domain" / "calculations.py",
+)
 
 
 def test_recovered_pipeline_contracts_are_inline_and_comment_only() -> None:
-    text = PIPELINE.read_text(encoding="utf-8")
+    text = "\n".join(path.read_text(encoding="utf-8") for path in PIPELINE_FILES)
 
     for marker in (
         "RECOVERED ORIGINAL RISK-CHECKER FIELD (COMMENTED OUT)",
@@ -27,7 +31,7 @@ def test_recovered_pipeline_contracts_are_inline_and_comment_only() -> None:
     ):
         assert marker in text
 
-    assert not any((PROJECT / "core").rglob("*.disabled"))
+    assert not list((PROJECT / "core").glob("*.py"))
 
 
 def test_active_pipeline_remains_on_validated_csv_compatible_contract() -> None:
