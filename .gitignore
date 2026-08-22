@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.agents/
+.codex/
+outputs/
+output/
+.coverage
+htmlcov/
+tmp/
+*.log
+.env
+.env.*
+!*.example
+adjustments/
+# The governed schema-v4 Parquet fixtures and their completion markers are
+# intentionally versioned. Runtime leaves remain visible so they cannot be
+# mistaken for, or silently bundled with, the checked-in fixture archive.
+data/histo/.*.pending-*/
+# DuckDB is opened in memory over Parquet. Never persist local scratch databases.
+*.duckdb
+*.duckdb.wal
+secrets/
+private_data/
+credentials.json
+*.pem
+*.key
