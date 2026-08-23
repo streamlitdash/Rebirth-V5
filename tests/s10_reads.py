@@ -84,6 +84,7 @@ def test_refresh_can_skip_its_result_copy_and_logs_bounded_metrics(
         if item.getMessage().startswith("Cube refresh metrics:")
     )
     metrics = record.cube_metrics
+    assert metrics["reason"] == "status"
     assert metrics["call_counts"]["risk"] == 16
     assert metrics["call_counts"]["pl"] == 16
     assert metrics["call_counts"]["result_copy"] == 0

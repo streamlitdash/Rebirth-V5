@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 from dash import no_update
+from dash.exceptions import PreventUpdate
 from rebirth.services.s05_sources import build_production_refresh_manager
 from rebirth.pages.risk import s15_refresh as risk_callbacks
 from rebirth.pages.risk import s02_state as risk_state
@@ -184,6 +185,69 @@ def test_clear_cache_callback_publishes_generation_and_clears_date_state(
     assert result[7:] == (1, 1)
     assert manager.snapshot.forced_dates == {}
     assert manager.snapshot.forced_view_date is None
+
+
+def test_remounted_zero_click_controls_do_not_start_another_refresh(
+    monkeypatch,
+) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    callback = _callback_for_output(app, "refresh-commit-revision", "children")[
+        "callback"
+    ].__wrapped__
+    baseline_revision = manager.health.revision
+    click_ids = (
+        "refresh-portfolios-button",
+        "refresh-pl-button",
+        "reload-risk-button",
+        "force-risk-apply-button",
+        "clear-cache-button",
+        "commo-market-toggle",
+        "risk-checker-toggle",
+    )
+
+    for component_id in click_ids:
+        monkeypatch.setattr(
+            risk_callbacks,
+            "ctx",
+            SimpleNamespace(
+                triggered_id=component_id,
+                triggered_prop_ids={f"{component_id}.n_clicks": component_id},
+            ),
+        )
+        try:
+            callback(0, 0, 0, 0, 0, 0, 0, 0, {}, True, 0, 0)
+        except PreventUpdate:
+            pass
+        else:  # pragma: no cover - explicit failure keeps the callback contract clear
+            raise AssertionError(f"{component_id} accepted a zero-click mount event")
+
+    assert manager.health.revision == baseline_revision
+
+
+def test_positive_pl_click_still_runs_one_manual_refresh(monkeypatch) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    callback = _callback_for_output(app, "refresh-commit-revision", "children")[
+        "callback"
+    ].__wrapped__
+    baseline_revision = manager.health.revision
+    monkeypatch.setattr(
+        risk_callbacks,
+        "ctx",
+        SimpleNamespace(
+            triggered_id="refresh-pl-button",
+            triggered_prop_ids={"refresh-pl-button.n_clicks": "refresh-pl-button"},
+        ),
+    )
+
+    result = callback(0, 0, 1, 0, 0, 0, 0, 0, {}, True, 0, 0)
+
+    assert manager.health.revision == baseline_revision + 1
+    assert manager.snapshot.refresh_reason == "manual P&L"
+    assert result[0] == manager.health.revision
 
 
 def test_cold_risk_body_can_exclude_every_shared_lifecycle_id() -> None:

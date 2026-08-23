@@ -88,12 +88,14 @@ def _safe_failure_location(error: BaseException) -> str:
 
 def _log_refresh_metrics(
     *,
+    reason: str,
     stage_durations_seconds: Mapping[str, float],
     call_counts: Mapping[str, int],
     row_counts: Mapping[str, int],
 ) -> None:
     """Publish one bounded, identity-free metrics record for a completed refresh."""
     metrics = {
+        "reason": reason,
         "stage_durations_seconds": dict(stage_durations_seconds),
         "call_counts": dict(call_counts),
         "row_counts": dict(row_counts),

@@ -1631,6 +1631,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 self._finish_progress()
                 try:
                     _log_refresh_metrics(
+                        reason=reason,
                         stage_durations_seconds=stage_durations,
                         call_counts={
                             "risk": len(risk_specs),

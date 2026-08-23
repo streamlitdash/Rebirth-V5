@@ -529,6 +529,21 @@ def register_refresh_callbacks(
             triggered = ctx.triggered_id
             if isinstance(triggered, str):
                 triggered_ids.add(triggered)
+            click_counts = {
+                "refresh-portfolios-button": _portfolio_clicks,
+                "refresh-pl-button": _pl_clicks,
+                "reload-risk-button": _risk_clicks,
+                "force-risk-apply-button": _apply_clicks,
+                "clear-cache-button": _clear_clicks,
+                "commo-market-toggle": _commodity_clicks,
+                "risk-checker-toggle": _checker_clicks,
+            }
+            triggered_ids = {
+                component_id
+                for component_id in triggered_ids
+                if component_id not in click_counts
+                or int(click_counts[component_id] or 0) > 0
+            }
 
             current_snapshot = refresh_manager.control_snapshot
             current_applied = snapshot_forced_dates(current_snapshot)
