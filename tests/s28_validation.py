@@ -151,6 +151,17 @@ def test_comparison_never_presents_a_partial_predict_total() -> None:
     assert comparison.loc[0, "colossus"] == 12.0
 
 
+def test_comparison_vectorized_totals_keep_all_missing_drisk_unavailable() -> None:
+    risk = _raw_risk()
+    risk["dRisk"] = float("nan")
+
+    comparison = build_validate_pl_comparison(risk, _colossus())
+
+    assert comparison.loc[0, "risk"] == 30.0
+    assert pd.isna(comparison.loc[0, "drisk"])
+    assert comparison.loc[0, "pl"] == 10.0
+
+
 def test_comparison_maps_known_colossus_only_and_audits_unknown_once() -> None:
     colossus = pd.concat(
         [
@@ -488,7 +499,7 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
         and getattr(component, "className", None) == "risk-table validate-pl-table"
         for component in _walk(table)
     )
-    original_load = validate_pl_module.load_risk_archive
+    original_load = validate_pl_module.load_risk_colossus_archive
     reloads = 0
 
     def counted_load(*args, **kwargs):
@@ -496,7 +507,11 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
         reloads += 1
         return original_load(*args, **kwargs)
 
-    monkeypatch.setattr(validate_pl_module, "load_risk_archive", counted_load)
+    monkeypatch.setattr(
+        validate_pl_module,
+        "load_risk_colossus_archive",
+        counted_load,
+    )
     _table, _status, refreshed_key = render(selected, None, 1, 1, render_key)
     assert reloads == 1
     assert '"cache_generation":1' in refreshed_key
@@ -508,7 +523,7 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
 
     monkeypatch.setattr(
         validate_pl_module,
-        "load_risk_archive",
+        "load_risk_colossus_archive",
         lambda *_args: (_ for _ in ()).throw(
             AssertionError("unchanged or closed validation reloaded its archive")
         ),
@@ -517,6 +532,47 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
         render(selected, None, 3, 2, newest_key)
     with pytest.raises(PreventUpdate):
         render(selected, None, 2, 2, None)
+
+
+def test_validate_pl_bounds_comparison_cache_to_eight_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = Dash(__name__)
+    app.layout = html.Div(
+        [
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            dcc.Store(id="clear-cache-complete-store"),
+            build_pl_filter_bar(),
+            build_validate_pl_section(),
+        ]
+    )
+    register_validate_pl_callbacks(app, tmp_path)
+    render = next(
+        metadata["callback"].__wrapped__
+        for metadata in app.callback_map.values()
+        if "pl-validate-table.children" in str(metadata["output"])
+    )
+    loaded_dates: list[str] = []
+    archive = SimpleNamespace(risk=_raw_risk(), colossus=_colossus())
+
+    def load_archive(_root, market_date):
+        loaded_dates.append(str(market_date))
+        return archive
+
+    monkeypatch.setattr(
+        validate_pl_module,
+        "load_risk_colossus_archive",
+        load_archive,
+    )
+    dates = [f"2026-08-{day:02d}" for day in range(1, 10)]
+    for market_date in dates:
+        render(market_date, None, 1, None, None)
+
+    render(dates[-1], None, 1, None, None)
+    render(dates[0], None, 1, None, None)
+
+    assert loaded_dates == [*dates, dates[0]]
 
 
 def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> None:

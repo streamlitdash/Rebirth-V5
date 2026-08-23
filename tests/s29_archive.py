@@ -39,6 +39,7 @@ from rebirth.domain.s08_pnl import (
     CATEGORY,
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
+    HISTORY_DIMENSION_COLUMNS,
     HISTORY_MAPPING_STATUS,
     HISTORY_IDENTITY_COLUMNS,
     HISTORY_TYPE,
@@ -75,6 +76,7 @@ from rebirth.history import (
     list_completed_market_dates,
     load_market_history_for_identity,
     load_risk_archive,
+    load_risk_colossus_archive,
     load_risk_history_for_identity,
     load_stock_archive_frame,
     load_shared_pl_history,
@@ -376,6 +378,41 @@ def test_new_official_archive_manifest_covers_market_parquet(tmp_path: Path) -> 
     assert dict(loaded.risk_dates) == manifest["risk_dates"]
 
 
+def test_risk_colossus_loader_validates_leaf_without_decoding_market(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = archive_official_snapshot(
+        _snapshot(),
+        lambda _date: _colossus(),
+        tmp_path,
+    )
+    real_read = archive_io_module._read_archive_frame
+
+    def read_without_market(path, **kwargs):
+        assert path.name != MARKET_FILE_NAME
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(archive_io_module, "_read_archive_frame", read_without_market)
+    monkeypatch.setattr(
+        archive_io_module,
+        "validate_market_archive_frame",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Market validation must remain lazy")
+        ),
+    )
+
+    loaded = load_risk_colossus_archive(tmp_path, result.market_date)
+
+    assert loaded.market is None
+    assert len(loaded.risk) == len(_risk())
+    assert len(loaded.colossus) == len(_colossus())
+
+    (result.path / MARKET_FILE_NAME).unlink()
+    with pytest.raises(RiskArchiveValidationError, match="incomplete or invalid"):
+        load_risk_colossus_archive(tmp_path, result.market_date)
+
+
 def test_duckdb_history_uses_only_explicit_completed_v4_leaves(
     tmp_path: Path,
 ) -> None:
@@ -576,6 +613,45 @@ def test_sql_pl_repository_matches_projected_history_and_stays_bounded(
     assert fx_delta[PL_RISK_SUMMARY_YTD] == pytest.approx(official)
     cached = repository.risk_summary()
     pd.testing.assert_frame_equal(cached.summary, risk_summary.summary)
+
+    latest_date = pd.Timestamp(risk_summary.as_of_date)
+    dated_expected = expected.assign(
+        **{"Market Date": pd.to_datetime(expected["Market Date"], errors="raise")}
+    )
+    for column in HISTORY_DIMENSION_COLUMNS:
+        selected = str(expected[column].iloc[0])
+        matches = expected[column].astype(str).str.casefold().eq(selected.casefold())
+        for exclude_selected in (False, True):
+            scope = dated_expected.loc[~matches if exclude_selected else matches]
+            filtered_summary = repository.risk_summary(
+                filters={column: [selected]},
+                exclude_selected=exclude_selected,
+            )
+            root = filtered_summary.summary.loc[
+                filtered_summary.summary[PL_RISK_SUMMARY_PATH].map(
+                    lambda path: tuple(path) == ()
+                )
+            ].iloc[0]
+            periods = (
+                (PL_RISK_SUMMARY_CURRENT, PREDICT_TYPE, latest_date),
+                (PL_RISK_SUMMARY_MTD, COLOSSUS_TYPE, latest_date.replace(day=1)),
+                (
+                    PL_RISK_SUMMARY_YTD,
+                    COLOSSUS_TYPE,
+                    latest_date.replace(month=1, day=1),
+                ),
+            )
+            for metric, history_type, start in periods:
+                expected_value = scope.loc[
+                    scope[HISTORY_TYPE].eq(history_type)
+                    & scope["Market Date"].between(start, latest_date),
+                    "PL",
+                ].sum(min_count=1)
+                if pd.isna(expected_value):
+                    assert pd.isna(root[metric])
+                else:
+                    assert root[metric] == pytest.approx(expected_value)
+
     selected_activity = str(expected[ACTIVITY].iloc[0])
     filtered_expected = expected.loc[expected[ACTIVITY].eq(selected_activity)]
     filtered_hierarchy = repository.hierarchy(filters={ACTIVITY: [selected_activity]})

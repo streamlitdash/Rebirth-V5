@@ -159,6 +159,8 @@ while its disclosure is closed, reuses an unchanged rendered result, and builds
 the hierarchy once for a new date/filter state. Chevrons then expand only their
 local subtree in the browser without rerunning the comparison. Missing
 historical dates remain missing rather than being silently filled with zero.
+Validation reads only the Risk and Colossus payloads it consumes and retains at
+most the eight most recently used date comparisons in process memory.
 
 ### Statics
 
@@ -252,7 +254,9 @@ Data and Stock open their in-memory history connections only after history is
 requested. P&L deliberately opens its own summary query when that page is
 entered so Today/MTD/YTD are immediately available; its leaf series remains
 click-driven. Every owner pushes exact identity, date, and column predicates
-into Parquet scans. Connections and distinct catalogues are reused while the
+into Parquet scans. The P&L overview reads only current-year files for YTD/MTD
+and the latest Risk file for Today, rather than scanning obsolete periods.
+Connections and distinct catalogues are reused while the
 archive-generation fingerprint is unchanged, then discarded after Clear Cache
 or an archive change. Query and browser-payload budgets keep results bounded.
 
@@ -487,7 +491,7 @@ Run the complete gate before a release:
 The benchmark is read-only. It audits a fresh-process import/app build for
 unexpected I/O, a spot refresh, prepare/filter/Cross operations on a
 100,000-row and 500-portfolio fixture, and the first Risk, Market, Stock, and
-P&L queries across all 262 leaves. The enforced local regression budgets are
+P&L overview queries across all 262 leaves. The enforced local regression budgets are
 2.0 s for app build, 2.0 s for spot refresh, 2.5 s for preparation, 0.5 s for
 filtering, 1.5 s for Cross, and 2.5/2.0/2.5/3.5 s for the first
 Risk/Market/Stock/P&L history queries. Absolute times remain hardware-dependent;

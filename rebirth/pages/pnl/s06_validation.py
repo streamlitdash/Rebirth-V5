@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import logging
 from pathlib import Path
@@ -36,7 +37,7 @@ from rebirth.history import (
     RISK,
     build_history_portfolio_authority,
     list_completed_market_dates,
-    load_risk_archive,
+    load_risk_colossus_archive,
     validate_risk_archive_frame,
 )
 
@@ -67,6 +68,7 @@ VALIDATE_PL_JOIN_KEYS = (
 VALIDATE_PL_GROUPS = VALIDATE_PL_JOIN_KEYS
 VALIDATE_PL_METRICS = ("risk", "drisk", "pl", "colossus")
 VALIDATE_PL_CHILD_LIMIT = 10
+_VALIDATE_PL_CACHE_DATES = 8
 VALIDATE_PL_DIMENSION_COLUMNS = (
     ACTIVITY,
     SIGNOFF_GROUP,
@@ -223,18 +225,21 @@ def build_validate_pl_comparison(
         prepared[column] = values.astype(str).str.strip()
 
     authority = build_history_portfolio_authority(prepared)
-    predicted = prepared.groupby(
+    grouped = prepared.groupby(
         list(VALIDATE_PL_JOIN_KEYS),
-        as_index=False,
+        as_index=True,
         dropna=False,
         sort=False,
-    ).agg(
-        risk=(RISK, lambda values: values.sum(min_count=1)),
-        drisk=(DRISK, lambda values: values.sum(min_count=1)),
-        # One unavailable archived tenor makes this hierarchy-level Predict value
-        # unavailable. Never present a partial P as the complete comparison.
-        pl=(PL, lambda values: values.sum(min_count=len(values))),
     )
+    predicted = (
+        grouped[[RISK, DRISK, PL]]
+        .sum(min_count=1)
+        .rename(columns={RISK: "risk", DRISK: "drisk", PL: "pl"})
+    )
+    # One unavailable archived tenor makes this hierarchy-level Predict value
+    # unavailable. Never present a partial P as the complete comparison.
+    predicted.loc[grouped[PL].count().ne(grouped.size()), "pl"] = np.nan
+    predicted = predicted.reset_index()
     actual = _normalize_colossus(colossus)
     actual = actual.merge(
         authority,
@@ -746,7 +751,7 @@ def build_validate_pl_section() -> html.Details:
 def register_validate_pl_callbacks(app, root: str | Path) -> None:
     """Register lazy official-date discovery and validation-tree callbacks."""
 
-    comparison_cache: dict[str, pd.DataFrame] = {}
+    comparison_cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
     catalog_cache: tuple[str, ...] | None = None
     catalog_generation = -1
     cache_lock = Lock()
@@ -767,6 +772,8 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         selected_generation = ensure_cache_generation(cache_generation)
         with cache_lock:
             cached = comparison_cache.get(market_date)
+            if cached is not None:
+                comparison_cache.move_to_end(market_date)
         if cached is not None:
             with perf_span(
                 LOGGER,
@@ -783,7 +790,7 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
             cache_hit=False,
             operation="load",
         ) as archive_metrics:
-            archive = load_risk_archive(root, market_date)
+            archive = load_risk_colossus_archive(root, market_date)
             archive_metrics["rows"] = len(archive.risk) + len(archive.colossus)
         with perf_span(
             LOGGER,
@@ -797,8 +804,11 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         with cache_lock:
             if selected_generation != catalog_generation:
                 raise PreventUpdate
-            comparison_cache.setdefault(market_date, loaded)
-            return comparison_cache[market_date]
+            cached = comparison_cache.setdefault(market_date, loaded)
+            comparison_cache.move_to_end(market_date)
+            while len(comparison_cache) > _VALIDATE_PL_CACHE_DATES:
+                comparison_cache.popitem(last=False)
+            return cached
 
     @app.callback(
         Output("pl-validate-date", "options"),

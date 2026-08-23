@@ -347,7 +347,11 @@ def _completed_leaf_contract(
     return expected_files
 
 
-def _load_completed_leaf(leaf: Path) -> RiskArchive:
+def _load_completed_leaf(
+    leaf: Path,
+    *,
+    include_market: bool = True,
+) -> RiskArchive:
     if not leaf.exists() or not leaf.is_dir():
         raise RiskArchiveValidationError(f"Risk archive leaf does not exist: {leaf}")
     actual_entries = {path.name for path in leaf.iterdir()}
@@ -369,7 +373,7 @@ def _load_completed_leaf(leaf: Path) -> RiskArchive:
         ("colossus", list(COLOSSUS_COLUMNS), int(manifest["colossus_rows"])),
     ]
     market_file_name = _archive_file_name(schema_version, "market")
-    if market_file_name in expected_files:
+    if include_market and market_file_name in expected_files:
         domain_contracts.append(
             ("market", list(MARKET_ARCHIVE_COLUMNS), int(manifest["market_rows"]))
         )
@@ -452,6 +456,18 @@ def load_risk_archive(root: str | Path, market_date: object) -> RiskArchive:
     """Load and validate one completed official daily archive."""
 
     return _load_completed_leaf(archive_leaf_path(root, market_date))
+
+
+def load_risk_colossus_archive(
+    root: str | Path,
+    market_date: object,
+) -> RiskArchive:
+    """Load a completed day's validated Risk and Colossus frames only."""
+
+    return _load_completed_leaf(
+        archive_leaf_path(root, market_date),
+        include_market=False,
+    )
 
 
 def _stock_leaf_fingerprint(leaf: Path) -> tuple[tuple[str, int, int], ...]:
@@ -967,5 +983,6 @@ __all__ = [
     "list_completed_v4_archive_days",
     "list_queryable_v4_archive_days",
     "load_risk_archive",
+    "load_risk_colossus_archive",
     "load_stock_archive_frame",
 ]

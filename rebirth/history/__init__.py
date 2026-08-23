@@ -45,6 +45,7 @@ from .s03_io import (
     list_completed_v4_archive_days,
     list_queryable_v4_archive_days,
     load_risk_archive,
+    load_risk_colossus_archive,
     load_stock_archive_frame,
 )
 from .s04_queries import (
@@ -199,6 +200,7 @@ __all__ = [
     "load_full_market_history_for_identity",
     "load_market_history_for_identity",
     "load_risk_archive",
+    "load_risk_colossus_archive",
     "load_risk_history_for_identity",
     "load_shared_pl_history",
     "load_stock_archive_frame",

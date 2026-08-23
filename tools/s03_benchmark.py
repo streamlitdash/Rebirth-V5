@@ -337,10 +337,10 @@ def run_benchmarks() -> list[BenchmarkResult]:
     pnl = SQLPLHistoryRepository(ARCHIVE_ROOT)
     results.append(
         _measure(
-            "history.pnl.first",
+            "history.pnl.overview.first",
             3_500,
-            pnl.hierarchy,
-            lambda value: (len(value.summary), value.date_count, None),
+            pnl.risk_summary,
+            lambda value: (len(value.summary), None, None),
         )
     )
     return results

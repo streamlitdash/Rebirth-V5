@@ -435,6 +435,35 @@ def _empty_view(
     connection.execute(f"CREATE VIEW {name} AS SELECT {projection} WHERE FALSE")
 
 
+def _create_seed_table(
+    connection: duckdb.DuckDBPyConnection,
+    name: str,
+    columns: Sequence[tuple[str, str]],
+    rows: Sequence[Sequence[object]],
+) -> None:
+    """Bulk-load a tiny metadata table without per-row DuckDB calls."""
+
+    schema = ", ".join(f'"{column}" {data_type}' for column, data_type in columns)
+    connection.execute(f'CREATE TABLE "{name}" ({schema})')
+    if not rows:
+        return
+    seed_name = f"{name}_seed"
+    frame = pd.DataFrame.from_records(
+        rows,
+        columns=[column for column, _data_type in columns],
+    )
+    projection = ", ".join(
+        f'CAST("{column}" AS {data_type})' for column, data_type in columns
+    )
+    connection.register(seed_name, frame)
+    try:
+        connection.execute(
+            f'INSERT INTO "{name}" SELECT {projection} FROM "{seed_name}"'
+        )
+    finally:
+        connection.unregister(seed_name)
+
+
 def _create_empty_archive_views(connection: duckdb.DuckDBPyConnection) -> None:
     _empty_view(
         connection,
@@ -540,22 +569,19 @@ def _create_archive_views(
             stock_paths, filename=True, union_by_name=False
         ).create_view("_stock_files")
 
-    connection.execute(
-        """
-        CREATE TABLE _archive_files (
-            snapshot_date DATE,
-            revision BIGINT,
-            stock_date DATE,
-            risk_dates JSON,
-            risk_path VARCHAR,
-            colossus_path VARCHAR,
-            market_path VARCHAR,
-            stock_path VARCHAR
-        )
-        """
-    )
-    connection.executemany(
-        "INSERT INTO _archive_files VALUES (?, ?, ?, ?::JSON, ?, ?, ?, ?)",
+    _create_seed_table(
+        connection,
+        "_archive_files",
+        (
+            ("snapshot_date", "DATE"),
+            ("revision", "BIGINT"),
+            ("stock_date", "DATE"),
+            ("risk_dates", "JSON"),
+            ("risk_path", "VARCHAR"),
+            ("colossus_path", "VARCHAR"),
+            ("market_path", "VARCHAR"),
+            ("stock_path", "VARCHAR"),
+        ),
         [
             (
                 day.snapshot_date,
@@ -570,12 +596,14 @@ def _create_archive_views(
             for day in days
         ],
     )
-    connection.execute(
-        "CREATE TABLE _archive_risk_dates ("
-        "snapshot_date DATE, source_type VARCHAR, risk_date DATE)"
-    )
-    connection.executemany(
-        "INSERT INTO _archive_risk_dates VALUES (?, ?, ?)",
+    _create_seed_table(
+        connection,
+        "_archive_risk_dates",
+        (
+            ("snapshot_date", "DATE"),
+            ("source_type", "VARCHAR"),
+            ("risk_date", "DATE"),
+        ),
         [
             (day.snapshot_date, source_type, risk_date)
             for day in days
@@ -715,12 +743,14 @@ def _create_pl_archive_views(
         filename=True,
         union_by_name=False,
     ).create_view("_colossus_files")
-    connection.execute(
-        "CREATE TABLE _pl_archive_files ("
-        "snapshot_date DATE, risk_path VARCHAR, colossus_path VARCHAR)"
-    )
-    connection.executemany(
-        "INSERT INTO _pl_archive_files VALUES (?, ?, ?)",
+    _create_seed_table(
+        connection,
+        "_pl_archive_files",
+        (
+            ("snapshot_date", "DATE"),
+            ("risk_path", "VARCHAR"),
+            ("colossus_path", "VARCHAR"),
+        ),
         [
             (
                 day.snapshot_date,
@@ -895,13 +925,15 @@ def open_history_query_database(root: str | Path) -> duckdb.DuckDBPyConnection:
             filename=True,
             union_by_name=False,
         ).create_view("_market_files")
-        connection.execute(
-            "CREATE TABLE _history_files ("
-            "snapshot_date DATE, revision BIGINT, risk_path VARCHAR, "
-            "market_path VARCHAR)"
-        )
-        connection.executemany(
-            "INSERT INTO _history_files VALUES (?, ?, ?, ?)",
+        _create_seed_table(
+            connection,
+            "_history_files",
+            (
+                ("snapshot_date", "DATE"),
+                ("revision", "BIGINT"),
+                ("risk_path", "VARCHAR"),
+                ("market_path", "VARCHAR"),
+            ),
             [
                 (
                     day.snapshot_date,
@@ -912,12 +944,14 @@ def open_history_query_database(root: str | Path) -> duckdb.DuckDBPyConnection:
                 for day in days
             ],
         )
-        connection.execute(
-            "CREATE TABLE _history_risk_dates ("
-            "snapshot_date DATE, source_type VARCHAR, risk_date DATE)"
-        )
-        connection.executemany(
-            "INSERT INTO _history_risk_dates VALUES (?, ?, ?)",
+        _create_seed_table(
+            connection,
+            "_history_risk_dates",
+            (
+                ("snapshot_date", "DATE"),
+                ("source_type", "VARCHAR"),
+                ("risk_date", "DATE"),
+            ),
             [
                 (day.snapshot_date, source_type, risk_date)
                 for day in days
@@ -1360,6 +1394,18 @@ class SQLPLHistoryRepository:
             as_of_date = str(as_of)
             month_start = pd.Timestamp(as_of).replace(day=1).date().isoformat()
             year_start = pd.Timestamp(as_of).replace(month=1, day=1).date().isoformat()
+            summary_days = tuple(
+                day
+                for day in days
+                if pd.Timestamp(day.snapshot_date) >= pd.Timestamp(year_start)
+            )
+            risk_paths = tuple(str(day.risk_path.resolve()) for day in summary_days)
+            colossus_paths = tuple(
+                str(day.colossus_path.resolve()) for day in summary_days
+            )
+            risk_placeholders = ", ".join("?" for _path in risk_paths)
+            colossus_placeholders = ", ".join("?" for _path in colossus_paths)
+            latest_risk_path = str(days[-1].risk_path.resolve())
             try:
                 with perf_span(
                     LOGGER,
@@ -1369,11 +1415,88 @@ class SQLPLHistoryRepository:
                 ) as timing:
                     rows = connection.execute(
                         f'''
-                        WITH filtered AS MATERIALIZED (
+                        WITH portfolio_authority AS MATERIALIZED (
+                            SELECT f.snapshot_date AS "{MARKET_DATE}",
+                                   r."{PORTFOLIO}",
+                                   CASE WHEN count(DISTINCT struct_pack(
+                                       signoff := r."{SIGNOFF_GROUP}",
+                                       product := r."{PRODUCT}"
+                                   )) = 1 THEN min(r."{SIGNOFF_GROUP}")
+                                      ELSE 'Unmapped' END AS "{SIGNOFF_GROUP}",
+                                   CASE WHEN count(DISTINCT struct_pack(
+                                       signoff := r."{SIGNOFF_GROUP}",
+                                       product := r."{PRODUCT}"
+                                   )) = 1 THEN min(r."{PRODUCT}")
+                                      ELSE 'Unmapped' END AS "{PRODUCT}",
+                                   CASE WHEN count(DISTINCT r."{ACTIVITY}") = 1
+                                       THEN min(r."{ACTIVITY}")
+                                       ELSE 'Unmapped' END AS "{ACTIVITY}",
+                                   CASE WHEN count(DISTINCT r."{CATEGORY}") = 1
+                                       THEN min(r."{CATEGORY}")
+                                       ELSE 'Unmapped' END AS "{CATEGORY}",
+                                   CASE WHEN count(DISTINCT r."{SUB_CATEGORY}") = 1
+                                       THEN min(r."{SUB_CATEGORY}")
+                                       ELSE 'Unmapped' END AS "{SUB_CATEGORY}"
+                            FROM _risk_files r
+                            JOIN _pl_archive_files f
+                              ON r.filename = f.risk_path
+                            WHERE r.filename IN ({risk_placeholders})
+                            GROUP BY f.snapshot_date, r."{PORTFOLIO}"
+                        ), predict AS (
+                            SELECT f.snapshot_date AS "{MARKET_DATE}",
+                                   r."{SIGNOFF_GROUP}", r."{RISK_TYPE}",
+                                   r."{RISK_GREEK}", r."{UNDERLYING}",
+                                   r."{PRODUCT}", r."{PORTFOLIO}",
+                                   sum(r."{PL}") AS "{PL}"
+                            FROM _risk_files r
+                            JOIN _pl_archive_files f
+                              ON r.filename = f.risk_path
+                            WHERE r.filename = ?
+                            GROUP BY f.snapshot_date, r."{SIGNOFF_GROUP}",
+                                     r."{RISK_TYPE}", r."{RISK_GREEK}",
+                                     r."{UNDERLYING}", r."{PRODUCT}",
+                                     r."{PORTFOLIO}"
+                            HAVING count(r."{PL}") = count(*)
+                        ), projected AS (
+                            SELECT p."{MARKET_DATE}",
+                                   '{PREDICT_TYPE}' AS "{HISTORY_TYPE}",
+                                   a."{ACTIVITY}", p."{SIGNOFF_GROUP}",
+                                   a."{CATEGORY}", a."{SUB_CATEGORY}",
+                                   p."{RISK_TYPE}", p."{RISK_GREEK}",
+                                   p."{UNDERLYING}", p."{PRODUCT}",
+                                   p."{PORTFOLIO}", p."{PL}"
+                            FROM predict p
+                            JOIN portfolio_authority a
+                              ON a."{MARKET_DATE}" = p."{MARKET_DATE}"
+                             AND a."{PORTFOLIO}" = p."{PORTFOLIO}"
+                            UNION ALL BY NAME
+                            SELECT f.snapshot_date AS "{MARKET_DATE}",
+                                   '{COLOSSUS_TYPE}' AS "{HISTORY_TYPE}",
+                                   coalesce(a."{ACTIVITY}", 'Unmapped')
+                                       AS "{ACTIVITY}",
+                                   coalesce(a."{SIGNOFF_GROUP}", 'Unmapped')
+                                       AS "{SIGNOFF_GROUP}",
+                                   coalesce(a."{CATEGORY}", 'Unmapped')
+                                       AS "{CATEGORY}",
+                                   coalesce(a."{SUB_CATEGORY}", 'Unmapped')
+                                       AS "{SUB_CATEGORY}",
+                                   c."{RISK_TYPE}", c."{RISK_GREEK}",
+                                   c."{UNDERLYING}",
+                                   coalesce(a."{PRODUCT}", 'Unmapped')
+                                       AS "{PRODUCT}",
+                                   c."{PORTFOLIO}", c."{PL}"
+                            FROM _colossus_files c
+                            JOIN _pl_archive_files f
+                              ON c.filename = f.colossus_path
+                            LEFT JOIN portfolio_authority a
+                              ON a."{MARKET_DATE}" = f.snapshot_date
+                             AND a."{PORTFOLIO}" = c."{PORTFOLIO}"
+                            WHERE c.filename IN ({colossus_placeholders})
+                        ), filtered AS MATERIALIZED (
                             SELECT h."{MARKET_DATE}", h."{HISTORY_TYPE}",
                                    h."{RISK_TYPE}", h."{RISK_GREEK}",
                                    h."{UNDERLYING}", h."{PL}"
-                            FROM _pl_history h
+                            FROM projected h
                             WHERE {clause}
                         )
                         SELECT "{RISK_TYPE}", "{RISK_GREEK}", "{UNDERLYING}",
@@ -1404,6 +1527,9 @@ class SQLPLHistoryRepository:
                         )
                         ''',
                         [
+                            *risk_paths,
+                            latest_risk_path,
+                            *colossus_paths,
                             *parameters,
                             as_of_date,
                             month_start,
