@@ -96,6 +96,20 @@ def test_dark_semantic_tokens_keep_status_and_financial_rules_readable() -> None
     assert "zaxis: themedAxis(scene.zaxis)" in theme
 
 
+def test_current_and_legacy_date_controls_follow_the_active_theme() -> None:
+    controls = _read("s02_controls.css")
+
+    for selector in (
+        ".dash-datepicker-input",
+        ".dash-datepicker-content",
+        ".dash-datepicker-calendar-date-selected",
+        ".DateInput_input",
+        ".DayPicker__withBorder",
+    ):
+        assert selector in controls
+    assert ".force-risk-check label { color: var(--text) !important" in controls
+
+
 def test_each_script_has_basic_delimiter_integrity() -> None:
     for name in JS_FILES:
         source = _read(name)
