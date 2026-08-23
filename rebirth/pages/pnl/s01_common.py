@@ -40,10 +40,12 @@ PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     fields=PL_FILTER_FIELDS,
     filter_ids=PL_FILTER_IDS,
     exclude_id=PL_FILTER_EXCLUDE_ID,
+    base_label="Base Review",
 )
 PL_FILTER_NOTE = (
-    "Include mode uses OR within one filter (for example B or D) and AND across "
-    "filters. Exclude mode removes a row if it matches any selected value in any "
+    "Base Review starts with Activity 1, 2 and 3. Include mode uses OR within "
+    "one filter (for example B or D) and AND across filters. Exclude mode "
+    "removes a row if it matches any selected value in any "
     "populated filter. Leave blank for all values; live P&L selections remain "
     "independent from Risk and Stock."
 )
@@ -132,6 +134,19 @@ def committed_pl_filter_values(
     return tuple([] for _field in PL_FILTER_FIELDS), []
 
 
+def pl_cache_generation(value: object) -> int:
+    """Normalize the clear-cache store without treating page mount as a reset."""
+
+    if isinstance(value, Mapping):
+        value = value.get("generation", 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def pl_filter_options(frame: pd.DataFrame) -> dict[str, list[dict[str, str]]]:
     """Return stable options for each independent P&L reporting filter."""
     result: dict[str, list[dict[str, str]]] = {}
@@ -217,6 +232,7 @@ __all__ = [
     "SendFunction",
     "apply_pl_filters",
     "committed_pl_filter_values",
+    "pl_cache_generation",
     "pl_external_filter_map",
     "pl_filter_map",
     "pl_filter_options",

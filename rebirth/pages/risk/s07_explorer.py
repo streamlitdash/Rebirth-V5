@@ -127,6 +127,7 @@ def register_explorer_callbacks(
                 Output(component_id, "value"),
             )
         ],
+        Output(RISK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
         Output("risk-filter-exclude-selected", "value"),
         Input("data-revision-store", "data"),
         Input(RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
@@ -134,6 +135,7 @@ def register_explorer_callbacks(
         *[State(component_id, "value") for component_id in dimension_filter_ids],
         State("risk-filter-exclude-selected", "value"),
         State(RISK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
+        State(RISK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
     )
     def update_dimension_filters(
         _revision,
@@ -145,6 +147,7 @@ def register_explorer_callbacks(
         selected_values = values[: len(dimension_filter_ids)]
         exclude_value = values[len(dimension_filter_ids)]
         applied_saved_view_request = values[len(dimension_filter_ids) + 1]
+        initialized = bool(values[len(dimension_filter_ids) + 2])
         try:
             saved_view_triggered = (
                 ctx.triggered_id == RISK_SAVED_VIEW_CONTROLS.apply_request_id
@@ -180,11 +183,10 @@ def register_explorer_callbacks(
                 requested = None
             if requested is not None:
                 selected_values, exclude_value = requested
-        try:
-            filter_triggered_ids = set(ctx.triggered_prop_ids.values())
-        except (AttributeError, LookupError, MissingCallbackContextException):
-            filter_triggered_ids = {ctx.triggered_id}
-        use_default = CLEAR_CACHE_COMPLETE_STORE_ID in filter_triggered_ids or (
+        has_filter_data = not frame.empty
+        use_default = (
+            not initialized and has_filter_data and not saved_view_pending
+        ) or (
             apply_pending
             and isinstance(saved_view_request, Mapping)
             and saved_view_request.get("view_id") == BASE_SAVED_VIEW_ID
@@ -206,7 +208,7 @@ def register_explorer_callbacks(
         ):
             options, valid = options_and_valid(field.key, selected)
             result.extend((options, valid))
-        return (*result, exclude_value or [])
+        return (*result, initialized or has_filter_data, exclude_value or [])
 
     app.clientside_callback(
         """

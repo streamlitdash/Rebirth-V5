@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from threading import Lock
 from typing import Mapping
 
 import numpy as np
 import pandas as pd
-from dash import Input, Output, State, dcc, html
+from dash import Input, Output, State, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
+from rebirth.app.s03_logging import perf_span
 from rebirth.domain.s08_pnl import (
     ACTIVITY,
     CATEGORY,
@@ -49,6 +51,7 @@ from .s01_common import (
     PL_SAVED_VIEW_CONTROLS,
     apply_pl_filters,
     committed_pl_filter_values,
+    pl_cache_generation,
     pl_external_filter_map,
 )
 
@@ -93,6 +96,7 @@ _METRIC_TITLES = {
     "pl": "Predict P&L",
     "colossus": "Colossus P&L",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def _path_token(context: Mapping[str, object]) -> str:
@@ -315,34 +319,55 @@ def build_validate_pl_comparison(
     ).reset_index(drop=True)
 
 
-def _scope(frame: pd.DataFrame, context: Mapping[str, str]) -> pd.DataFrame:
-    scoped = frame
-    for column, value in context.items():
-        scoped = scoped.loc[scoped[column].astype(str).eq(str(value))]
-    return scoped
+def _node_sort_key(
+    level: int,
+    path: tuple[str, ...],
+    metrics: Mapping[str, float],
+) -> tuple[object, ...]:
+    """Preserve the governed hierarchy ordering on pre-aggregated nodes."""
 
-
-def _ordered_values(frame: pd.DataFrame, column: str) -> list[str]:
-    values = frame[column].dropna().astype(str).unique().tolist()
+    label = path[-1]
+    column = VALIDATE_PL_GROUPS[level]
     if column == RISK_TYPE:
-        return sorted(values, key=lambda value: (RISK_TYPE_ORDER.get(value, 99), value))
+        return RISK_TYPE_ORDER.get(label, 99), label.casefold()
     if column == UNDERLYING:
-        ranking = frame.groupby(column, as_index=False, dropna=False)["pl"].sum(
-            min_count=1
-        )
-        ranking["_magnitude"] = ranking["pl"].abs()
-        ranking["_label"] = ranking[column].astype(str).str.casefold()
+        value = metrics["pl"]
         return (
-            ranking.sort_values(
-                ["_magnitude", "_label"],
-                ascending=[False, True],
-                kind="stable",
-                na_position="last",
-            )[column]
-            .astype(str)
-            .tolist()
+            pd.isna(value),
+            0.0 if pd.isna(value) else -abs(float(value)),
+            label.casefold(),
         )
-    return sorted(values, key=lambda value: value.casefold())
+    return (label.casefold(),)
+
+
+def _hierarchy_nodes(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, ...], list[tuple[tuple[str, ...], dict[str, float]]]]:
+    """Aggregate each hierarchy prefix once instead of once per rendered cell."""
+
+    nodes: dict[
+        tuple[str, ...],
+        list[tuple[tuple[str, ...], dict[str, float]]],
+    ] = {}
+    for depth in range(1, len(VALIDATE_PL_GROUPS) + 1):
+        groups = list(VALIDATE_PL_GROUPS[:depth])
+        aggregated = frame.groupby(
+            groups,
+            as_index=False,
+            dropna=False,
+            sort=False,
+        )[list(VALIDATE_PL_METRICS)].sum(min_count=1)
+        for record in aggregated.to_dict("records"):
+            raw_path = [record[column] for column in groups]
+            if any(pd.isna(value) for value in raw_path):
+                continue
+            path = tuple(str(value) for value in raw_path)
+            metrics = {metric: float(record[metric]) for metric in VALIDATE_PL_METRICS}
+            nodes.setdefault(path[:-1], []).append((path, metrics))
+    for parent, children in nodes.items():
+        level = len(parent)
+        children.sort(key=lambda item: _node_sort_key(level, *item))
+    return nodes
 
 
 def _sum_metric(frame: pd.DataFrame, metric: str) -> float:
@@ -371,27 +396,28 @@ def _metric_cell(metric: str, value: float) -> html.Td:
 
 
 def _tree_rows(
-    frame: pd.DataFrame,
+    nodes: Mapping[
+        tuple[str, ...],
+        list[tuple[tuple[str, ...], dict[str, float]]],
+    ],
     open_paths: set[str],
     *,
-    level: int = 0,
-    context: Mapping[str, str] | None = None,
+    parent: tuple[str, ...] = (),
     visible: bool = True,
 ) -> list[html.Tr]:
-    context = dict(context or {})
+    level = len(parent)
     if level >= len(VALIDATE_PL_GROUPS):
         return []
     column = VALIDATE_PL_GROUPS[level]
     rows: list[html.Tr] = []
-    values = _ordered_values(frame, column)[:VALIDATE_PL_CHILD_LIMIT]
-    for value in values:
-        next_context = {**context, column: value}
-        scoped = _scope(frame, {column: value})
-        if scoped.empty:
-            continue
-        token = _path_token(next_context)
-        parent_token = _path_token(context) if context else ""
-        can_expand = level + 1 < len(VALIDATE_PL_GROUPS)
+    for path, metrics in nodes.get(parent, [])[:VALIDATE_PL_CHILD_LIMIT]:
+        value = path[-1]
+        can_expand = path in nodes
+        token = (
+            _path_token(dict(zip(VALIDATE_PL_GROUPS, path, strict=False)))
+            if can_expand
+            else ""
+        )
         is_open = can_expand and token in open_paths
         if can_expand:
             toggle = html.Button(
@@ -422,15 +448,10 @@ def _tree_rows(
                 scope="row",
                 **{"data-metric": "index", "data-copy-value": value},
             ),
-            *(
-                _metric_cell(metric, _sum_metric(scoped, metric))
-                for metric in VALIDATE_PL_METRICS
-            ),
+            *(_metric_cell(metric, metrics[metric]) for metric in VALIDATE_PL_METRICS),
         ]
         props: dict[str, object] = {
             "aria-level": str(level + 1),
-            "data-validate-path": token,
-            "data-validate-parent-path": parent_token,
             "data-validate-depth": str(level),
             "data-validate-open": str(is_open).lower(),
         }
@@ -455,10 +476,9 @@ def _tree_rows(
         if can_expand:
             rows.extend(
                 _tree_rows(
-                    scoped,
+                    nodes,
                     open_paths,
-                    level=level + 1,
-                    context=next_context,
+                    parent=path,
                     visible=visible and is_open,
                 )
             )
@@ -506,7 +526,7 @@ def _validate_tree_table(
         ),
     ]
     rows = [html.Tr(total_cells, className="total-row")]
-    rows.extend(_tree_rows(comparison, open_paths))
+    rows.extend(_tree_rows(_hierarchy_nodes(comparison), open_paths))
     return html.Div(
         [
             html.P(
@@ -714,6 +734,7 @@ def build_validate_pl_section() -> html.Details:
                         type="dot",
                         delay_show=160,
                     ),
+                    dcc.Store(id="pl-validate-render-key", data=None),
                 ],
                 className="pl-send-panel",
             ),
@@ -726,16 +747,56 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
     """Register lazy official-date discovery and validation-tree callbacks."""
 
     comparison_cache: dict[str, pd.DataFrame] = {}
+    catalog_cache: tuple[str, ...] | None = None
+    catalog_generation = -1
     cache_lock = Lock()
 
-    def read_comparison(market_date: str) -> pd.DataFrame:
+    def ensure_cache_generation(cache_generation: object) -> int:
+        nonlocal catalog_cache, catalog_generation
+        selected = pl_cache_generation(cache_generation)
+        with cache_lock:
+            if selected < catalog_generation:
+                raise PreventUpdate
+            if selected > catalog_generation:
+                catalog_cache = None
+                comparison_cache.clear()
+                catalog_generation = selected
+        return selected
+
+    def read_comparison(market_date: str, cache_generation: object) -> pd.DataFrame:
+        selected_generation = ensure_cache_generation(cache_generation)
         with cache_lock:
             cached = comparison_cache.get(market_date)
         if cached is not None:
-            return cached
-        archive = load_risk_archive(root, market_date)
-        loaded = build_validate_pl_comparison(archive.risk, archive.colossus)
+            with perf_span(
+                LOGGER,
+                "pnl.validate.comparison",
+                budget_ms=25,
+                cache_hit=True,
+                rows=len(cached),
+            ):
+                return cached
+        with perf_span(
+            LOGGER,
+            "pnl.validate.archive",
+            budget_ms=350,
+            cache_hit=False,
+            operation="load",
+        ) as archive_metrics:
+            archive = load_risk_archive(root, market_date)
+            archive_metrics["rows"] = len(archive.risk) + len(archive.colossus)
+        with perf_span(
+            LOGGER,
+            "pnl.validate.comparison",
+            budget_ms=500,
+            cache_hit=False,
+            operation="join",
+        ) as comparison_metrics:
+            loaded = build_validate_pl_comparison(archive.risk, archive.colossus)
+            comparison_metrics["rows"] = len(loaded)
         with cache_lock:
+            if selected_generation != catalog_generation:
+                raise PreventUpdate
             comparison_cache.setdefault(market_date, loaded)
             return comparison_cache[market_date]
 
@@ -745,14 +806,32 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         Output("pl-validate-date", "disabled"),
         Output("pl-validate-catalog-status", "children"),
         Input("pl-validate-summary", "n_clicks"),
+        Input("clear-cache-complete-store", "data"),
         State("pl-validate-date", "value"),
         prevent_initial_call=True,
     )
-    def discover_official_dates(summary_clicks, selected_date):
+    def discover_official_dates(summary_clicks, cache_generation, selected_date):
+        nonlocal catalog_cache
         if not int(summary_clicks or 0) % 2:
             raise PreventUpdate
+        selected_generation = ensure_cache_generation(cache_generation)
         try:
-            dates = _available_dates(root)
+            with cache_lock:
+                dates = catalog_cache
+            with perf_span(
+                LOGGER,
+                "pnl.validate.catalog",
+                budget_ms=150,
+                cache_hit=dates is not None,
+                operation="discover",
+            ) as metrics:
+                if dates is None:
+                    dates = _available_dates(root)
+                    with cache_lock:
+                        if selected_generation != catalog_generation:
+                            raise PreventUpdate
+                        catalog_cache = dates
+                metrics["dates"] = len(dates)
         except (OSError, ValueError) as exc:
             return [], None, True, f"Official Risk history could not be listed: {exc}"
         if not dates:
@@ -764,11 +843,23 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
     @app.callback(
         Output("pl-validate-table", "children"),
         Output("pl-validate-status", "children"),
+        Output("pl-validate-render-key", "data"),
         Input("pl-validate-date", "value"),
         Input(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
+        Input("pl-validate-summary", "n_clicks"),
+        Input("clear-cache-complete-store", "data"),
+        State("pl-validate-render-key", "data"),
         prevent_initial_call=True,
     )
-    def render_validate_pl(market_date, committed_filter_state):
+    def render_validate_pl(
+        market_date,
+        committed_filter_state,
+        summary_clicks,
+        cache_generation,
+        current_render_key,
+    ):
+        if not int(summary_clicks or 0) % 2:
+            raise PreventUpdate
         if not market_date:
             return (
                 html.Div(
@@ -776,20 +867,43 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
                     className="empty-state",
                 ),
                 "",
+                None,
             )
         try:
-            comparison = read_comparison(str(market_date))
+            selected_generation = ensure_cache_generation(cache_generation)
             filter_values, exclude_value = committed_pl_filter_values(
                 committed_filter_state
             )
-            comparison = apply_pl_filters(
-                comparison,
-                pl_external_filter_map(filter_values),
-                exclude_selected="exclude" in exclude_value,
+            filters = pl_external_filter_map(filter_values)
+            render_key = json.dumps(
+                {
+                    "market_date": str(market_date),
+                    "filters": filters,
+                    "exclude_selected": "exclude" in exclude_value,
+                    "cache_generation": selected_generation,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
             )
+            if render_key == current_render_key:
+                raise PreventUpdate
+            comparison = read_comparison(str(market_date), selected_generation)
+            with perf_span(
+                LOGGER,
+                "pnl.validate.render",
+                budget_ms=500,
+                operation="filter_and_build",
+            ) as render_metrics:
+                comparison = apply_pl_filters(
+                    comparison,
+                    filters,
+                    exclude_selected="exclude" in exclude_value,
+                )
+                table = build_validate_pl_table(comparison)
+                render_metrics["rows"] = len(comparison)
         except (OSError, TypeError, ValueError) as exc:
             message = f"Official Risk snapshot {market_date} could not be loaded: {exc}"
-            return html.Div(message, className="empty-state"), message
+            return html.Div(message, className="empty-state"), message, no_update
 
         counts = comparison["comparison status"].value_counts()
         matched = int(counts.get("Matched", 0))
@@ -808,8 +922,9 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         if unmapped:
             status += f" · {unmapped:,} Unmapped Colossus"
         return (
-            build_validate_pl_table(comparison),
+            table,
             status,
+            render_key,
         )
 
 

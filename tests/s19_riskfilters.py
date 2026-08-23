@@ -416,6 +416,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         None,
+        False,
     )
 
     assert result[1::2][:5] == (
@@ -442,13 +443,14 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         None,
+        True,
     )
     assert coalesced[1::2][:5] == result[1::2][:5]
     assert coalesced[-1] == ["exclude"]
 
     manual = [[] for _field in FILTER_DIMENSION_FIELDS]
     manual[2] = ["BOOK-B"]
-    superseded = callback(3, request, None, *manual, [], None)
+    superseded = callback(3, request, None, *manual, [], None, True)
     assert superseded[5] == ["BOOK-B"]
     assert superseded[-1] == []
 
@@ -459,9 +461,80 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         *([[]] * len(FILTER_DIMENSION_FIELDS)),
         [],
         request["request_id"],
+        True,
     )
     assert acknowledged[1::2][:5] == ([], [], [], [], [])
     assert acknowledged[-1] == []
+
+
+def test_risk_filter_owner_initializes_base_activities_without_apply(
+    monkeypatch,
+) -> None:
+    manager = _warm_manager()
+    base = _raw_risk_frame().iloc[[0]].copy()
+    manager.snapshot.dashboard_frame = pd.concat(
+        [
+            base.assign(Activity=activity)
+            for activity in ("Activity 1", "Activity 2", "Activity 3")
+        ],
+        ignore_index=True,
+    )
+    app = build_app(refresh_manager=manager)
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == DIMENSION_FILTER_IDS["activity"]
+            and output.component_property == "value"
+            for output in _callback_outputs(item)
+        )
+    )
+    owner = metadata["callback"].__wrapped__
+    monkeypatch.setattr(
+        events_module,
+        "ctx",
+        SimpleNamespace(triggered_id="data-revision-store"),
+    )
+
+    result = owner(
+        1,
+        None,
+        None,
+        *([[]] * len(FILTER_DIMENSION_FIELDS)),
+        [],
+        None,
+        False,
+    )
+
+    assert result[1] == ["Activity 1", "Activity 2", "Activity 3"]
+    assert result[-2] is True
+    assert result[-1] == []
+
+
+def test_risk_clear_cache_preserves_the_committed_filter_draft(monkeypatch) -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == DIMENSION_FILTER_IDS["activity"]
+            and output.component_property == "value"
+            for output in _callback_outputs(item)
+        )
+    )
+    owner = metadata["callback"].__wrapped__
+    selected = [["1111"], ["SOG-A"], ["BOOK-A"], ["Core"], ["Rates"]]
+    monkeypatch.setattr(
+        events_module,
+        "ctx",
+        SimpleNamespace(triggered_id="clear-cache-complete-store"),
+    )
+
+    result = owner(2, None, 1, *selected, ["exclude"], None, True)
+
+    assert result[1::2][:5] == tuple(selected)
+    assert result[-2] is True
+    assert result[-1] == ["exclude"]
 
 
 def test_risk_filter_values_and_mode_have_one_callback_owner() -> None:
@@ -692,7 +765,7 @@ def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> N
     assert workspace in list(_walk(disclosure))
     assert workspace.value == "aggregate-pl"
     assert [(tab.label, tab.value) for tab in workspace.children] == [
-        ("Ag P&L", "aggregate-pl"),
+        ("Aggregate P&L", "aggregate-pl"),
         ("· Quick Risk", "quick-risk"),
         ("· Quick Market", "quick-market"),
         ("· Top Promotions", "top-promotions"),

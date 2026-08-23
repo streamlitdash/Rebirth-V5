@@ -92,13 +92,35 @@ def test_dark_theme_styles_date_inputs_and_calendar_surface() -> None:
         ".SingleDatePickerInput",
         ".DateRangePickerInput",
         ".DateInput_input",
+        ".DateInput_input__disabled",
+        ".DayPicker_focusRegion",
         ".DayPicker_transitionContainer",
         ".CalendarDay__default",
+        ".CalendarDay__blocked_minimum_nights",
+        ".CalendarDay__highlighted_calendar",
         ".CalendarDay__selected",
+        ".DayPickerKeyboardShortcuts_panel",
     ):
         assert selector in stylesheet
     assert "background: var(--surface-raised) !important" in stylesheet
     assert "color: var(--text) !important" in stylesheet
+    assert "-webkit-text-fill-color: var(--text-muted) !important" in stylesheet
+    assert "opacity: 1 !important" in stylesheet
+
+
+def test_dark_theme_keeps_risk_date_and_toggle_states_legible() -> None:
+    stylesheet = _stylesheet()
+
+    assert '.force-risk-check input[type="checkbox"]' in stylesheet
+    assert '.force-view-date-check input[type="checkbox"]' in stylesheet
+    assert "accent-color: var(--focus)" in stylesheet
+    assert ".market-view-draft-state.is-dirty" in stylesheet
+    assert ".force-risk-edit-status.is-dirty" in stylesheet
+    assert ':root[data-theme="dark"] .data-source-toggle.is-on::after' in stylesheet
+    assert (
+        ':root[data-theme="dark"] .pl-adjustment-toggle input[type="checkbox"]'
+        in stylesheet
+    )
 
 
 def test_quick_risk_client_sync_preserves_canonical_disclosure_state() -> None:

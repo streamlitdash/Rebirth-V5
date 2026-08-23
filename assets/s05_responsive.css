@@ -41,6 +41,11 @@
 :root[data-theme="dark"] .market-view-status.is-live { background: #BFE4C7; color: #174C27; }
 :root[data-theme="dark"] .data-source-toggle::before { background: #4B535D; }
 :root[data-theme="dark"] .data-source-toggle.is-on::before { background: var(--index); }
+:root[data-theme="dark"] .data-source-toggle.is-on::after { background: #111111; box-shadow: none; }
+:root[data-theme="dark"] .pl-adjustment-toggle input[type="checkbox"] { border-color: var(--outline-strong); background: #4B535D; }
+:root[data-theme="dark"] .pl-adjustment-toggle input[type="checkbox"]::after { background: var(--text); }
+:root[data-theme="dark"] .pl-adjustment-toggle input[type="checkbox"]:checked { border-color: #79B98A; background: #BFE4C7; }
+:root[data-theme="dark"] .pl-adjustment-toggle input[type="checkbox"]:checked::after { background: #111111; box-shadow: none; }
 
 /* Pastels are deliberately invariant, with black text and solid rules. */
 :root[data-theme="dark"] :is(.risk-table, .aggregate-pl-table, .quick-search-pivot-table) :is(

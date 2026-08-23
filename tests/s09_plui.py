@@ -458,6 +458,7 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     assert set(PL_FILTER_IDS.values()) <= _string_ids(saved_view_bar)
     assert PL_FILTER_EXCLUDE_ID in _string_ids(saved_view_bar)
     assert PL_SAVED_VIEW_CONTROLS.scope == "pnl"
+    assert PL_SAVED_VIEW_CONTROLS.base_label == "Base Review"
     assert PL_SAVED_VIEW_CONTROLS.apply_request_id == "pnl-saved-view-apply-request"
     aggregate_heading = next(
         item
@@ -910,6 +911,58 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
     }.isdisjoint(dependencies)
 
 
+def test_pl_summary_waits_for_base_and_clears_once_per_positive_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SummarySource:
+        def __init__(self) -> None:
+            self.clear_calls = 0
+            self.summary_calls = 0
+
+        def clear(self) -> None:
+            self.clear_calls += 1
+
+        def risk_summary(self, **_kwargs) -> PLRiskSummaryResult:
+            self.summary_calls += 1
+            return _summary_result()
+
+    source = SummarySource()
+    manager = SimpleNamespace(health=SimpleNamespace(revision=0))
+    app = Dash(__name__)
+    app.layout = html.Div(
+        [
+            dcc.Store(id="data-revision-store"),
+            dcc.Store(id="clear-cache-complete-store", data=0),
+            dcc.Store(id="pnl-summary-open-paths", data=[]),
+            dcc.Store(id="pl-history-selection-store", data={}),
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            build_pl_filter_bar(),
+            html.Div(id="pnl-aggregate-pl-grid"),
+        ]
+    )
+    register_pl_aggregate_callbacks(app, manager, history_source=source)
+    aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
+
+    monkeypatch.setattr(pl_aggregate_events, "ctx", SimpleNamespace(triggered_id=None))
+    with pytest.raises(pl_aggregate_events.PreventUpdate):
+        aggregate(1, [], [], None, 0, [])
+    assert source.summary_calls == 0
+    assert source.clear_calls == 0
+
+    committed = _committed([[], [], [], [], []])
+    monkeypatch.setattr(
+        pl_aggregate_events,
+        "ctx",
+        SimpleNamespace(triggered_id="clear-cache-complete-store"),
+    )
+    aggregate(1, [], [], committed, 0, [])
+    aggregate(1, [], [], committed, 1, [])
+    aggregate(1, [], [], committed, 1, [])
+
+    assert source.summary_calls == 3
+    assert source.clear_calls == 1
+
+
 def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -946,6 +999,29 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
     ) in {(item["id"], item["property"]) for item in owner_metadata["state"]}
     activities = sorted(prepared["activity"].astype(str).unique())
     saved_activity, manual_activity = activities[:2]
+    blank = [[] for _field in PL_FILTER_FIELDS]
+    monkeypatch.setattr(
+        pl_aggregate_events,
+        "ctx",
+        SimpleNamespace(triggered_id="data-revision-store"),
+    )
+    initialized = owner(
+        manager.health.revision,
+        None,
+        *blank,
+        [],
+        None,
+        False,
+    )
+    assert initialized[1] == [
+        value
+        for number in (1, 2, 3)
+        for value in activities
+        if value.casefold().endswith(f"activity {number}")
+    ]
+    assert initialized[-2] is True
+    assert initialized[-1] == []
+
     request = {
         "request_id": "a" * 32,
         "view_id": "saved-view",
@@ -958,13 +1034,12 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
         "base_filters": {field.key: [] for field in PL_FILTER_FIELDS},
         "base_exclude_selected": False,
     }
-    blank = [[] for _field in PL_FILTER_FIELDS]
     monkeypatch.setattr(
         pl_aggregate_events,
         "ctx",
         SimpleNamespace(triggered_id=PL_SAVED_VIEW_CONTROLS.apply_request_id),
     )
-    applied = owner(manager.health.revision, request, *blank, [], None)
+    applied = owner(manager.health.revision, request, *blank, [], None, True)
     assert applied[1] == [saved_activity]
     assert applied[-1] == ["exclude"]
 
@@ -973,13 +1048,27 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
         "ctx",
         SimpleNamespace(triggered_id="data-revision-store"),
     )
-    coalesced = owner(manager.health.revision + 1, request, *blank, [], None)
+    coalesced = owner(
+        manager.health.revision + 1,
+        request,
+        *blank,
+        [],
+        None,
+        True,
+    )
     assert coalesced[1] == [saved_activity]
     assert coalesced[-1] == ["exclude"]
 
     manual = [[] for _field in PL_FILTER_FIELDS]
     manual[0] = [manual_activity]
-    refreshed = owner(manager.health.revision + 2, request, *manual, [], None)
+    refreshed = owner(
+        manager.health.revision + 2,
+        request,
+        *manual,
+        [],
+        None,
+        True,
+    )
     assert refreshed[1] == [manual_activity]
     assert refreshed[-1] == []
 
@@ -989,6 +1078,7 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
         *blank,
         [],
         request["request_id"],
+        True,
     )
     assert acknowledged[1::2][:5] == ([], [], [], [], [])
     assert acknowledged[-1] == []

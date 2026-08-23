@@ -11,10 +11,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from dash import Dash, dcc, html
+from dash.exceptions import PreventUpdate
 
 from rebirth.history import archive_official_snapshot
 from rebirth.domain.s08_pnl import HISTORY_MAPPING_STATUS
 from rebirth.domain.s01_schema import UNMAPPED_VALUE
+from rebirth.pages.pnl import s06_validation as validate_pl_module
 from rebirth.pages.pnl.s01_common import (
     PL_FILTER_FIELDS,
     PL_SAVED_VIEW_CONTROLS,
@@ -415,6 +417,10 @@ def test_validate_pl_stays_lazy_and_history_remains_page_owned() -> None:
     assert picker.options == []
     assert picker.value is None
     assert picker.disabled is True
+    assert any(
+        isinstance(component, dcc.Store) and component.id == "pl-validate-render-key"
+        for component in _walk(section)
+    )
     assert "Validate P&L" in summaries
     assert "Histo P&L" not in summaries
     assert all(
@@ -426,6 +432,7 @@ def test_validate_pl_stays_lazy_and_history_remains_page_owned() -> None:
 
 def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     tmp_path,
+    monkeypatch,
 ) -> None:
     snapshot = SimpleNamespace(
         revision=1,
@@ -444,6 +451,7 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     app.layout = html.Div(
         [
             dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            dcc.Store(id="clear-cache-complete-store"),
             build_pl_filter_bar(),
             build_validate_pl_section(),
         ]
@@ -452,25 +460,63 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     key = next(key for key in app.callback_map if "pl-validate-date.options" in key)
     discover = app.callback_map[key]["callback"].__wrapped__
 
-    options, selected, disabled, status = discover(1, None)
+    options, selected, disabled, status = discover(1, None, None)
 
     assert options == [{"label": "2026-08-14", "value": "2026-08-14"}]
     assert selected == "2026-08-14"
     assert disabled is False
     assert status == ""
+    monkeypatch.setattr(
+        validate_pl_module,
+        "_available_dates",
+        lambda _root: (_ for _ in ()).throw(
+            AssertionError("cached catalog was rediscovered")
+        ),
+    )
+    assert discover(3, None, selected) == (options, selected, False, "")
 
     render_key = next(
         key for key in app.callback_map if "pl-validate-table.children" in key
     )
     render = app.callback_map[render_key]["callback"].__wrapped__
-    table, render_status = render(selected, None)
+    table, render_status, render_key = render(selected, None, 1, None, None)
 
     assert "Official 2026-08-14" in render_status
+    assert '"market_date":"2026-08-14"' in render_key
     assert any(
         isinstance(component, html.Table)
         and getattr(component, "className", None) == "risk-table validate-pl-table"
         for component in _walk(table)
     )
+    original_load = validate_pl_module.load_risk_archive
+    reloads = 0
+
+    def counted_load(*args, **kwargs):
+        nonlocal reloads
+        reloads += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(validate_pl_module, "load_risk_archive", counted_load)
+    _table, _status, refreshed_key = render(selected, None, 1, 1, render_key)
+    assert reloads == 1
+    assert '"cache_generation":1' in refreshed_key
+    _table, _status, newest_key = render(selected, None, 1, 2, refreshed_key)
+    assert reloads == 2
+    assert '"cache_generation":2' in newest_key
+    with pytest.raises(PreventUpdate):
+        render(selected, None, 1, 1, refreshed_key)
+
+    monkeypatch.setattr(
+        validate_pl_module,
+        "load_risk_archive",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("unchanged or closed validation reloaded its archive")
+        ),
+    )
+    with pytest.raises(PreventUpdate):
+        render(selected, None, 3, 2, newest_key)
+    with pytest.raises(PreventUpdate):
+        render(selected, None, 2, 2, None)
 
 
 def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> None:
@@ -479,6 +525,7 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> 
     app.layout = html.Div(
         [
             dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            dcc.Store(id="clear-cache-complete-store"),
             build_pl_filter_bar(),
             build_validate_pl_section(),
         ]
@@ -489,7 +536,7 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> 
     )
     discover = app.callback_map[catalog_key]["callback"].__wrapped__
 
-    options, selected, disabled, status = discover(1, None)
+    options, selected, disabled, status = discover(1, None, None)
 
     assert {option["value"] for option in options} == set(HISTORICAL_MARKET_DATES)
     assert selected == HISTORY_END_DATE
@@ -500,10 +547,11 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> 
         key for key in app.callback_map if "pl-validate-table.children" in key
     )
     render = app.callback_map[render_key]["callback"].__wrapped__
-    table, render_status = render(selected, None)
+    table, render_status, render_key = render(selected, None, 1, None, None)
 
     assert f"Official {HISTORY_END_DATE}" in render_status
     assert "matched" in render_status
+    assert f'"market_date":"{HISTORY_END_DATE}"' in render_key
     labels = [
         component.children
         for component in _walk(table)
@@ -539,6 +587,7 @@ def test_validate_callback_uses_committed_page_filter(tmp_path) -> None:
     app.layout = html.Div(
         [
             dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            dcc.Store(id="clear-cache-complete-store"),
             build_pl_filter_bar(),
             build_validate_pl_section(),
         ]
@@ -549,11 +598,18 @@ def test_validate_callback_uses_committed_page_filter(tmp_path) -> None:
         for metadata in app.callback_map.values()
         if "pl-validate-table.children" in str(metadata["output"])
     )
-    table, status = render("2026-08-14", _committed(portfolio=["book-z"]))
+    table, status, render_key = render(
+        "2026-08-14",
+        _committed(portfolio=["book-z"]),
+        1,
+        None,
+        None,
+    )
 
     assert "1 filtered rows" in status
     assert "0 mapped" in status
     assert "1 Unmapped Colossus" in status
+    assert '"Portfolio":["book-z"]' in render_key
     assert "Unmapped Colossus (1)" in [
         item.children for item in _walk(table) if isinstance(item, html.Summary)
     ]
@@ -599,3 +655,14 @@ def test_validate_pl_caps_browser_tree_without_changing_total() -> None:
     assert float(total_predict.to_plotly_json()["props"]["data-copy-value"]) == (
         10.0 * (VALIDATE_PL_CHILD_LIMIT + 4)
     )
+
+
+def test_validate_pl_chevron_handler_scans_only_clicked_subtree() -> None:
+    script = (Path(__file__).resolve().parents[1] / "assets" / "s14_pnl.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "row.nextElementSibling" in script
+    assert "validateLastToggleMs" in script
+    assert 'querySelectorAll("tbody tr.validate-pl-hierarchy-row")' not in script
+    assert "rowsByPath" not in script

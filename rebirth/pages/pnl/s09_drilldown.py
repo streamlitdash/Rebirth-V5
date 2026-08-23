@@ -23,9 +23,11 @@ from rebirth.history import PLHistorySeriesResult
 from .s01_common import (
     PL_SAVED_VIEW_CONTROLS,
     PLHistoryQueryProtocol,
+    PLRiskSummaryQueryProtocol,
     PLSendConfig,
     apply_pl_filters,
     committed_pl_filter_values,
+    pl_cache_generation,
     pl_external_filter_map,
 )
 from .s03_history import build_pl_history_figure
@@ -113,10 +115,15 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
 
     cache_lock = RLock()
     cached_history: pd.DataFrame | None = None
+    cleared_cache_generation = 0
     query_source = (
         config.history_source
         if isinstance(config.history_source, PLHistoryQueryProtocol)
         else None
+    )
+    summary_owns_query_cache = isinstance(
+        config.history_source,
+        PLRiskSummaryQueryProtocol,
     )
 
     def current_history(*, reload: bool = False) -> pd.DataFrame:
@@ -170,12 +177,16 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
         committed_filter_state,
         _cache_generation,
     ):
-        nonlocal cached_history
+        nonlocal cached_history, cleared_cache_generation
         if ctx.triggered_id == "clear-cache-complete-store":
-            if query_source is not None:
-                query_source.clear()
-            with cache_lock:
-                cached_history = None
+            requested_generation = pl_cache_generation(_cache_generation)
+            if requested_generation > cleared_cache_generation:
+                with cache_lock:
+                    if requested_generation > cleared_cache_generation:
+                        if query_source is not None and not summary_owns_query_cache:
+                            query_source.clear()
+                        cached_history = None
+                        cleared_cache_generation = requested_generation
         if not isinstance(selection, Mapping) or not selection:
             return (
                 _empty_figure(),

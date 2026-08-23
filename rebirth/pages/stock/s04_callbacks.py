@@ -219,14 +219,14 @@ def register_callbacks(
     @app.callback(
         *filter_outputs,
         Output(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
-        Output("stock-filter-ready", "data"),
+        Output(STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
         Input("stock-loaded-snapshot", "data"),
         Input(STOCK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
         Input("clear-cache-complete-store", "data"),
         *[State(STOCK_FILTER_IDS[field.key], "value") for field in STOCK_FILTER_FIELDS],
         State(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
         State(STOCK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
-        State("stock-filter-ready", "data"),
+        State(STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
         prevent_initial_call=True,
     )
     def update_stock_filters(
@@ -280,14 +280,10 @@ def register_callbacks(
                 requested_values, exclude_value = requested
                 selected_values = [list(values) for values in requested_values]
 
-        use_base = (
-            not ready
-            or trigger == "clear-cache-complete-store"
-            or (
-                apply_pending
-                and isinstance(saved_view_request, Mapping)
-                and saved_view_request.get("view_id") == BASE_SAVED_VIEW_ID
-            )
+        use_base = not ready or (
+            apply_pending
+            and isinstance(saved_view_request, Mapping)
+            and saved_view_request.get("view_id") == BASE_SAVED_VIEW_ID
         )
         if use_base:
             defaults = default_stock_filter_values(page_data.mapped_stock)
@@ -558,6 +554,10 @@ def register_callbacks(
                 raise PreventUpdate
             if trigger == "stock-history-date-range" and str(period) != "custom":
                 raise PreventUpdate
+
+        if not str(crds or "").strip() or not str(activity or "").strip():
+            message = "Select a Stock row or choose both CRDS and Activity."
+            return build_stock_history_empty_figure(message), message
 
         page_data = cached_page(loaded_snapshot)
         if page_data is None:

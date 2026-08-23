@@ -876,7 +876,9 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
     assert custom_range.style == {"display": "none"}
 
 
-def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() -> None:
+def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, pd.Timestamp]] = []
     current, prior = _comparison_legs()
 
@@ -908,7 +910,11 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() 
         0,
         {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
     )
-    filters = _callback_for_output(app, "stock-filter-ready", "data")
+    filters = _callback_for_output(
+        app,
+        STOCK_SAVED_VIEW_CONTROLS.initialized_id,
+        "data",
+    )
     filter_state = filters(
         loaded[0],
         None,
@@ -925,6 +931,34 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() 
         ("config", pd.Timestamp("2026-08-14")),
     ]
     assert filter_state[1] == ["Activity 1", "Activity 2", "Activity 3"]
+    assert filter_state[-1] is True
+    selected = [
+        ["Activity 2"],
+        ["SOG-B"],
+        ["BOOK_B"],
+        ["Core"],
+        ["Credit"],
+    ]
+    monkeypatch.setattr(
+        stock_callbacks,
+        "ctx",
+        SimpleNamespace(triggered_id="clear-cache-complete-store"),
+    )
+    preserved = filters(loaded[0], None, 1, *selected, ["exclude"], None, True)
+    assert preserved[1::2][:5] == tuple(selected)
+    assert preserved[-2] == ["exclude"]
+    assert preserved[-1] is True
+    render = _callback_for_output(app, "stock-current-table", "data")
+    rendered = render(
+        loaded[0],
+        None,
+        list(STOCK_PIVOT_DEFAULT_ROWS),
+        "",
+        ["Stock", "dStock"],
+        [],
+    )
+    assert rendered[0]
+    assert rendered[3] == "Rows: 3 of 3"
     assert cached[0] == loaded[0]
 
 
@@ -1131,6 +1165,26 @@ def test_v41_history_is_read_only_after_click_or_load(
     assert history_calls == []
 
     history_callback = _callback_for_output(app, "stock-history-chart", "figure")
+    monkeypatch.setattr(
+        stock_callbacks,
+        "ctx",
+        SimpleNamespace(triggered_id="stock-history-load-button"),
+    )
+    empty_figure, empty_status = history_callback(
+        None,
+        1,
+        0,
+        "1y",
+        "2025-08-15",
+        "2026-08-14",
+        None,
+        None,
+        token,
+    )
+    assert history_calls == []
+    assert "choose both CRDS and Activity" in empty_status
+    assert empty_figure.layout.annotations[0].text == empty_status
+
     monkeypatch.setattr(
         stock_callbacks,
         "ctx",

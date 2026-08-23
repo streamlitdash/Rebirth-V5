@@ -439,7 +439,6 @@ def _stock_page_layout(
             dcc.Store(id="stock-history-period", data="1y"),
             dcc.Store(id="stock-history-autoload", data=None),
             dcc.Store(id="stock-pivot-open-paths", data=[]),
-            dcc.Store(id="stock-filter-ready", data=False),
             dcc.Interval(
                 id="stock-load-trigger", interval=100, n_intervals=0, max_intervals=1
             ),

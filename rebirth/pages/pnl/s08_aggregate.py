@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from collections.abc import Mapping
 from threading import RLock
 from typing import Callable
 
 import pandas as pd
 from dash import ALL, Dash, Input, Output, State, ctx, html, no_update
+from dash.exceptions import PreventUpdate
 
 from rebirth.app.s02_contracts import RefreshManagerProtocol
 from rebirth.domain.s08_pnl import PLSendValidationError
 from rebirth.history import PLRiskSummaryResult
 from rebirth.ui.s02_aggregation import prepare_risk_data
 from rebirth.ui.s03_filters import (
+    BASE_SAVED_VIEW_ID,
     SavedFilterViewControls,
     saved_view_request_id,
     saved_view_request_matches_base,
@@ -29,6 +32,7 @@ from .s01_common import (
     PL_SAVED_VIEW_CONTROLS,
     PLRiskSummaryQueryProtocol,
     committed_pl_filter_values,
+    pl_cache_generation,
     pl_external_filter_map,
     pl_filter_options,
 )
@@ -37,6 +41,34 @@ from .s10_summary import (
     build_pl_summary_table,
     decode_open_paths,
 )
+
+
+_BASE_ACTIVITY_ALIASES = (
+    ("activity 1", "macro"),
+    ("activity 2", "credit"),
+    ("activity 3", "hedge"),
+)
+_FAKE_ACTIVITY_PREFIX = "fake_replace_me - "
+
+
+def _base_pl_filter_values(frame: pd.DataFrame) -> list[list[str]]:
+    """Resolve the P&L Base view against the current Activity labels."""
+
+    matches = {alias: [] for aliases in _BASE_ACTIVITY_ALIASES for alias in aliases}
+    for raw in frame["activity"].dropna().astype(str).unique():
+        value = str(raw).strip()
+        key = " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+        if key.startswith(_FAKE_ACTIVITY_PREFIX):
+            key = key[len(_FAKE_ACTIVITY_PREFIX) :]
+        if key in matches:
+            matches[key].append(value)
+    activities = [
+        value
+        for aliases in _BASE_ACTIVITY_ALIASES
+        for alias in aliases
+        for value in matches[alias]
+    ]
+    return [activities if field.key == "activity" else [] for field in PL_FILTER_FIELDS]
 
 
 def _ordered_open_tokens(raw: object) -> list[str]:
@@ -64,6 +96,7 @@ def register_pl_aggregate_callbacks(
     cache_lock = RLock()
     cached_revision = -1
     cached_frame: pd.DataFrame | None = None
+    cleared_cache_generation = 0
     query_source = (
         history_source
         if isinstance(history_source, PLRiskSummaryQueryProtocol)
@@ -119,15 +152,27 @@ def register_pl_aggregate_callbacks(
         if saved_view_controls is not None
         else []
     )
+    initialization_outputs = (
+        [Output(saved_view_controls.initialized_id, "data")]
+        if saved_view_controls is not None
+        else []
+    )
+    initialization_states = (
+        [State(saved_view_controls.initialized_id, "data")]
+        if saved_view_controls is not None
+        else []
+    )
 
     @app.callback(
         *filter_outputs,
+        *initialization_outputs,
         Output("pnl-filter-exclude-selected", "value"),
         Input("data-revision-store", "data"),
         *apply_inputs,
         *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
         State("pnl-filter-exclude-selected", "value"),
         *apply_states,
+        *initialization_states,
     )
     def update_pl_filter_controls(_data_revision, *values):
         """Own all P&L selector values, including saved-view application."""
@@ -147,6 +192,7 @@ def register_pl_aggregate_callbacks(
             if saved_view_controls is not None
             else None
         )
+        initialized = bool(values[-1]) if saved_view_controls is not None else True
         try:
             trigger = ctx.triggered_id
         except Exception:
@@ -178,6 +224,18 @@ def register_pl_aggregate_callbacks(
                 selected_values = [list(selected) for selected in applied_values]
 
         frame = current_filter_frame()
+        has_filter_data = frame is not None and not frame.empty
+        use_base = has_filter_data and (
+            (not initialized and not pending)
+            or (
+                pending
+                and isinstance(request, Mapping)
+                and request.get("view_id") == BASE_SAVED_VIEW_ID
+            )
+        )
+        if use_base:
+            selected_values = _base_pl_filter_values(frame)
+            exclude_value = []
         if frame is None:
             options = {field.key: [] for field in PL_FILTER_FIELDS}
             valid_values = selected_values
@@ -203,6 +261,8 @@ def register_pl_aggregate_callbacks(
         result: list[object] = []
         for field, selected in zip(PL_FILTER_FIELDS, valid_values, strict=True):
             result.extend((options[field.key], selected))
+        if saved_view_controls is not None:
+            result.append(initialized or has_filter_data)
         result.append(exclude_value)
         return tuple(result)
 
@@ -228,6 +288,8 @@ def register_pl_aggregate_callbacks(
         open_raw,
     ):
         """Query one page-owned summary and reveal only expanded branches."""
+
+        nonlocal cleared_cache_generation
 
         effective_tokens = _ordered_open_tokens(open_raw)
         updated_open = no_update
@@ -296,8 +358,15 @@ def register_pl_aggregate_callbacks(
                     role="status",
                 ),
             )
+        if committed_filter_state is None:
+            raise PreventUpdate
         if trigger == "clear-cache-complete-store":
-            query_source.clear()
+            requested_generation = pl_cache_generation(_cache_generation)
+            if requested_generation > cleared_cache_generation:
+                with cache_lock:
+                    if requested_generation > cleared_cache_generation:
+                        query_source.clear()
+                        cleared_cache_generation = requested_generation
         try:
             selected_values, exclude_value = committed_pl_filter_values(
                 committed_filter_state

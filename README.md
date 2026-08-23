@@ -59,7 +59,7 @@ Patch behavior. `requirements-dev.txt` adds Plotly Cloud, pytest, and Ruff.
 
 ### Risk
 
-The top workspace is one open-by-default **Ag P&L** disclosure with exactly
+The top workspace is one open-by-default **Aggregate P&L** disclosure with exactly
 four compact tabs in this order:
 
 1. **Aggregate P&L** renders the mapped snapshot by the selected governed
@@ -86,7 +86,10 @@ Category, and Sub Category, with explicit include/exclude semantics. Saved
 Views is a form: selecting a named view or changing a selector edits a draft;
 only **Apply filters** changes Risk outputs, and **Cancel changes** restores the
 last committed selection. Stock and P&L use the same small contract while
-keeping independent page state.
+keeping independent page state. On the first visit to each page, Base is
+resolved from that page's authoritative data and committed once automatically;
+later draft changes still require Apply. Clear Cache invalidates data caches but
+preserves the page's committed view.
 
 Promotions are computed against thresholds at exact Risk Type + Risk Greek
 grain. The baseline generation uses Activities 1-3 and is committed with the
@@ -151,10 +154,11 @@ Both/Colossus/Predict source dropdown; no raw history table remains.
 
 The lower workflow contains the current Send All, SOG editor, Portfolio editor,
 adjustment-save, and Validate P&L sections. Derived fields stay locked. Validate
-P&L compares official Predict/Risk results with Colossus. Its hierarchy is
-loaded once for the chosen date/filter state and chevrons then expand entirely
-in the browser without rerunning the comparison. Missing historical dates
-remain missing rather than being silently filled with zero.
+P&L compares official Predict/Risk results with Colossus. It stays fully lazy
+while its disclosure is closed, reuses an unchanged rendered result, and builds
+the hierarchy once for a new date/filter state. Chevrons then expand only their
+local subtree in the browser without rerunning the comparison. Missing
+historical dates remain missing rather than being silently filled with zero.
 
 ### Statics
 
@@ -216,10 +220,11 @@ hosting sleep itself.
 
 `CUBE_LOG_LEVEL` selects the process log level (default `INFO`). Runtime timing
 covers app build, refresh stages, Stock current load, promotion recalculation,
-and Data/Stock/P&L history queries. The release benchmark separately times
-preparation, filtering, and Cross rendering. Performance logs use bounded
-structural fields; they do not log underlying identities or financial values.
-Warning deduplication prevents a single incident from flooding the page.
+Validate P&L stages, and Data/Stock/P&L history queries. The release benchmark
+separately times preparation, filtering, and Cross rendering. Performance logs
+use bounded structural fields; they do not log underlying identities or
+financial values. Warning deduplication prevents a single incident from
+flooding the page.
 
 ## Historical data and cache
 

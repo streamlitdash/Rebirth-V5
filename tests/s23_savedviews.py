@@ -357,6 +357,7 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
     }
     assert {
         RISK_SAVED_VIEW_CONTROLS.committed_state_id,
+        RISK_SAVED_VIEW_CONTROLS.initialized_id,
         RISK_SAVED_VIEW_CONTROLS.apply_id,
         RISK_SAVED_VIEW_CONTROLS.cancel_id,
     } <= {getattr(item, "id", None) for item in components}
@@ -488,6 +489,63 @@ def test_generic_callbacks_never_own_filter_dropdown_values(tmp_path: Path) -> N
     assert (RISK_SAVED_VIEW_CONTROLS.exclude_id, "value") not in outputs
 
 
+def test_page_readiness_commits_base_without_treating_drafts_as_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controls = RISK_SAVED_VIEW_CONTROLS
+    repository = SavedFilterViewRepository(tmp_path, FILTER_KEYS)
+    app = Dash(__name__, suppress_callback_exceptions=True)
+    app.layout = html.Div(
+        [
+            build_saved_filter_view_bar(controls),
+            *[
+                dcc.Dropdown(id=controls.filter_ids[field.key], value=[])
+                for field in FILTER_DIMENSION_FIELDS
+            ],
+            dcc.Checklist(id=controls.exclude_id, value=[]),
+        ]
+    )
+    register_saved_filter_view_callbacks(app, repository, controls)
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == controls.committed_state_id
+            for output in _outputs(item)
+        )
+    )
+    commit = metadata["callback"].__wrapped__
+    base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], [], []]
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.initialized_id),
+    )
+
+    committed = commit(
+        0,
+        True,
+        "unapplied-draft",
+        *base_values,
+        [],
+        None,
+    )
+
+    assert committed["view_id"] == BASE_SAVED_VIEW_ID
+    assert committed_filter_state_values(committed, controls) == (
+        tuple(base_values),
+        [],
+    )
+    assert {(item["id"], item["property"]) for item in metadata["inputs"]} == {
+        (controls.apply_id, "n_clicks"),
+        (controls.initialized_id, "data"),
+    }
+    assert {(controls.filter_ids[field.key], "value") for field in controls.fields} <= {
+        (item["id"], item["property"]) for item in metadata["state"]
+    }
+
+
 def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -550,13 +608,8 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             *([[]] * len(FILTER_KEYS)),
             [],
         )
-        base_label = (
-            DEFAULT_RISK_FILTER_LABEL
-            if controls is RISK_SAVED_VIEW_CONTROLS
-            else BASE_SAVED_VIEW_LABEL
-        )
         assert options == [
-            {"label": base_label, "value": BASE_SAVED_VIEW_ID},
+            {"label": controls.base_label, "value": BASE_SAVED_VIEW_ID},
             {"label": named.name, "value": named.identifier},
         ]
         assert selected == BASE_SAVED_VIEW_ID
@@ -689,7 +742,19 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert draft_values == tuple(selected_values)
     assert draft_exclude == ["exclude"]
 
-    committed = commit(1, identifier, *selected_values, ["exclude"])
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.apply_id),
+    )
+    committed = commit(
+        1,
+        True,
+        identifier,
+        *selected_values,
+        ["exclude"],
+        None,
+    )
     assert committed_filter_state_values(committed, controls) == (
         tuple(selected_values),
         ["exclude"],
@@ -807,11 +872,23 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert "Apply Base or another view" in deleted[3]
     assert repository.get("risk", identifier).name == "Morning"
 
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.apply_id),
+    )
     committed_base = commit(
         2,
+        True,
         BASE_SAVED_VIEW_ID,
         *([[]] * len(FILTER_KEYS)),
         [],
+        committed,
+    )
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.delete_id),
     )
     deleted = mutate(
         0,

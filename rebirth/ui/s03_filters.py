@@ -94,6 +94,10 @@ class SavedFilterViewControls:
     def cancel_id(self) -> str:
         return f"{self.prefix}-saved-view-cancel"
 
+    @property
+    def initialized_id(self) -> str:
+        return f"{self.prefix}-saved-view-initialized"
+
 
 def saved_view_options(
     views: Sequence[SavedFilterView],
@@ -129,6 +133,7 @@ def build_saved_filter_view_bar(
             dcc.Store(id=controls.apply_request_id, data=None),
             dcc.Store(id=controls.applied_request_id, data=None),
             dcc.Store(id=controls.committed_state_id, data=None),
+            dcc.Store(id=controls.initialized_id, data=False),
             dcc.Interval(
                 id=controls.refresh_id,
                 interval=100,
@@ -725,20 +730,32 @@ def register_saved_filter_view_callbacks(
     @app.callback(
         Output(controls.committed_state_id, "data"),
         Input(controls.apply_id, "n_clicks"),
+        Input(controls.initialized_id, "data"),
         State(controls.selector_id, "value"),
         *[State(controls.filter_ids[field.key], "value") for field in controls.fields],
         State(controls.exclude_id, "value"),
+        State(controls.committed_state_id, "data"),
         prevent_initial_call=True,
     )
     def commit_filter_draft(
         apply_clicks,
+        initialized,
         selected_identifier,
         *filter_values_and_exclude,
     ):
-        if int(apply_clicks or 0) <= 0:
-            raise PreventUpdate
         filter_values = filter_values_and_exclude[: len(controls.fields)]
-        exclude_value = filter_values_and_exclude[-1]
+        exclude_value = filter_values_and_exclude[len(controls.fields)]
+        committed_state = filter_values_and_exclude[len(controls.fields) + 1]
+        try:
+            triggered = ctx.triggered_id
+        except MissingCallbackContextException:
+            triggered = controls.apply_id if int(apply_clicks or 0) > 0 else None
+        if triggered == controls.initialized_id:
+            if not initialized or committed_state is not None:
+                raise PreventUpdate
+            selected_identifier = BASE_SAVED_VIEW_ID
+        elif triggered != controls.apply_id or int(apply_clicks or 0) <= 0:
+            raise PreventUpdate
         return committed_filter_state(
             controls,
             selected_identifier,

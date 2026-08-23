@@ -789,7 +789,9 @@ def build_layout(
                 [
                     html.Summary(
                         [
-                            html.Span("Ag P&L", className="risk-workspace-title"),
+                            html.Span(
+                                "Aggregate P&L", className="risk-workspace-title"
+                            ),
                             html.Span(
                                 "Aggregate · Quick Risk · Quick Market · Promotions",
                                 className="risk-workspace-summary-note",
@@ -802,7 +804,7 @@ def build_layout(
                         value="aggregate-pl",
                         children=[
                             dcc.Tab(
-                                label="Ag P&L",
+                                label="Aggregate P&L",
                                 value="aggregate-pl",
                                 children=html.Div(
                                     [

@@ -5,35 +5,18 @@
   let gesture = null;
   let suppressTrustedClickUntil = 0;
 
-  const syncValidateHierarchy = (table) => {
-    if (!table?.matches?.(".validate-pl-table")) return;
-    const rows = Array.from(
-      table.querySelectorAll("tbody tr.validate-pl-hierarchy-row"),
-    );
-    const rowsByPath = new Map(
-      rows.map((row) => [row.dataset.validatePath, row]),
-    );
-    rows.forEach((row) => {
-      const depth = Number(row.dataset.validateDepth);
-      const parent = rowsByPath.get(row.dataset.validateParentPath);
-      row.hidden = depth > 0 && !Boolean(
-        parent
-        && !parent.hidden
-        && parent.dataset.validateOpen === "true"
-      );
-
-      const toggle = row.querySelector(".validate-pl-row-toggle");
-      if (!toggle) return;
-      const expanded = row.dataset.validateOpen === "true";
-      const label = row.querySelector(".row-label-text")?.textContent?.trim()
-        || "row";
-      const action = expanded ? "Collapse" : "Expand";
-      toggle.textContent = expanded ? "\u2212" : "\u25b8";
-      row.setAttribute("aria-expanded", String(expanded));
-      toggle.setAttribute("aria-expanded", String(expanded));
-      toggle.setAttribute("aria-label", `${action} ${label}`);
-      toggle.title = `${action} ${label}`;
-    });
+  const setValidateRowOpen = (row, expanded) => {
+    row.dataset.validateOpen = String(expanded);
+    row.setAttribute("aria-expanded", String(expanded));
+    const toggle = row.querySelector(".validate-pl-row-toggle");
+    if (!toggle) return;
+    const label = row.querySelector(".row-label-text")?.textContent?.trim()
+      || "row";
+    const action = expanded ? "Collapse" : "Expand";
+    toggle.textContent = expanded ? "\u2212" : "\u25b8";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", `${action} ${label}`);
+    toggle.title = `${action} ${label}`;
   };
 
   const toggleValidateHierarchy = (toggle) => {
@@ -41,27 +24,25 @@
     const row = toggle.closest("tr.validate-pl-hierarchy-row");
     const table = toggle.closest("table.validate-pl-table");
     if (!row || !table) return false;
+    const started = performance.now();
+    const depth = Number(row.dataset.validateDepth);
     const opening = row.dataset.validateOpen !== "true";
-    row.dataset.validateOpen = String(opening);
-    if (!opening) {
-      const rows = Array.from(
-        table.querySelectorAll("tbody tr.validate-pl-hierarchy-row"),
-      );
-      const rowsByPath = new Map(
-        rows.map((candidate) => [candidate.dataset.validatePath, candidate]),
-      );
-      rows.forEach((candidate) => {
-        let parent = rowsByPath.get(candidate.dataset.validateParentPath);
-        while (parent) {
-          if (parent === row) {
-            candidate.dataset.validateOpen = "false";
-            break;
-          }
-          parent = rowsByPath.get(parent.dataset.validateParentPath);
-        }
-      });
+    setValidateRowOpen(row, opening);
+    let candidate = row.nextElementSibling;
+    while (candidate?.classList?.contains("validate-pl-hierarchy-row")) {
+      const candidateDepth = Number(candidate.dataset.validateDepth);
+      if (candidateDepth <= depth) break;
+      if (opening) {
+        if (candidateDepth === depth + 1) candidate.hidden = false;
+      } else {
+        candidate.hidden = true;
+        setValidateRowOpen(candidate, false);
+      }
+      candidate = candidate.nextElementSibling;
     }
-    syncValidateHierarchy(table);
+    table.dataset.validateLastToggleMs = (
+      performance.now() - started
+    ).toFixed(2);
     window.__rebirthV4Assets?.clearSelection?.();
     return true;
   };

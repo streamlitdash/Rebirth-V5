@@ -101,7 +101,7 @@ details > summary::-webkit-details-marker { display: none; }
 }
 
 .market-view-card.is-dirty,
-.force-risk-row.is-dirty { box-shadow: inset 3px 0 0 var(--outline-strong); }
+.force-risk-row.is-dirty { box-shadow: inset 3px 0 0 var(--warning); }
 .date-card-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 900; }
 .date-card-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .market-view-stat { display: grid; align-content: center; gap: 4px; min-height: 48px; }
@@ -114,10 +114,14 @@ details > summary::-webkit-details-marker { display: none; }
 .market-view-force { display: flex; align-items: center; justify-content: flex-start; gap: 9px; min-width: 0; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--outline); }
 .force-view-date-check label,
 .force-risk-check label { color: var(--text); font-size: 12px; font-weight: 800; white-space: nowrap; }
+.force-view-date-check input[type="checkbox"],
+.force-risk-check input[type="checkbox"] { accent-color: var(--focus); }
 .market-view-draft-state { padding: 3px 7px; border-radius: 4px; background: var(--surface-muted); color: var(--text-muted); font-size: 9px; font-weight: 850; text-transform: uppercase; }
+.market-view-draft-state.is-dirty { background: var(--warning-surface); color: var(--warning); }
 
 .force-risk-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 16px; border-top: 1px solid var(--outline); background: var(--surface-soft); }
 .force-risk-edit-status { color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.force-risk-edit-status.is-dirty { color: var(--warning); }
 .force-risk-edit-status.is-error { color: var(--negative); }
 .force-risk-action-buttons { display: flex; gap: 9px; }
 .force-risk-cancel-button,
@@ -342,7 +346,7 @@ details > summary::-webkit-details-marker { display: none; }
 .dash-dropdown-option[aria-selected="true"] { background: var(--index) !important; color: #111111 !important; }
 
 .dash-options-list-option { display: inline-flex; align-items: center; color: var(--text); }
-.dash-options-list-option input[type="radio"] { width: 16px; height: 16px; margin: 0 7px 0 0; accent-color: #111111; }
+.dash-options-list-option input[type="radio"] { width: 16px; height: 16px; margin: 0 7px 0 0; accent-color: var(--focus); }
 
 .view-switch,
 .pill-checklist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -351,7 +355,7 @@ details > summary::-webkit-details-marker { display: none; }
 .view-switch-label:has(input:checked),
 .pill-label:has(input:checked) { border-color: var(--text); background: var(--surface-muted); color: var(--text); }
 .view-switch-input,
-.pill-input { margin-right: 6px; accent-color: #111111; }
+.pill-input { margin-right: 6px; accent-color: var(--focus); }
 
 /* Dash date controls and the react-dates calendar inherit the active theme. */
 .SingleDatePicker,
@@ -383,6 +387,8 @@ details > summary::-webkit-details-marker { display: none; }
   border-bottom: 2px solid transparent !important;
   background: var(--surface-raised) !important;
   color: var(--text) !important;
+  caret-color: var(--text) !important;
+  -webkit-text-fill-color: var(--text) !important;
   font-family: var(--font) !important;
   font-size: 13px !important;
   font-weight: 700 !important;
@@ -394,7 +400,9 @@ details > summary::-webkit-details-marker { display: none; }
 .DateInput_input__disabled {
   background: var(--surface-muted) !important;
   color: var(--text-muted) !important;
+  -webkit-text-fill-color: var(--text-muted) !important;
   font-style: normal !important;
+  opacity: 1 !important;
 }
 
 .SingleDatePickerInput__disabled,
@@ -414,9 +422,11 @@ details > summary::-webkit-details-marker { display: none; }
 
 .DayPicker,
 .DayPicker__withBorder,
+.DayPicker_focusRegion,
 .DayPicker_transitionContainer,
 .CalendarMonthGrid,
 .CalendarMonth,
+.CalendarMonth_table,
 .CalendarMonth_caption,
 .DayPicker_weekHeader {
   background: var(--surface-raised) !important;
@@ -454,10 +464,16 @@ details > summary::-webkit-details-marker { display: none; }
   color: var(--text-soft) !important;
 }
 .CalendarDay__blocked_calendar,
-.CalendarDay__blocked_out_of_range {
+.CalendarDay__blocked_out_of_range,
+.CalendarDay__blocked_minimum_nights {
   background: var(--surface-muted) !important;
   color: var(--text-soft) !important;
 }
+.CalendarDay__blocked_calendar:hover,
+.CalendarDay__blocked_out_of_range:hover,
+.CalendarDay__blocked_minimum_nights:hover { border-color: var(--outline) !important; background: var(--surface-muted) !important; color: var(--text-soft) !important; }
+.CalendarDay__highlighted_calendar,
+.CalendarDay__highlighted_calendar:hover { border-color: var(--warning) !important; background: var(--warning-surface) !important; color: var(--text) !important; }
 .CalendarDay__selected,
 .CalendarDay__selected:active,
 .CalendarDay__selected:hover {
@@ -474,6 +490,11 @@ details > summary::-webkit-details-marker { display: none; }
 }
 .DateInput_fangStroke { stroke: var(--outline-strong) !important; }
 .DateInput_fangShape { fill: var(--surface-raised) !important; }
+.DayPickerKeyboardShortcuts_panel { border-color: var(--outline-strong) !important; background: var(--surface-raised) !important; color: var(--text) !important; }
+.DayPickerKeyboardShortcuts_close,
+.DayPickerKeyboardShortcuts_close:hover { color: var(--text-muted) !important; }
+.DayPickerKeyboardShortcuts_show__bottomRight { border-right-color: var(--index) !important; }
+.DayPickerKeyboardShortcuts_showSpan { color: #111111 !important; }
 
 /* 08. Core tables and semantic rules ------------------------------------ */
 .risk-panel { width: 100%; max-height: min(74vh, 760px); overflow: hidden; border-radius: var(--radius); }
