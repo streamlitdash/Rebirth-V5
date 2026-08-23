@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from numbers import Real
@@ -100,6 +101,10 @@ from rebirth.services.s02_state import (
 
 # Keep the operational logger name stable while V3 imports use the facade.
 LOGGER = logging.getLogger("rebirth.services.s06_refresh")
+
+_MARKET_MAX_WORKERS = 20
+_MARKET_RETRIES = 4
+_MARKET_RETRY_DELAY_SECONDS = 0.5
 
 
 class RiskRefreshManager(_RefreshStateMixin):
@@ -451,6 +456,84 @@ class RiskRefreshManager(_RefreshStateMixin):
             return adapter.risk(risk_date)
         return self._risk_loader(risk_date, spec.source_type)
 
+    def _load_market_frames(
+        self,
+        spec: ProductSpec,
+        underlyings: tuple[str, ...],
+        *,
+        connector: Callable[..., pd.DataFrame],
+        stage: str,
+        label: str,
+        load_one: Callable[[str], object],
+    ) -> pd.DataFrame:
+        """Load one product's market scope concurrently in stable input order."""
+        connector_name = _callable_name(connector)
+        failure_message = (
+            "Opening market connector failed."
+            if stage == "market_open"
+            else "Current market connector failed."
+        )
+
+        def load_with_retry(item: tuple[int, str]) -> pd.DataFrame:
+            index, underlying = item
+            for retry in range(_MARKET_RETRIES + 1):
+                retry_message = (
+                    ""
+                    if retry == 0
+                    else f" Retry {retry} of {_MARKET_RETRIES}."
+                )
+                self._progress_activity(
+                    connector_name,
+                    stage,
+                    source_type=spec.source_type,
+                    underlying=underlying,
+                    product_index=index,
+                    product_total=len(underlyings),
+                    message=f"Loading {label} for {underlying}.{retry_message}",
+                )
+                try:
+                    frame = load_one(underlying)
+                except (TypeError, ValueError):
+                    self._progress_activity(
+                        connector_name,
+                        stage,
+                        source_type=spec.source_type,
+                        underlying=underlying,
+                        message=failure_message,
+                    )
+                    raise
+                except Exception as exc:
+                    if retry == _MARKET_RETRIES:
+                        self._progress_activity(
+                            connector_name,
+                            stage,
+                            source_type=spec.source_type,
+                            underlying=underlying,
+                            message=failure_message,
+                        )
+                        raise
+                    LOGGER.warning(
+                        "Market connector failed for %s/%s; retry %d of %d: %s",
+                        spec.source_type,
+                        underlying,
+                        retry + 1,
+                        _MARKET_RETRIES,
+                        exc,
+                    )
+                    self._sleep(_MARKET_RETRY_DELAY_SECONDS)
+                    continue
+                if not isinstance(frame, pd.DataFrame):
+                    kind = "market Open" if stage == "market_open" else "current market"
+                    raise TypeError(f"{kind} connector must return a pandas DataFrame")
+                return frame
+            raise AssertionError("unreachable market retry state")
+
+        with ThreadPoolExecutor(max_workers=_MARKET_MAX_WORKERS) as executor:
+            frames = list(
+                executor.map(load_with_retry, enumerate(underlyings, start=1))
+            )
+        return pd.concat(frames, ignore_index=True, sort=False)
+
     def _load_product_market_open(
         self,
         spec: ProductSpec,
@@ -467,43 +550,27 @@ class RiskRefreshManager(_RefreshStateMixin):
             adapter.market_open if adapter is not None else self._market_open_loader
         )
         selected_status = _require_market_status(market_status)
-        frames: list[pd.DataFrame] = []
-        for index, underlying in enumerate(underlyings, start=1):
-            self._progress_activity(
-                _callable_name(connector),
-                "market_open",
-                source_type=spec.source_type,
-                underlying=underlying,
-                product_index=index,
-                product_total=len(underlyings),
-                message=f"Loading Open for {underlying}.",
+
+        def load_one(underlying: str) -> object:
+            if adapter is not None:
+                return adapter.market_open(
+                    open_date, underlying, market_status=selected_status
+                )
+            return self._market_open_loader(
+                spec.source_type,
+                open_date,
+                underlying,
+                market_status=selected_status,
             )
-            try:
-                frame = (
-                    adapter.market_open(
-                        open_date, underlying, market_status=selected_status
-                    )
-                    if adapter is not None
-                    else self._market_open_loader(
-                        spec.source_type,
-                        open_date,
-                        underlying,
-                        market_status=selected_status,
-                    )
-                )
-            except Exception:
-                self._progress_activity(
-                    _callable_name(connector),
-                    "market_open",
-                    source_type=spec.source_type,
-                    underlying=underlying,
-                    message="Opening market connector failed.",
-                )
-                raise
-            if not isinstance(frame, pd.DataFrame):
-                raise TypeError("market Open connector must return a pandas DataFrame")
-            frames.append(frame)
-        return pd.concat(frames, ignore_index=True, sort=False)
+
+        return self._load_market_frames(
+            spec,
+            underlyings,
+            connector=connector,
+            stage="market_open",
+            label="Open",
+            load_one=load_one,
+        )
 
     def _load_product_market_status(
         self,
@@ -520,45 +587,27 @@ class RiskRefreshManager(_RefreshStateMixin):
             adapter.market_status if adapter is not None else self._market_status_loader
         )
         selected_status = _require_market_status(market_status)
-        frames: list[pd.DataFrame] = []
-        for index, underlying in enumerate(underlyings, start=1):
-            self._progress_activity(
-                _callable_name(connector),
-                "market_status",
-                source_type=spec.source_type,
-                underlying=underlying,
-                product_index=index,
-                product_total=len(underlyings),
-                message=f"Loading {selected_status} for {underlying}.",
+
+        def load_one(underlying: str) -> object:
+            if adapter is not None:
+                return adapter.market_status(
+                    market_date, underlying, market_status=selected_status
+                )
+            return self._market_status_loader(
+                spec.source_type,
+                market_date,
+                underlying,
+                market_status=selected_status,
             )
-            try:
-                frame = (
-                    adapter.market_status(
-                        market_date, underlying, market_status=selected_status
-                    )
-                    if adapter is not None
-                    else self._market_status_loader(
-                        spec.source_type,
-                        market_date,
-                        underlying,
-                        market_status=selected_status,
-                    )
-                )
-            except Exception:
-                self._progress_activity(
-                    _callable_name(connector),
-                    "market_status",
-                    source_type=spec.source_type,
-                    underlying=underlying,
-                    message="Current market connector failed.",
-                )
-                raise
-            if not isinstance(frame, pd.DataFrame):
-                raise TypeError(
-                    "current market connector must return a pandas DataFrame"
-                )
-            frames.append(frame)
-        return pd.concat(frames, ignore_index=True, sort=False)
+
+        return self._load_market_frames(
+            spec,
+            underlyings,
+            connector=connector,
+            stage="market_status",
+            label=selected_status,
+            load_one=load_one,
+        )
 
     @staticmethod
     def _disabled_market_sources(

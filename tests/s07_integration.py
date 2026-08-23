@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
-from threading import Event, Thread
+from threading import Barrier, BrokenBarrierError, Event, Thread
 from time import monotonic, sleep
 
 import pandas as pd
 import pytest
 
-from rebirth.domain.s02_products import ProductConnectorAdapter
+from rebirth.domain.s02_products import PRODUCT_SPECS, ProductConnectorAdapter
 from rebirth.services.s06_refresh import RiskRefreshManager
 from rebirth.services.s01_snapshots import StaleResetGenerationError
 from rebirth.services.s05_sources import (
@@ -19,6 +20,23 @@ from rebirth.services.s05_sources import (
     get_risk_checker,
     get_risk_thresholds,
 )
+
+
+def _market_test_manager(
+    loader: Callable[..., object],
+    *,
+    wait: Callable[[float], None] = lambda _seconds: None,
+) -> RiskRefreshManager:
+    return RiskRefreshManager(
+        lambda _date: pd.DataFrame(),
+        thresholds=lambda: pd.DataFrame(),
+        risk_checker_loader=lambda _date: (pd.DataFrame(), pd.DataFrame()),
+        market_status_resolver=lambda _date: "OFFICIAL",
+        risk_loader=lambda _date, _source: pd.DataFrame(),
+        market_open_loader=loader,
+        market_status_loader=loader,
+        sleep=wait,
+    )
 
 
 def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() -> None:
@@ -118,11 +136,12 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     assert {
         source: risk_date for source, risk_date in risk_calls
     } == snapshot.risk_dates
-    assert [
+    assert sorted(
         (source, underlying, status) for source, _, underlying, status in open_calls
-    ] == [
-        (source, underlying, status) for source, _, underlying, status in current_calls
-    ]
+    ) == sorted(
+        (source, underlying, status)
+        for source, _, underlying, status in current_calls
+    )
     assert all(call[1] == expected_checker_date for call in open_calls)
     assert all(call[1] == expected_market_date for call in current_calls)
     assert all(call[3] == "Live" for call in open_calls)
@@ -158,13 +177,13 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
         expected_market_date,
         expected_market_date,
     ]
-    assert [
+    assert sorted(
         (source, underlying, status)
         for source, _, underlying, status in open_calls[first_open_count:]
-    ] == [
+    ) == sorted(
         (source, underlying, status)
         for source, _, underlying, status in current_calls[first_open_count:]
-    ]
+    )
     assert all(
         call[1] == expected_checker_date for call in open_calls[first_open_count:]
     )
@@ -178,6 +197,76 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     )
     assert portfolio_snapshot.market_status == "OFFICIAL"
     assert len(market_status_calls) == 2
+
+
+def test_market_calls_overlap_and_keep_underlying_result_order() -> None:
+    underlyings = ("CREDIT_A", "CREDIT_B", "CREDIT_C", "CREDIT_D")
+    barrier = Barrier(len(underlyings))
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        try:
+            barrier.wait(timeout=2)
+        except BrokenBarrierError as exc:
+            raise ValueError("market calls did not overlap") from exc
+        return pd.DataFrame(
+            {"Underlying": [underlying], "Market Status": [market_status]}
+        )
+
+    manager = _market_test_manager(loader)
+    spec = PRODUCT_SPECS["creditdelta"]
+    opened = manager._load_product_market_open(
+        spec,
+        pd.Timestamp("2026-08-20"),
+        underlyings,
+        market_status="OFFICIAL",
+    )
+    current = manager._load_product_market_status(
+        spec,
+        pd.Timestamp("2026-08-21"),
+        underlyings,
+        market_status="OFFICIAL",
+    )
+
+    assert opened["Underlying"].tolist() == list(underlyings)
+    assert current["Underlying"].tolist() == list(underlyings)
+
+
+def test_market_call_retries_four_times_then_succeeds() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            raise ConnectionError("temporary market failure")
+        return pd.DataFrame(
+            {"Underlying": [underlying], "Market Status": [market_status]}
+        )
+
+    manager = _market_test_manager(loader, wait=waits.append)
+    result = manager._load_product_market_status(
+        PRODUCT_SPECS["creditdelta"],
+        pd.Timestamp("2026-08-21"),
+        ("CREDIT_A",),
+        market_status="OFFICIAL",
+    )
+
+    assert calls == 5
+    assert waits == [0.5, 0.5, 0.5, 0.5]
+    assert result["Underlying"].tolist() == ["CREDIT_A"]
 
 
 def test_historical_view_rejects_forced_risk_after_checker_date() -> None:
