@@ -23,11 +23,11 @@ from rebirth.app.s02_contracts import RefreshManagerProtocol
 from .s01_common import (
     DISPLAY_COLUMNS,
     GRID_ROW_ID,
-    PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
-    PL_FILTER_IDS,
+    PL_SAVED_VIEW_CONTROLS,
     PLSendConfig,
     SendFunction,
+    committed_pl_filter_values,
 )
 from .s02_editor import (
     _allowed_portfolios,
@@ -76,7 +76,7 @@ function (selectedCells, rows) {
         return [selectedCells.length + " cells selected · no PL values", false];
     }
     var sum = numbers.reduce(function (total, value) { return total + value; }, 0);
-    var format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+    var format = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
     return [selectedCells.length + " cells selected · "
         + numbers.length + " PL · Sum " + format.format(sum)
         + " · Average " + format.format(sum / numbers.length)
@@ -216,8 +216,7 @@ def register_pl_send_callbacks(
         Input("pl-adjustment-revision-store", "data"),
         Input("pl-sog-adjustment-revision-store", "data"),
         Input("pl-portfolio-adjustment-revision-store", "data"),
-        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        Input(PL_FILTER_EXCLUDE_ID, "value"),
+        Input(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         State("pl-send-sog-filter", "value"),
         State("pl-send-portfolio-filter", "value"),
         prevent_initial_call=True,
@@ -231,11 +230,13 @@ def register_pl_send_callbacks(
         adjustment_revision,
         sog_section_revision,
         portfolio_section_revision,
-        *filter_values_mode_and_scopes,
+        committed_filter_state,
+        selected_sog,
+        selected_portfolio,
     ):
-        filter_values = filter_values_mode_and_scopes[: len(PL_FILTER_FIELDS)]
-        exclude_value = filter_values_mode_and_scopes[len(PL_FILTER_FIELDS)]
-        selected_sog, selected_portfolio = filter_values_mode_and_scopes[-2:]
+        filter_values, exclude_value = committed_pl_filter_values(
+            committed_filter_state
+        )
         sog_open = bool(int(sog_summary_clicks or 0) % 2)
         portfolio_open = bool(int(portfolio_summary_clicks or 0) % 2)
         if not sog_open and not portfolio_open:
@@ -580,8 +581,7 @@ def register_pl_send_callbacks(
         State("pl-portfolio-adjustment-revision-store", "data"),
         State("pl-send-sog-filter", "value"),
         State("pl-send-portfolio-filter", "value"),
-        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        State(PL_FILTER_EXCLUDE_ID, "value"),
+        State(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         prevent_initial_call=True,
     )
     def save_adjustments(
@@ -595,7 +595,7 @@ def register_pl_send_callbacks(
         portfolio_adjustment_revision,
         selected_sog,
         selected_portfolio,
-        *filter_values_mode,
+        committed_filter_state,
     ):
         trigger = ctx.triggered_id
         is_sog = trigger == "save-sog-adjustments-button"
@@ -604,8 +604,9 @@ def register_pl_send_callbacks(
         try:
             snapshot = refresh_manager.pl_snapshot
             store = materialized_editor_store(query, "sog" if is_sog else "portfolio")
-            filter_values = filter_values_mode[: len(PL_FILTER_FIELDS)]
-            exclude_value = filter_values_mode[len(PL_FILTER_FIELDS)]
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
             _require_current_filter_scope(store, filter_values, exclude_value)
             expected_date = pd.Timestamp(snapshot.market_date).date().isoformat()
             if int(store.get("revision", -1)) != int(snapshot.revision):
@@ -754,12 +755,11 @@ def register_pl_send_callbacks(
     @app.callback(
         Output("pl-send-all-status", "children"),
         Input("send-all-pl-button", "n_clicks"),
-        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        State(PL_FILTER_EXCLUDE_ID, "value"),
+        State(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         prevent_initial_call=True,
         running=[(Output("send-all-pl-button", "disabled"), True, False)],
     )
-    def send_all(n_clicks, *filter_values_mode):
+    def send_all(n_clicks, committed_filter_state):
         if not n_clicks:
             raise PreventUpdate
 
@@ -767,8 +767,9 @@ def register_pl_send_callbacks(
             snapshot = current_pl_snapshot()
             if snapshot is None:
                 return "Not sent: P&L data is still loading."
-            filter_values = filter_values_mode[: len(PL_FILTER_FIELDS)]
-            exclude_value = filter_values_mode[len(PL_FILTER_FIELDS)]
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
             effective, mapping, governance = _effective_rows(
                 snapshot,
                 config,
@@ -811,24 +812,26 @@ def register_pl_send_callbacks(
         State("pl-send-sog-grid", "data"),
         State("pl-send-effective-query-store", "data"),
         State("pl-send-sog-filter", "value"),
-        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        State(PL_FILTER_EXCLUDE_ID, "value"),
+        State(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         prevent_initial_call=True,
     )
-    def send_sog(n_clicks, records, query, selected_scope, *filter_values_mode):
+    def send_sog(n_clicks, records, query, selected_scope, committed_filter_state):
         if not n_clicks:
             raise PreventUpdate
 
         try:
             store = materialized_editor_store(query, "sog")
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
             return send_rows(
                 records,
                 config.send_sog_pl,
                 store,
                 scope_column=SIGNOFF_GROUP,
                 selected_scope=selected_scope,
-                filter_values=filter_values_mode[: len(PL_FILTER_FIELDS)],
-                exclude_value=filter_values_mode[len(PL_FILTER_FIELDS)],
+                filter_values=filter_values,
+                exclude_value=exclude_value,
             )
         except Exception as exc:
             return f"Not sent: {exc}"
@@ -839,8 +842,7 @@ def register_pl_send_callbacks(
         State("pl-send-portfolio-grid", "data"),
         State("pl-send-effective-query-store", "data"),
         State("pl-send-portfolio-filter", "value"),
-        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        State(PL_FILTER_EXCLUDE_ID, "value"),
+        State(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         prevent_initial_call=True,
     )
     def send_portfolio(
@@ -848,21 +850,24 @@ def register_pl_send_callbacks(
         records,
         query,
         selected_scope,
-        *filter_values_mode,
+        committed_filter_state,
     ):
         if not n_clicks:
             raise PreventUpdate
 
         try:
             store = materialized_editor_store(query, "portfolio")
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
             return send_rows(
                 records,
                 config.send_portfolio_pl,
                 store,
                 scope_column=PORTFOLIO,
                 selected_scope=selected_scope,
-                filter_values=filter_values_mode[: len(PL_FILTER_FIELDS)],
-                exclude_value=filter_values_mode[len(PL_FILTER_FIELDS)],
+                filter_values=filter_values,
+                exclude_value=exclude_value,
             )
         except Exception as exc:
             return f"Not sent: {exc}"

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from dash import no_update
+from dash import dcc, no_update
 
 from rebirth.history import s06_repository as history_module
 from rebirth.history import (
@@ -51,7 +51,7 @@ from rebirth.pages.data.s01_selection import (
 )
 from rebirth.pages.data.s02_view import build_data_page
 from rebirth.pages.risk.s04_handoff import _handoff_payload, build_history_handoff
-from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from rebirth.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
 from rebirth.app.s07_factory import build_app
 
 
@@ -123,6 +123,15 @@ def test_quick_identity_change_clears_a_stale_open_in_data_error(
 ) -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     callback = _callback_for_output(app, "data-history-handoff-store", "data")
+    metadata = _callback_metadata(app, "data-history-handoff-store", "data")
+    states = {(item["id"], item["property"]) for item in metadata["state"]}
+    assert ("dimension-filter-values-store", "data") in states
+    assert ("risk-filter-exclude-applied-store", "data") in states
+    assert ("risk-filter-exclude-selected", "value") not in states
+    assert (
+        not {(component_id, "value") for component_id in DIMENSION_FILTER_IDS.values()}
+        & states
+    )
     monkeypatch.setattr(
         handoff_callbacks_module,
         "ctx",
@@ -134,10 +143,9 @@ def test_quick_identity_change_clears_a_stale_open_in_data_error(
         0,
         "selected-risk",
         None,
-        "reported",
         [],
+        [[] for _field in FILTER_DIMENSION_FIELDS],
         [],
-        *([[]] * len(FILTER_DIMENSION_FIELDS)),
         0,
     )
 
@@ -503,6 +511,50 @@ def test_product_axes_own_the_bounded_clientside_payload(
         assert any(row["Risk"] is None for row in payload["values"])
 
 
+def test_fixed_data_series_and_official_market_label() -> None:
+    risk_request = history_request_payload(
+        replace(_handoff("ir/delta"), metric="pl"),
+    )
+    risk_handoff = HistoryHandoff.from_mapping(risk_request["handoff"])
+    assert risk_handoff.metric == "risk"
+
+    risk_bundle = _bundle("fx/delta")
+    market_identity = replace(
+        risk_bundle.query.handoff.identity,
+        identity_mode="underlying",
+    )
+    market_handoff = replace(
+        risk_bundle.query.handoff,
+        kind="market",
+        identity=market_identity,
+        metric="open",
+        filter_view=None,
+    )
+    market_request = history_request_payload(market_handoff)
+    canonical_market_handoff = HistoryHandoff.from_mapping(market_request["handoff"])
+    assert canonical_market_handoff.metric == "current"
+
+    market_query = HistoryQuery(canonical_market_handoff, period="all")
+    market_values = risk_bundle.values.rename(
+        columns={"Risk Date": "Market Date", "Risk": "Current"}
+    )
+    market_raw = risk_bundle.raw_rows.rename(
+        columns={"Risk Date": "Market Date", "Risk": "Current"}
+    )
+    payload = serialize_history_bundle(
+        replace(
+            risk_bundle,
+            query=market_query,
+            date_column="Market Date",
+            metric_column="Current",
+            values=market_values,
+            raw_rows=market_raw,
+        )
+    )
+    assert payload["metric_column"] == "Official"
+    assert all("Official" in row and "Current" not in row for row in payload["values"])
+
+
 def test_browser_payload_budgets_fail_without_silent_truncation() -> None:
     bundle = _bundle("ir/delta")
     raw = pd.concat(
@@ -686,7 +738,11 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
         "selectedProjection, selectedSlice, selectedA, selectedB",
         "if (changedIdentity)",
         "playing = false",
-        'playing ? "Playing" : "Static view"',
+        'playing ? "Playing" : "Static"',
+        'const SUM_SLICE = "__sum__"',
+        "dataNullSafeSum",
+        "values: [SUM_SLICE, ...dataLabels(axes[1])]",
+        "values: [SUM_SLICE, ...dataLabels(axes[0])]",
         "const hasPlayer = dates.length > 1 && !compare",
         'setProps("data-player-slider", { value: next })',
         "const direction = event.deltaY > 0 ? 1",
@@ -703,6 +759,12 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
 
 def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
+    show_custom = _callback_for_output(app, "data-custom-range-control", "hidden")
+    assert show_custom("custom") is False
+    assert all(
+        show_custom(period) is True
+        for period in ("wtd", "mtd", "ytd", "1y", "5y", "all")
+    )
     choose_underlying = _callback_for_output(app, "data-underlying", "options")
     assert choose_underlying(
         None,
@@ -789,8 +851,17 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         return _catalog()
 
     sync = _callback_for_output(app, "data-history-kind-tabs", "value")
-    assert sync(stored_handoff, None, None) == ("risk", "underlying")
-    assert sync(stored_handoff, None, "risk-2-11") == (no_update, no_update)
+    assert sync(stored_handoff, None, None) == "risk"
+    assert sync(stored_handoff, None, "risk-2-11") is no_update
+    identity = _callback_for_output(app, "data-identity-mode", "value")
+    assert identity("risk", stored_handoff, None, None) == (
+        "underlying",
+        False,
+    )
+    assert identity("market", None, None, None) == (
+        "underlying",
+        True,
+    )
 
     monkeypatch.setattr(
         ArchiveHistoryRepository,
@@ -815,7 +886,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -824,10 +894,7 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
     )
     assert "error" not in mounted_payload
     assert mounted_consumed == "risk-2-11"
-    assert sync(stored_handoff, mounted_payload, mounted_consumed) == (
-        "risk",
-        "underlying",
-    )
+    assert sync(stored_handoff, mounted_payload, mounted_consumed) == "risk"
 
     monkeypatch.setattr(
         data_callbacks_module,
@@ -841,7 +908,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -861,7 +927,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -881,7 +946,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -903,7 +967,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -950,7 +1013,6 @@ def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
         "risk",
         None,
         None,
-        "risk",
         "all",
         None,
         None,
@@ -995,6 +1057,16 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         stock_href="/proxy/stock",
     )
     page_ids = {getattr(component, "id", None) for component in _walk(page)}
+    identity_mode = next(
+        component
+        for component in _walk(page)
+        if getattr(component, "id", None) == "data-identity-mode"
+    )
+    period = next(
+        component
+        for component in _walk(page)
+        if getattr(component, "id", None) == "data-period"
+    )
     load_button = next(
         component
         for component in _walk(page)
@@ -1016,6 +1088,23 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         "data-player-visibility-store",
     } <= page_ids
     assert load_button.disabled is True
+    assert isinstance(identity_mode, dcc.Dropdown)
+    assert [option["value"] for option in identity_mode.options] == [
+        "reported",
+        "underlying",
+    ]
+    assert isinstance(period, dcc.RadioItems)
+    assert [option["value"] for option in period.options] == [
+        "wtd",
+        "mtd",
+        "ytd",
+        "1y",
+        "5y",
+        "all",
+        "custom",
+    ]
+    assert "data-period-segmented" in str(period.className).split()
+    assert "data-metric" not in page_ids
     assert "data-history-request-store" not in page_ids
     assert "data-unlock-identity-button" not in page_ids
     assert "data-history-lock-store" not in page_ids

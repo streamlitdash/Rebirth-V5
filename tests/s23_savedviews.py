@@ -31,6 +31,7 @@ from rebirth.ui.s03_filters import (
     BASE_SAVED_VIEW_LABEL,
     base_saved_filter_view,
     build_saved_filter_view_bar,
+    committed_filter_state_values,
     register_saved_filter_view_callbacks,
     saved_view_apply_request,
     saved_view_request_matches_base,
@@ -113,6 +114,7 @@ def test_filter_order_is_the_same_explicit_five_column_contract() -> None:
     assert ".saved-filter-view-disclosure[open]" in css
     assert ".saved-filter-view-panel" in css
     assert ".saved-view-filter-note" in css
+    assert ".saved-view-form-actions" in css
     assert ".filter-mode-control" in css
 
 
@@ -353,6 +355,12 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
     assert RISK_SAVED_VIEW_CONTROLS.applied_request_id in {
         getattr(item, "id", None) for item in components
     }
+    assert {
+        RISK_SAVED_VIEW_CONTROLS.committed_state_id,
+        RISK_SAVED_VIEW_CONTROLS.apply_id,
+        RISK_SAVED_VIEW_CONTROLS.cancel_id,
+    } <= {getattr(item, "id", None) for item in components}
+    assert "Draft changes affect the page only after Apply" in copy
     assert "shared across Risk, Stock, and P&L" in copy
     assert "restart or redeploy" in copy
     notes = [
@@ -471,6 +479,7 @@ def test_generic_callbacks_never_own_filter_dropdown_values(tmp_path: Path) -> N
     ]
     assert (RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data") in outputs
     assert (RISK_SAVED_VIEW_CONTROLS.applied_request_id, "data") in outputs
+    assert (RISK_SAVED_VIEW_CONTROLS.committed_state_id, "data") in outputs
     assert (RISK_SAVED_VIEW_CONTROLS.current_label_id, "children") in outputs
     assert not any(
         (component_id, "value") in outputs
@@ -534,8 +543,10 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             1,
             0,
             0,
+            0,
             BASE_SAVED_VIEW_ID,
             "",
+            None,
             *([[]] * len(FILTER_KEYS)),
             [],
         )
@@ -557,6 +568,8 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     )
     risk_request = risk_apply(
         named.identifier,
+        0,
+        None,
         *([[]] * len(FILTER_KEYS)),
         [],
     )
@@ -582,6 +595,8 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     )
     pnl_request = pnl_apply(
         BASE_SAVED_VIEW_ID,
+        0,
+        None,
         *(["pnl-local"] for _key in FILTER_KEYS),
         [],
     )
@@ -619,7 +634,8 @@ def test_callbacks_save_update_delete_and_apply_base(
     )
     register_saved_filter_view_callbacks(app, repository, controls)
     mutate = _callback_for_output(app, controls.selector_id, "options")
-    apply = _callback_for_output(app, controls.apply_request_id, "data")
+    stage = _callback_for_output(app, controls.apply_request_id, "data")
+    commit = _callback_for_output(app, controls.committed_state_id, "data")
     actions = _callback_for_output(app, controls.save_id, "children")
     current_label = _callback_for_output(app, controls.current_label_id, "children")
     selected_values = [_filters()[key] for key in FILTER_KEYS]
@@ -627,7 +643,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert actions(BASE_SAVED_VIEW_ID) == ("Save New", True, False)
     assert (
         current_label(
-            BASE_SAVED_VIEW_ID,
+            None,
             [{"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID}],
         )
         == DEFAULT_RISK_FILTER_LABEL
@@ -641,8 +657,10 @@ def test_callbacks_save_update_delete_and_apply_base(
         0,
         1,
         0,
+        0,
         BASE_SAVED_VIEW_ID,
         "Morning",
+        None,
         *selected_values,
         ["exclude"],
     )
@@ -651,28 +669,85 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert saved[2] == ""
     assert "Saved new view: Morning" in saved[3]
     assert actions(identifier) == ("Update View", False, True)
-    assert current_label(identifier, saved[0]) == "Morning"
+    # Selecting or saving a draft must not claim it is active before Apply.
+    assert current_label(None, saved[0]) == DEFAULT_RISK_FILTER_LABEL
     assert repository.get("stock", identifier).exclude_selected is True
 
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.selector_id),
+    )
+    named_draft = stage(
+        identifier,
+        0,
+        None,
+        *([[]] * len(FILTER_KEYS)),
+        [],
+    )
+    draft_values, draft_exclude = saved_view_request_values(named_draft, controls)
+    assert draft_values == tuple(selected_values)
+    assert draft_exclude == ["exclude"]
+
+    committed = commit(1, identifier, *selected_values, ["exclude"])
+    assert committed_filter_state_values(committed, controls) == (
+        tuple(selected_values),
+        ["exclude"],
+    )
+    assert current_label(committed, saved[0]) == "Morning"
+
     updated_filters = _filters("Updated")
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.save_id),
+    )
     updated = mutate(
         0,
         2,
         0,
+        0,
         identifier,
         "Ignored while updating",
+        committed,
         *(updated_filters[key] for key in FILTER_KEYS),
         [],
     )
     assert updated[1] == identifier
     assert updated[2] is no_update
     assert "Updated view: Morning" in updated[3]
-    assert current_label(identifier, updated[0]) == "Morning"
+    assert current_label(committed, updated[0]) == "Morning"
     assert repository.get("pnl", identifier).filters["activity"] == ("Updated",)
     assert repository.get("risk", identifier).name == "Morning"
 
-    base_request = apply(
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.selector_id),
+    )
+    updated_draft = stage(
+        identifier,
+        0,
+        committed,
+        *selected_values,
+        ["exclude"],
+    )
+    staged_values, staged_exclude = saved_view_request_values(
+        updated_draft,
+        controls,
+    )
+    assert staged_values == tuple(updated_filters[key] for key in FILTER_KEYS)
+    assert staged_exclude == []
+
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.selector_id),
+    )
+    base_request = stage(
         BASE_SAVED_VIEW_ID,
+        0,
+        committed,
         *(updated_filters[key] for key in FILTER_KEYS),
         ["exclude"],
     )
@@ -683,14 +758,69 @@ def test_callbacks_save_update_delete_and_apply_base(
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
+        SimpleNamespace(triggered_id=controls.cancel_id),
+    )
+    restore_request = stage(
+        BASE_SAVED_VIEW_ID,
+        1,
+        committed,
+        *(updated_filters[key] for key in FILTER_KEYS),
+        [],
+    )
+    restored_values, restored_exclude = saved_view_request_values(
+        restore_request,
+        controls,
+    )
+    assert restored_values == tuple(selected_values)
+    assert restored_exclude == ["exclude"]
+    cancelled = mutate(
+        0,
+        2,
+        0,
+        1,
+        BASE_SAVED_VIEW_ID,
+        "",
+        committed,
+        *(updated_filters[key] for key in FILTER_KEYS),
+        [],
+    )
+    assert cancelled[1] == identifier
+    assert "committed filters restored" in cancelled[3]
+
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
         SimpleNamespace(triggered_id=controls.delete_id),
     )
     deleted = mutate(
         0,
         2,
         1,
+        1,
         identifier,
         "",
+        committed,
+        *(updated_filters[key] for key in FILTER_KEYS),
+        [],
+    )
+    assert deleted[1] is no_update
+    assert "Apply Base or another view" in deleted[3]
+    assert repository.get("risk", identifier).name == "Morning"
+
+    committed_base = commit(
+        2,
+        BASE_SAVED_VIEW_ID,
+        *([[]] * len(FILTER_KEYS)),
+        [],
+    )
+    deleted = mutate(
+        0,
+        2,
+        2,
+        1,
+        identifier,
+        "",
+        committed_base,
         *(updated_filters[key] for key in FILTER_KEYS),
         [],
     )
@@ -698,7 +828,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         {"label": DEFAULT_RISK_FILTER_LABEL, "value": BASE_SAVED_VIEW_ID}
     ]
     assert deleted[1] == BASE_SAVED_VIEW_ID
-    assert current_label(deleted[1], deleted[0]) == DEFAULT_RISK_FILTER_LABEL
+    assert current_label(committed_base, deleted[0]) == DEFAULT_RISK_FILTER_LABEL
     assert "Deleted view: Morning" in deleted[3]
     assert repository.list("stock") == ()
 

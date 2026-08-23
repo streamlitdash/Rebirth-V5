@@ -21,12 +21,11 @@ from rebirth.domain.s08_pnl import (
 )
 from rebirth.history import PLHistorySeriesResult
 from .s01_common import (
-    PL_FILTER_EXCLUDE_ID,
-    PL_FILTER_FIELDS,
-    PL_FILTER_IDS,
+    PL_SAVED_VIEW_CONTROLS,
     PLHistoryQueryProtocol,
     PLSendConfig,
     apply_pl_filters,
+    committed_pl_filter_values,
     pl_external_filter_map,
 )
 from .s03_history import build_pl_history_figure
@@ -136,6 +135,18 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
             cached_history = loaded
         return loaded
 
+    app.clientside_callback(
+        """
+        function (preset) {
+            return String(preset || "").toLowerCase() === "custom"
+                ? {}
+                : {display: "none"};
+        }
+        """,
+        Output("pl-history-custom-range-control", "style"),
+        Input("pl-history-period", "value"),
+    )
+
     @app.callback(
         Output("pl-history-chart", "figure"),
         Output("pl-history-plot-status", "children"),
@@ -146,8 +157,7 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
         Input("pl-history-period", "value"),
         Input("pl-history-date-range", "start_date"),
         Input("pl-history-date-range", "end_date"),
-        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        Input(PL_FILTER_EXCLUDE_ID, "value"),
+        Input(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         Input("clear-cache-complete-store", "data"),
         prevent_initial_call=True,
     )
@@ -157,12 +167,7 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
         period,
         start_date,
         end_date,
-        activity_filter,
-        signoff_filter,
-        portfolio_filter,
-        category_filter,
-        subcategory_filter,
-        exclude_filter,
+        committed_filter_state,
         _cache_generation,
     ):
         nonlocal cached_history
@@ -184,18 +189,13 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
             "predict": (PREDICT_TYPE,),
             "both": (COLOSSUS_TYPE, PREDICT_TYPE),
         }.get(str(series_choice), (COLOSSUS_TYPE, PREDICT_TYPE))
-        page_filters = pl_external_filter_map(
-            [
-                activity_filter,
-                signoff_filter,
-                portfolio_filter,
-                category_filter,
-                subcategory_filter,
-            ]
-        )
         criteria = _selection_criteria(selection)
-        exclude_selected = "exclude" in (exclude_filter or [])
         try:
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
+            page_filters = pl_external_filter_map(filter_values)
+            exclude_selected = "exclude" in exclude_value
             if query_source is not None:
                 result = query_source.series(
                     path=(),

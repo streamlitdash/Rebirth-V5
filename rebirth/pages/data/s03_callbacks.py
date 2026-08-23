@@ -15,8 +15,6 @@ from dash import ClientsideFunction, Dash, Input, Output, State, ctx, no_update
 from rebirth.history import (
     HISTORY_CANONICAL_CELL_BUDGET,
     HISTORY_RAW_ROW_BUDGET,
-    MARKET_METRICS,
-    RISK_METRICS,
     ArchiveHistoryRepository,
     HistoryBundle,
     HistoryHandoff,
@@ -127,8 +125,13 @@ def serialize_history_bundle(bundle: HistoryBundle) -> dict[str, object]:
             f"{HISTORY_CANONICAL_CELL_BUDGET:,}-cell browser budget. Choose a "
             "narrower period or exact identity."
         )
+    metric_column = bundle.metric_column
+    browser_values = bundle.values
+    if bundle.query.handoff.kind == "market" and metric_column == "Current":
+        metric_column = "Official"
+        browser_values = browser_values.rename(columns={"Current": metric_column})
     values, _columns = _frame_payload(
-        bundle.values,
+        browser_values,
         date_column=bundle.date_column,
     )
     key_payload = {
@@ -157,7 +160,7 @@ def serialize_history_bundle(bundle: HistoryBundle) -> dict[str, object]:
         "period": bundle.query.period,
         "date_column": bundle.date_column,
         "dates": [value.isoformat() for value in bundle.dates],
-        "metric_column": bundle.metric_column,
+        "metric_column": metric_column,
         "axes": [
             {
                 "column": axis.column,
@@ -175,29 +178,21 @@ def serialize_history_bundle(bundle: HistoryBundle) -> dict[str, object]:
     }
 
 
-def metric_controls(
-    raw_handoff: object,
-) -> tuple[list[dict[str, str]], str, str]:
-    """Return strict metric choices and a locked identity breadcrumb."""
+def history_breadcrumb(raw_handoff: object) -> str:
+    """Return the loaded identity and its fixed page-owned series label."""
 
     try:
         handoff = HistoryHandoff.from_mapping(raw_handoff)
     except (HistoryValidationError, TypeError, ValueError):
-        return (
-            [{"label": "Risk", "value": "risk"}],
-            "risk",
-            "No history identity selected",
-        )
-    metrics = RISK_METRICS if handoff.kind == "risk" else MARKET_METRICS
-    options = [{"label": label, "value": key} for key, label in metrics.items()]
+        return "No history identity selected"
     identity = handoff.identity
     mode = "Reported" if identity.identity_mode == "reported" else "Underlying"
+    series = "Risk" if handoff.kind == "risk" else "Official"
     sources = ", ".join(identity.source_types)
-    breadcrumb = (
+    return (
         f"{handoff.kind.title()} › {identity.risk_type} › {identity.risk_greek} "
-        f"› {identity.underlying} · {mode} · {sources}"
+        f"› {identity.underlying} · {series} · {mode} · {sources}"
     )
-    return options, handoff.metric, breadcrumb
 
 
 def _request_query(raw_request: object) -> HistoryQuery:
@@ -219,7 +214,6 @@ def _request_query(raw_request: object) -> HistoryQuery:
 def history_request_payload(
     handoff: HistoryHandoff,
     *,
-    metric: object = None,
     period: object = "all",
     start_date: object = None,
     end_date: object = None,
@@ -227,12 +221,7 @@ def history_request_payload(
 ) -> dict[str, object]:
     """Build the one immutable request consumed by the archive callback."""
 
-    selected_metric = str(metric or handoff.metric).strip().casefold()
-    allowed = RISK_METRICS if handoff.kind == "risk" else MARKET_METRICS
-    if selected_metric not in allowed:
-        raise HistoryValidationError(
-            f"{handoff.kind.title()} metric must be one of {sorted(allowed)}"
-        )
+    selected_metric = "risk" if handoff.kind == "risk" else "current"
     selected_handoff = replace(handoff, metric=selected_metric)
     selected_period = str(period or "all").strip().casefold()
     query = HistoryQuery(
@@ -342,7 +331,6 @@ def register_callbacks(
 
     @app.callback(
         Output("data-history-kind-tabs", "value"),
-        Output("data-identity-mode", "value"),
         Input("data-history-handoff-store", "data"),
         Input("data-history-request-store", "data"),
         State("data-history-handoff-consumed-store", "data"),
@@ -354,19 +342,43 @@ def register_callbacks(
             try:
                 handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
             except (HistoryValidationError, TypeError, ValueError):
-                return no_update, no_update
-        return handoff.kind, handoff.identity.identity_mode
+                return no_update
+        return handoff.kind
 
     @app.callback(
+        Output("data-identity-mode", "value"),
         Output("data-identity-mode", "disabled"),
         Input("data-history-kind-tabs", "value"),
+        Input("data-history-handoff-store", "data"),
+        Input("data-history-request-store", "data"),
+        State("data-history-handoff-consumed-store", "data"),
     )
-    def configure_identity_mode(kind):
-        return str(kind or "risk").strip().casefold() == "market"
+    def configure_identity_mode(
+        kind,
+        raw_handoff,
+        raw_request,
+        consumed_nonce,
+    ):
+        selected_kind = str(kind or "risk").strip().casefold()
+        if selected_kind == "market":
+            return "underlying", True
+        try:
+            handoff = _requested_history_handoff(raw_request)
+        except (HistoryValidationError, TypeError, ValueError):
+            try:
+                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
+            except (HistoryValidationError, TypeError, ValueError):
+                handoff = None
+        preferred = (
+            handoff.identity.identity_mode
+            if handoff is not None and handoff.kind == selected_kind
+            else "reported"
+        )
+        return (
+            preferred if preferred in {"reported", "underlying"} else "reported"
+        ), False
 
     @app.callback(
-        Output("data-metric", "options"),
-        Output("data-metric", "value"),
         Output("data-identity-breadcrumb", "children"),
         Input("data-history-request-store", "data"),
         Input("data-history-kind-tabs", "value"),
@@ -376,14 +388,10 @@ def register_callbacks(
             try:
                 handoff = HistoryHandoff.from_mapping(raw_request["handoff"])
                 if handoff.kind == str(kind or "risk").strip().casefold():
-                    return metric_controls(handoff.to_mapping())
+                    return history_breadcrumb(handoff.to_mapping())
             except (HistoryValidationError, TypeError, ValueError):
                 pass
-        selected_kind = str(kind or "risk").strip().casefold()
-        metrics = MARKET_METRICS if selected_kind == "market" else RISK_METRICS
-        options = [{"label": label, "value": key} for key, label in metrics.items()]
-        value = "current" if selected_kind == "market" else "risk"
-        return options, value, "Choose an exact identity, then load history"
+        return "Choose an exact identity, then load history"
 
     @app.callback(
         Output("data-history-catalog-store", "data"),
@@ -614,7 +622,6 @@ def register_callbacks(
         State("data-history-kind-tabs", "value", allow_optional=True),
         State("data-history-catalog-store", "data", allow_optional=True),
         State("data-underlying", "value", allow_optional=True),
-        State("data-metric", "value", allow_optional=True),
         State("data-period", "value", allow_optional=True),
         State("data-custom-range", "start_date", allow_optional=True),
         State("data-custom-range", "end_date", allow_optional=True),
@@ -628,7 +635,6 @@ def register_callbacks(
         kind,
         raw_catalog,
         entry_key,
-        metric,
         period,
         start_date,
         end_date,
@@ -675,7 +681,6 @@ def register_callbacks(
                     )
                 return history_request_payload(
                     handoff,
-                    metric=metric,
                     period=period,
                     start_date=start_date,
                     end_date=end_date,
@@ -831,7 +836,7 @@ def register_callbacks(
 __all__ = [
     "load_archive_catalog",
     "history_request_payload",
-    "metric_controls",
+    "history_breadcrumb",
     "poll_archive_generation",
     "query_history_bundle",
     "register_callbacks",

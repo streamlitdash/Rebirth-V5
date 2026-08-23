@@ -167,21 +167,20 @@ def build_pl_summary_table(
             value = record[metric]
             rendered = _number(value)
             negative = value is not None and not pd.isna(value) and float(value) < 0
-            content: object = rendered
-            if leaf:
-                content = html.Button(
-                    rendered,
-                    id={
-                        "type": PL_SUMMARY_HISTORY_CELL_TYPE,
-                        "risk_type": path[0],
-                        "risk_greek": path[1],
-                        "underlying": path[2],
-                        "metric": metric,
-                    },
-                    n_clicks=0,
-                    className="pnl-summary-history-button",
-                    title=f"Open {label} P&L history",
-                )
+            scope_label = "all applied filters" if not path else " › ".join(path)
+            content: object = html.Button(
+                rendered,
+                id={
+                    "type": PL_SUMMARY_HISTORY_CELL_TYPE,
+                    "risk_type": path[0] if len(path) >= 1 else "",
+                    "risk_greek": path[1] if len(path) >= 2 else "",
+                    "underlying": path[2] if len(path) >= 3 else "",
+                    "metric": metric,
+                },
+                n_clicks=0,
+                className="pnl-summary-history-button",
+                title=f"Open P&L history for {scope_label}",
+            )
             cells.append(
                 html.Td(
                     content,

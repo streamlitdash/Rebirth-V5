@@ -45,6 +45,7 @@ from .s11_promotion import build_promotion_generation_controls
 from .s06_explorertables import build_risk_table
 from .s09_quickmarket import build_quick_market_search
 from .s08_quickrisk import build_quick_search
+from .s13_workspacetables import TOP_PROMOTION_SIGNALS
 
 
 _UNSET = object()
@@ -675,6 +676,7 @@ def build_layout(
                 # could replace a warm table with an empty render during mount.
                 data=[list(value) for value in initial_filter_values],
             ),
+            dcc.Store(id="risk-filter-exclude-applied-store", data=[]),
             dcc.Store(id="selected-cell-store", data=None),
             # Promotion toggle: True = promotion enabled (display bucket between risk greek and group)
             #                   False = promotion disabled (group immediately after risk greek)
@@ -783,119 +785,151 @@ def build_layout(
             )
             if refresh_enabled
             else None,
-            dcc.Tabs(
-                id="risk-workspace-tabs",
-                value="aggregate-pl",
-                children=[
-                    dcc.Tab(
-                        label="Aggregate P&L",
+            html.Details(
+                [
+                    html.Summary(
+                        [
+                            html.Span("Ag P&L", className="risk-workspace-title"),
+                            html.Span(
+                                "Aggregate · Quick Risk · Quick Market · Promotions",
+                                className="risk-workspace-summary-note",
+                            ),
+                        ],
+                        className="risk-workspace-summary",
+                    ),
+                    dcc.Tabs(
+                        id="risk-workspace-tabs",
                         value="aggregate-pl",
-                        children=html.Div(
-                            [
-                                html.Div(
-                                    [
-                                        html.Div(
-                                            "View by",
-                                            className="aggregate-pl-title",
-                                        ),
-                                        dcc.RadioItems(
-                                            id="aggregate-pl-dimension",
-                                            options=view_dimension_options,
-                                            value=DEFAULT_VIEW_DIMENSION,
-                                            inline=True,
-                                            className="aggregate-pl-selector",
-                                        ),
-                                    ],
-                                    className="aggregate-pl-header",
-                                ),
-                                html.Div(
-                                    dcc.Loading(
-                                        html.Div(
-                                            initial_aggregate_table,
-                                            id="aggregate-pl-grid",
-                                        ),
-                                        custom_spinner=build_cube_loader(
-                                            "Loading aggregate P&L"
-                                        ),
-                                        delay_show=120,
-                                        className="cube-loading-boundary",
-                                    ),
-                                    className="aggregate-pl-panel",
-                                ),
-                            ],
-                            className="risk-workspace-tab-panel",
-                        ),
-                    ),
-                    dcc.Tab(
-                        label="Quick Risk",
-                        value="quick-risk",
-                        children=build_quick_search(embedded=True)
-                        if refresh_enabled
-                        else html.Div(
-                            "Quick Risk is available after the first committed refresh.",
-                            className="empty-state",
-                        ),
-                    ),
-                    dcc.Tab(
-                        label="Quick Market",
-                        value="quick-market",
-                        children=build_quick_market_search(embedded=True)
-                        if refresh_enabled
-                        else html.Div(
-                            "Quick Market is available after the first committed refresh.",
-                            className="empty-state",
-                        ),
-                    ),
-                    dcc.Tab(
-                        label="Top Promotions",
-                        value="top-promotions",
-                        children=html.Div(
-                            [
-                                html.Div(
+                        children=[
+                            dcc.Tab(
+                                label="Ag P&L",
+                                value="aggregate-pl",
+                                children=html.Div(
                                     [
                                         html.Div(
                                             [
-                                                html.H2("Top Promotions"),
-                                                html.P(
-                                                    "A flat rank of eligible committed promotions. "
-                                                    "Vol Score comes directly from the Risk connector."
+                                                html.Div(
+                                                    "View by",
+                                                    className="aggregate-pl-title",
+                                                ),
+                                                dcc.RadioItems(
+                                                    id="aggregate-pl-dimension",
+                                                    options=view_dimension_options,
+                                                    value=DEFAULT_VIEW_DIMENSION,
+                                                    inline=True,
+                                                    className="aggregate-pl-selector",
                                                 ),
                                             ],
-                                            className="top-promotions-heading-copy",
+                                            className="aggregate-pl-header",
                                         ),
                                         html.Div(
-                                            [
-                                                html.Span(
-                                                    "Connector signal",
-                                                    className="eyebrow",
+                                            dcc.Loading(
+                                                html.Div(
+                                                    initial_aggregate_table,
+                                                    id="aggregate-pl-grid",
                                                 ),
-                                                html.Strong("Ranked by Vol Score"),
-                                            ],
-                                            className="top-promotions-rank-control",
+                                                custom_spinner=build_cube_loader(
+                                                    "Loading aggregate P&L"
+                                                ),
+                                                delay_show=120,
+                                                className="cube-loading-boundary",
+                                            ),
+                                            className="aggregate-pl-panel",
                                         ),
                                     ],
-                                    className="top-promotions-header",
+                                    className="risk-workspace-tab-panel",
                                 ),
-                                html.Div(
-                                    "Select Top Promotions to read the committed rank.",
-                                    id="top-promotions-status",
-                                    className="top-promotions-status",
-                                    role="status",
+                            ),
+                            dcc.Tab(
+                                label="· Quick Risk",
+                                value="quick-risk",
+                                children=build_quick_search(embedded=True)
+                                if refresh_enabled
+                                else html.Div(
+                                    "Quick Risk is available after the first committed refresh.",
+                                    className="empty-state",
                                 ),
-                                dcc.Loading(
-                                    html.Div(id="top-promotions-grid"),
-                                    custom_spinner=build_cube_loader(
-                                        "Loading top promotions"
+                            ),
+                            dcc.Tab(
+                                label="· Quick Market",
+                                value="quick-market",
+                                children=build_quick_market_search(embedded=True)
+                                if refresh_enabled
+                                else html.Div(
+                                    "Quick Market is available after the first committed refresh.",
+                                    className="empty-state",
+                                ),
+                            ),
+                            dcc.Tab(
+                                label="· Top Promotions",
+                                value="top-promotions",
+                                children=html.Div(
+                                    [
+                                        html.Div(
+                                            [
+                                                html.Div(
+                                                    [
+                                                        html.H2("Top Promotions"),
+                                                        html.P(
+                                                            "A flat rank of eligible committed promotions. "
+                                                            "Vol Score comes directly from the Risk connector."
+                                                        ),
+                                                    ],
+                                                    className="top-promotions-heading-copy",
+                                                ),
+                                                html.Div(
+                                                    [
+                                                        html.Label(
+                                                            "Connector signal",
+                                                            htmlFor="top-promotions-signal",
+                                                            className="eyebrow",
+                                                        ),
+                                                        dcc.Dropdown(
+                                                            id="top-promotions-signal",
+                                                            options=[
+                                                                {
+                                                                    "label": label,
+                                                                    "value": value,
+                                                                }
+                                                                for value, label in TOP_PROMOTION_SIGNALS.items()
+                                                            ],
+                                                            value="vol-score",
+                                                            clearable=False,
+                                                            searchable=False,
+                                                        ),
+                                                    ],
+                                                    className="top-promotions-rank-control",
+                                                ),
+                                            ],
+                                            className="top-promotions-header",
+                                        ),
+                                        html.Div(
+                                            "Select Top Promotions to read the committed rank.",
+                                            id="top-promotions-status",
+                                            className="top-promotions-status",
+                                            role="status",
+                                        ),
+                                        dcc.Loading(
+                                            html.Div(id="top-promotions-grid"),
+                                            custom_spinner=build_cube_loader(
+                                                "Loading top promotions"
+                                            ),
+                                            delay_show=120,
+                                            className="cube-loading-boundary",
+                                        ),
+                                    ],
+                                    className=(
+                                        "risk-workspace-tab-panel top-promotions-panel"
                                     ),
-                                    delay_show=120,
-                                    className="cube-loading-boundary",
                                 ),
-                            ],
-                            className=("risk-workspace-tab-panel top-promotions-panel"),
-                        ),
+                            ),
+                        ],
+                        className="workspace-tabs risk-workspace-tabs",
                     ),
                 ],
-                className="workspace-tabs risk-workspace-tabs",
+                id="ag-pl-details",
+                open=True,
+                className="aux-details ag-pl-details",
             ),
             html.Div(
                 [

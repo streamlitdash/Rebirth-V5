@@ -57,16 +57,8 @@ def register_promotion_callbacks(
     app: Dash,
     cache: RiskPromotionCacheProtocol,
     refresh_manager: RefreshManagerProtocol | None,
-    dimension_filter_ids: Sequence[str],
 ) -> None:
     """Register one immutable baseline/manual generation state machine."""
-
-    if len(dimension_filter_ids) != len(FILTER_DIMENSION_FIELDS):
-        raise ValueError("Promotion filter IDs must match the governed Risk fields")
-
-    filter_inputs = [
-        Input(component_id, "value") for component_id in dimension_filter_ids
-    ]
 
     @app.callback(
         Output(PROMOTION_GENERATION_STORE_ID, "data"),
@@ -82,8 +74,8 @@ def register_promotion_callbacks(
         Input("data-revision-store", "data"),
         Input("risk-type-tabs", "value"),
         Input("ir-family-tabs", "value"),
-        *filter_inputs,
-        Input("risk-filter-exclude-selected", "value"),
+        Input("dimension-filter-values-store", "data"),
+        Input("risk-filter-exclude-applied-store", "data"),
         # The Risk reducer also owns this selector's value.  Capture it only
         # when the user explicitly recalculates to avoid a browser-side cycle.
         State("split-filter", "value"),
@@ -96,19 +88,20 @@ def register_promotion_callbacks(
         data_revision,
         risk_type,
         ir_family,
-        *filter_values_exclude_split_and_generation,
+        filter_values,
+        exclude_value,
+        splits,
+        current_store,
     ):
-        filter_count = len(FILTER_DIMENSION_FIELDS)
-        filter_values = filter_values_exclude_split_and_generation[:filter_count]
-        exclude_value = filter_values_exclude_split_and_generation[filter_count]
-        splits = filter_values_exclude_split_and_generation[filter_count + 1]
-        current_store = filter_values_exclude_split_and_generation[filter_count + 2]
         revision = int(data_revision or cache.revision)
+        applied_filter_values = filter_values or [
+            [] for _field in FILTER_DIMENSION_FIELDS
+        ]
         filters = {
             field.key: list(selected or [])
             for field, selected in zip(
                 FILTER_DIMENSION_FIELDS,
-                filter_values,
+                applied_filter_values,
                 strict=True,
             )
         }

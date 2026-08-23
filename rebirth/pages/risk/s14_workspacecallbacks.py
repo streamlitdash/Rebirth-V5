@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Sequence
 
 from dash import ALL, Dash, Input, Output, State, ctx, html, no_update
 from dash.exceptions import PreventUpdate
 
+from rebirth.app.s03_logging import perf_span
 from rebirth.ui.s02_aggregation import apply_filters
 from rebirth.ui.s04_components import build_aggregate_pl_table
 from rebirth.ui.s01_constants import (
@@ -36,8 +36,6 @@ def register_workspace_callbacks(
     app: Dash,
     refresh_manager: RefreshManagerProtocol | None,
     cache: _RiskDataCache,
-    dimension_filter_ids: Sequence[str],
-    dimension_filter_inputs: Sequence[Any],
 ) -> None:
     """Register the four Risk workspace tabs and their lazy searches."""
 
@@ -48,8 +46,8 @@ def register_workspace_callbacks(
         Input("data-revision-store", "data"),
         Input({"type": "aggregate-row-toggle", "risk_type": ALL}, "n_clicks"),
         Input("split-filter", "value"),
-        *dimension_filter_inputs,
-        Input("risk-filter-exclude-selected", "value"),
+        Input("dimension-filter-values-store", "data"),
+        Input("risk-filter-exclude-applied-store", "data"),
         State("aggregate-open-risk-types", "data"),
     )
     def reduce_and_render_aggregate_pl(
@@ -57,18 +55,11 @@ def register_workspace_callbacks(
         _data_revision,
         row_clicks,
         selected_splits,
-        *values,
+        dimension_values,
+        exclude_value,
+        open_risk_types,
     ):
         """Apply shared filters, reduce a chevron, and render Aggregate P&L."""
-        dimension_count = len(dimension_filter_ids)
-        dimension_values = values[:dimension_count]
-        exclude_value = (
-            values[dimension_count] if len(values) > dimension_count else None
-        )
-        open_risk_types = (
-            values[dimension_count + 1] if len(values) > dimension_count + 1 else None
-        )
-
         updated_open_risk_types = no_update
         effective_open_risk_types = list(open_risk_types or [])
         triggered = ctx.triggered_id
@@ -116,65 +107,76 @@ def register_workspace_callbacks(
         Input("data-revision-store", "data"),
         Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
         Input("split-filter", "value"),
-        *dimension_filter_inputs,
-        Input("risk-filter-exclude-selected", "value"),
+        Input("dimension-filter-values-store", "data"),
+        Input("risk-filter-exclude-applied-store", "data"),
+        Input("top-promotions-signal", "value"),
     )
     def render_top_promotions(
         active_workspace,
         data_revision,
         promotion_generation,
         selected_splits,
-        *values,
+        dimension_values,
+        exclude_value,
+        signal,
     ):
         """Lazily present the committed promotion rank as a flat table."""
         if active_workspace != "top-promotions":
             return None, "Select Top Promotions to read the committed rank."
 
-        dimension_count = len(dimension_filter_ids)
-        dimension_values = values[:dimension_count]
-        exclude_value = (
-            values[dimension_count] if len(values) > dimension_count else None
-        )
-        reporting_filters = reporting_filter_map(dimension_values)
-        committed = cache.current(refresh_manager)
-        filtered = apply_filters(
-            committed,
-            [],
-            list(selected_splits or []),
-            reporting_filters,
-            exclude_selected=risk_exclude_selected(exclude_value),
-        )
         revision = int(data_revision or cache.revision)
-        active_generation = cache.resolve_promotion_generation(promotion_generation)
-        filtered = apply_promotion_generation(
-            filtered,
-            active_generation,
+        selected_signal = str(signal or "vol-score")
+        with perf_span(
+            app.logger,
+            "risk.top_promotions.render",
+            budget_ms=500,
             revision=revision,
-        )
-        cache_key = json.dumps(
-            {
-                "revision": revision,
-                "promotion_generation": (
-                    active_generation.identifier
-                    if active_generation is not None
-                    and active_generation.kind == "current-view"
-                    else None
-                ),
-                "splits": sorted(selected_splits or []),
-                "filters": {
-                    key: sorted(selected or [])
-                    for key, selected in sorted(reporting_filters.items())
+            kind=selected_signal,
+        ) as metrics:
+            reporting_filters = reporting_filter_map(dimension_values)
+            committed = cache.current(refresh_manager)
+            filtered = apply_filters(
+                committed,
+                [],
+                list(selected_splits or []),
+                reporting_filters,
+                exclude_selected=risk_exclude_selected(exclude_value),
+            )
+            active_generation = cache.resolve_promotion_generation(promotion_generation)
+            filtered = apply_promotion_generation(
+                filtered,
+                active_generation,
+                revision=revision,
+            )
+            metrics["rows"] = len(filtered)
+            cache_key = json.dumps(
+                {
+                    "revision": revision,
+                    "promotion_generation": (
+                        active_generation.identifier
+                        if active_generation is not None
+                        and active_generation.kind == "current-view"
+                        else None
+                    ),
+                    "splits": sorted(selected_splits or []),
+                    "filters": {
+                        key: sorted(selected or [])
+                        for key, selected in sorted(reporting_filters.items())
+                    },
+                    "exclude_selected": risk_exclude_selected(exclude_value),
+                    "signal": selected_signal,
+                    "view": "top-promotions",
                 },
-                "exclude_selected": risk_exclude_selected(exclude_value),
-                "view": "top-promotions",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        table = cache.rendered(
-            cache_key,
-            lambda: build_top_promotions_table(filtered),
-        )
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            table = cache.rendered(
+                cache_key,
+                lambda: build_top_promotions_table(
+                    filtered,
+                    signal=selected_signal,
+                ),
+            )
         generation_label = (
             "Current-view promotion generation"
             if active_generation is not None
@@ -193,28 +195,25 @@ def register_workspace_callbacks(
             Output("quick-search-combine-udl", "value"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
-            Input("quick-search-identity-mode", "value"),
             Input("quick-search-combine-udl", "search_value"),
             Input("split-filter", "value"),
-            Input("risk-filter-exclude-selected", "value"),
-            *dimension_filter_inputs,
+            Input("dimension-filter-values-store", "data"),
+            Input("risk-filter-exclude-applied-store", "data"),
             State("quick-search-combine-udl", "value"),
             prevent_initial_call=False,
         )
         def load_combine_udl_options(
             active_workspace,
             _revision,
-            identity_mode,
             search_value,
             selected_splits,
+            dimension_values,
             exclude_value,
-            *values,
+            current_value,
         ):
             if active_workspace != "quick-risk":
                 return no_update, no_update
-            selected_mode = str(identity_mode or "reported").strip().casefold()
-            dimension_values = values[: len(dimension_filter_ids)]
-            current_value = values[len(dimension_filter_ids)]
+            selected_mode = "reported"
 
             try:
                 options = _combine_udl_dropdown_options(
@@ -239,11 +238,6 @@ def register_workspace_callbacks(
             ):
                 return no_update, no_update
 
-            # A mode change starts a fresh exact search rather than silently using
-            # a selection created under the other identity authority.
-            if ctx.triggered_id == "quick-search-identity-mode":
-                return options, None
-
             values = {option["value"] for option in options}
             selected = str(current_value or "").strip()
             if selected in values:
@@ -254,29 +248,27 @@ def register_workspace_callbacks(
             Output("quick-search-results", "children"),
             Output("quick-search-dimensions", "value"),
             Input("quick-search-combine-udl", "value"),
-            Input("quick-search-identity-mode", "value"),
             Input("quick-search-dimensions", "value"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
             Input("split-filter", "value"),
-            Input("risk-filter-exclude-selected", "value"),
-            *dimension_filter_inputs,
+            Input("dimension-filter-values-store", "data"),
+            Input("risk-filter-exclude-applied-store", "data"),
             prevent_initial_call=True,
         )
         def render_current_pivot(
             combine_udl,
-            identity_mode,
             index_columns,
             active_workspace,
             _revision,
             selected_splits,
+            dimension_values,
             exclude_value,
-            *dimension_values,
         ):
             rendered, index_update = _render_quick_search_pivot(
                 refresh_manager,
                 combine_udl=combine_udl,
-                identity_mode=identity_mode,
+                identity_mode="reported",
                 index_columns=index_columns,
                 is_open=active_workspace == "quick-risk",
                 risk_filters=quick_risk_filter_map(

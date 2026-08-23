@@ -16,6 +16,7 @@ from rebirth.services.s04_savedviews import SavedFilterView, SavedFilterViewRepo
 
 BASE_SAVED_VIEW_ID: Final = "__base__"
 BASE_SAVED_VIEW_LABEL: Final = "Base / No view"
+_COMMITTED_DRAFT_VIEW_ID: Final = "__committed__"
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,18 @@ class SavedFilterViewControls:
     def applied_request_id(self) -> str:
         return f"{self.prefix}-saved-view-applied-request"
 
+    @property
+    def committed_state_id(self) -> str:
+        return f"{self.prefix}-saved-view-committed"
+
+    @property
+    def apply_id(self) -> str:
+        return f"{self.prefix}-saved-view-apply"
+
+    @property
+    def cancel_id(self) -> str:
+        return f"{self.prefix}-saved-view-cancel"
+
 
 def saved_view_options(
     views: Sequence[SavedFilterView],
@@ -115,6 +128,7 @@ def build_saved_filter_view_bar(
         [
             dcc.Store(id=controls.apply_request_id, data=None),
             dcc.Store(id=controls.applied_request_id, data=None),
+            dcc.Store(id=controls.committed_state_id, data=None),
             dcc.Interval(
                 id=controls.refresh_id,
                 interval=100,
@@ -237,6 +251,34 @@ def build_saved_filter_view_bar(
                         if filter_bar is not None
                         else []
                     ),
+                    html.Div(
+                        [
+                            html.Span(
+                                "Draft changes affect the page only after Apply.",
+                                className="saved-view-draft-note",
+                            ),
+                            html.Div(
+                                [
+                                    html.Button(
+                                        "Cancel changes",
+                                        id=controls.cancel_id,
+                                        n_clicks=0,
+                                        type="button",
+                                        className="action-button action-secondary",
+                                    ),
+                                    html.Button(
+                                        "Apply filters",
+                                        id=controls.apply_id,
+                                        n_clicks=0,
+                                        type="button",
+                                        className="action-button action-primary",
+                                    ),
+                                ],
+                                className="saved-view-form-buttons",
+                            ),
+                        ],
+                        className="saved-view-form-actions",
+                    ),
                 ],
                 className="saved-filter-view-panel",
             ),
@@ -265,6 +307,66 @@ def selected_filter_payload(
         else:
             result[field.key] = [str(value) for value in selected]
     return result
+
+
+def committed_filter_state(
+    controls: SavedFilterViewControls,
+    selected_identifier: object,
+    filter_values: Sequence[Sequence[str] | None],
+    exclude_value: Sequence[str] | None,
+) -> dict[str, object]:
+    """Serialize the one filter state that visible page consumers may use."""
+
+    view_id = (
+        BASE_SAVED_VIEW_ID
+        if is_base_saved_view(selected_identifier)
+        else str(selected_identifier).strip()
+    )
+    if not view_id:
+        raise ValueError("Committed filter view identifier must be nonblank")
+    return {
+        "scope": controls.scope,
+        "view_id": view_id,
+        "filters": selected_filter_payload(controls, filter_values),
+        "exclude_selected": "exclude" in (exclude_value or []),
+    }
+
+
+def committed_filter_state_values(
+    value: object,
+    controls: SavedFilterViewControls,
+) -> tuple[tuple[list[str], ...], list[str]] | None:
+    """Validate the small committed Store before a page filters its data."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "scope",
+        "view_id",
+        "filters",
+        "exclude_selected",
+    }:
+        raise ValueError("Committed filter state has unexpected fields")
+    if value["scope"] != controls.scope:
+        raise ValueError("Committed filter state belongs to another page")
+    if not isinstance(value["view_id"], str) or not value["view_id"].strip():
+        raise ValueError("Committed filter view identifier is invalid")
+    raw_filters = value["filters"]
+    expected_keys = {field.key for field in controls.fields}
+    if not isinstance(raw_filters, Mapping) or set(raw_filters) != expected_keys:
+        raise ValueError("Committed filters do not match this page")
+    normalized: list[list[str]] = []
+    for field in controls.fields:
+        selected = raw_filters[field.key]
+        if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence):
+            raise ValueError(f"Committed filter {field.key!r} must be a sequence")
+        if any(not isinstance(item, str) for item in selected):
+            raise ValueError(f"Committed filter {field.key!r} values must be text")
+        normalized.append(list(selected))
+    if not isinstance(value["exclude_selected"], bool):
+        raise ValueError("Committed filter mode is invalid")
+    exclude_value = ["exclude"] if value["exclude_selected"] else []
+    return tuple(normalized), exclude_value
 
 
 def base_saved_filter_view(controls: SavedFilterViewControls) -> SavedFilterView:
@@ -442,10 +544,15 @@ def register_saved_filter_view_callbacks(
 
     @app.callback(
         Output(controls.current_label_id, "children"),
-        Input(controls.selector_id, "value"),
+        Input(controls.committed_state_id, "data"),
         Input(controls.selector_id, "options"),
     )
-    def sync_current_saved_view_label(selected_identifier, options):
+    def sync_current_saved_view_label(committed_state, options):
+        selected_identifier = (
+            committed_state.get("view_id")
+            if isinstance(committed_state, Mapping)
+            else BASE_SAVED_VIEW_ID
+        )
         return selected_saved_view_label(
             selected_identifier,
             options,
@@ -460,8 +567,10 @@ def register_saved_filter_view_callbacks(
         Input(controls.refresh_id, "n_intervals"),
         Input(controls.save_id, "n_clicks"),
         Input(controls.delete_id, "n_clicks"),
+        Input(controls.cancel_id, "n_clicks"),
         State(controls.selector_id, "value"),
         State(controls.name_id, "value"),
+        State(controls.committed_state_id, "data"),
         *[State(controls.filter_ids[field.key], "value") for field in controls.fields],
         State(controls.exclude_id, "value"),
         prevent_initial_call=True,
@@ -470,8 +579,10 @@ def register_saved_filter_view_callbacks(
         _refresh_intervals,
         _save_clicks,
         _delete_clicks,
+        _cancel_clicks,
         selected_identifier,
         requested_name,
+        committed_state,
         *filter_values_and_exclude,
     ):
         filter_values = filter_values_and_exclude[: len(controls.fields)]
@@ -508,9 +619,24 @@ def register_saved_filter_view_callbacks(
             elif triggered == controls.delete_id:
                 if is_base_saved_view(selected_identifier):
                     raise ValueError("Choose a named view before deleting it")
+                if (
+                    isinstance(committed_state, Mapping)
+                    and committed_state.get("view_id") == selected_identifier
+                ):
+                    raise ValueError(
+                        "Apply Base or another view before deleting the active view"
+                    )
                 view = repository.delete(controls.scope, selected_identifier)
                 selected = BASE_SAVED_VIEW_ID
-                status = f"Deleted view: {view.name}. Base is now active."
+                status = f"Deleted view: {view.name}."
+            elif triggered == controls.cancel_id:
+                committed_filter_state_values(committed_state, controls)
+                selected = (
+                    committed_state["view_id"]
+                    if isinstance(committed_state, Mapping)
+                    else BASE_SAVED_VIEW_ID
+                )
+                status = "Draft changes cancelled; committed filters restored."
             else:
                 status = "Shared saved views are ready."
 
@@ -542,14 +668,48 @@ def register_saved_filter_view_callbacks(
     @app.callback(
         Output(controls.apply_request_id, "data"),
         Input(controls.selector_id, "value"),
+        Input(controls.cancel_id, "n_clicks"),
+        State(controls.committed_state_id, "data"),
         *[State(controls.filter_ids[field.key], "value") for field in controls.fields],
         State(controls.exclude_id, "value"),
         prevent_initial_call=True,
     )
-    def apply_saved_view(selected_identifier, *filter_values_and_exclude):
+    def stage_saved_view(
+        selected_identifier,
+        _cancel_clicks,
+        committed_state,
+        *filter_values_and_exclude,
+    ):
         filter_values = filter_values_and_exclude[: len(controls.fields)]
         exclude_value = filter_values_and_exclude[-1]
-        if is_base_saved_view(selected_identifier):
+        try:
+            triggered = ctx.triggered_id
+        except MissingCallbackContextException:
+            triggered = controls.selector_id
+
+        def committed_view() -> SavedFilterView | None:
+            parsed = committed_filter_state_values(committed_state, controls)
+            if parsed is None:
+                return None
+            committed_values, committed_exclude = parsed
+            return SavedFilterView(
+                identifier=_COMMITTED_DRAFT_VIEW_ID,
+                scope=controls.scope,
+                name="Committed filters",
+                filters={
+                    field.key: tuple(values)
+                    for field, values in zip(
+                        controls.fields,
+                        committed_values,
+                        strict=True,
+                    )
+                },
+                exclude_selected="exclude" in committed_exclude,
+            )
+
+        if triggered == controls.cancel_id:
+            view = committed_view() or base_saved_filter_view(controls)
+        elif is_base_saved_view(selected_identifier):
             view = base_saved_filter_view(controls)
         else:
             try:
@@ -560,6 +720,30 @@ def register_saved_filter_view_callbacks(
             view,
             base_filters=selected_filter_payload(controls, filter_values),
             base_exclude_selected="exclude" in (exclude_value or []),
+        )
+
+    @app.callback(
+        Output(controls.committed_state_id, "data"),
+        Input(controls.apply_id, "n_clicks"),
+        State(controls.selector_id, "value"),
+        *[State(controls.filter_ids[field.key], "value") for field in controls.fields],
+        State(controls.exclude_id, "value"),
+        prevent_initial_call=True,
+    )
+    def commit_filter_draft(
+        apply_clicks,
+        selected_identifier,
+        *filter_values_and_exclude,
+    ):
+        if int(apply_clicks or 0) <= 0:
+            raise PreventUpdate
+        filter_values = filter_values_and_exclude[: len(controls.fields)]
+        exclude_value = filter_values_and_exclude[-1]
+        return committed_filter_state(
+            controls,
+            selected_identifier,
+            filter_values,
+            exclude_value,
         )
 
     @app.callback(
@@ -617,6 +801,8 @@ __all__ = [
     "SavedFilterViewControls",
     "base_saved_filter_view",
     "build_saved_filter_view_bar",
+    "committed_filter_state",
+    "committed_filter_state_values",
     "is_base_saved_view",
     "register_saved_filter_view_callbacks",
     "saved_view_apply_request",

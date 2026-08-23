@@ -336,7 +336,9 @@ def build_stock_history_section(*, available: bool) -> html.Div:
                                 disabled=not available,
                             ),
                         ],
+                        id="stock-history-custom-range-control",
                         className="control-field",
+                        style={"display": "none"},
                     ),
                     html.Div(
                         [
@@ -454,28 +456,14 @@ def _stock_page_layout(
                 ],
                 className="page-header",
             ),
-            build_saved_filter_view_bar(STOCK_SAVED_VIEW_CONTROLS),
-            html.Section(
-                [
-                    html.Div(
-                        [
-                            html.H2("Reporting filters"),
-                            html.P(
-                                "Base Review starts with Activity 1, 2 and 3. "
-                                "Selections affect only this Stock page.",
-                                className="page-note",
-                            ),
-                        ],
-                        className="stock-section-heading",
-                    ),
-                    build_stock_filter_bar(
-                        options=filter_options,
-                        selected=selected_filters,
-                        exclude_selected=exclude_selected,
-                    ),
-                    html.P(STOCK_FILTER_NOTE, className="stock-filter-note"),
-                ],
-                className="page-card stock-section-card stock-filter-section",
+            build_saved_filter_view_bar(
+                STOCK_SAVED_VIEW_CONTROLS,
+                filter_note=STOCK_FILTER_NOTE,
+                filter_bar=build_stock_filter_bar(
+                    options=filter_options,
+                    selected=selected_filters,
+                    exclude_selected=exclude_selected,
+                ),
             ),
             html.Section(
                 [

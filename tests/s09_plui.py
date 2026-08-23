@@ -94,6 +94,23 @@ def _history_frame() -> pd.DataFrame:
     )
 
 
+def _committed(
+    filter_values: list[list[str]] | None = None,
+    *,
+    exclude_selected: bool = False,
+) -> dict[str, object]:
+    values = filter_values or [[] for _field in PL_FILTER_FIELDS]
+    return {
+        "scope": "pnl",
+        "view_id": "__base__",
+        "filters": {
+            field.key: list(selected)
+            for field, selected in zip(PL_FILTER_FIELDS, values, strict=True)
+        },
+        "exclude_selected": exclude_selected,
+    }
+
+
 def _config(tmp_path: Path) -> PLSendConfig:
     history_source = tmp_path / "histo"
     for market_date, daily in _history_frame().groupby("Market Date", sort=True):
@@ -124,7 +141,10 @@ def _registered_pl_app(
     app.layout = html.Div(
         [
             dcc.Store(id="data-revision-store", data=7),
+            dcc.Store(id="clear-cache-complete-store"),
             dcc.Store(id="pl-adjustment-revision-store", data=0),
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            dcc.Store(id="pl-history-selection-store", data={}),
             build_pl_filter_bar(),
             *build_pl_send_sections(),
         ]
@@ -216,8 +236,7 @@ def test_closed_pl_sections_never_build_or_serialize_effective_rows(
         0,
         0,
         0,
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         None,
         None,
     )
@@ -231,8 +250,7 @@ def test_closed_pl_sections_never_build_or_serialize_effective_rows(
         1,
         1,
         1,
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         "stale",
         "stale",
     )
@@ -272,8 +290,7 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
         0,
         4,
         5,
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         None,
         "BOOK-B",
     )
@@ -307,8 +324,7 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
         0,
         4,
         5,
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         selected_sog,
         selected_portfolio,
     )
@@ -479,7 +495,7 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     series_selector = next(
         item
         for item in _walk(page)
-        if isinstance(item, dcc.RadioItems) and item.id == "pl-history-series-selector"
+        if isinstance(item, dcc.Dropdown) and item.id == "pl-history-series-selector"
     )
     assert series_selector.value == "both"
     assert [option["label"] for option in series_selector.options] == [
@@ -487,6 +503,12 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         COLOSSUS_TYPE,
         PREDICT_TYPE,
     ]
+    custom_range = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "pl-history-custom-range-control"
+    )
+    assert custom_range.style == {"display": "none"}
 
     cold_page = build_pl_page(start_initial_load=True)
     assert "pnl-initial-load-trigger" in _string_ids(cold_page)
@@ -496,7 +518,8 @@ def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> 
     app, manager = _registered_pl_app(tmp_path)
     register_pl_aggregate_callbacks(app, manager)
     register_validate_pl_callbacks(app, tmp_path / "histo")
-    expected = {(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS} | {
+    committed = {(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data")}
+    draft = {(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS} | {
         (PL_FILTER_EXCLUDE_ID, "value")
     }
 
@@ -508,7 +531,8 @@ def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> 
     ):
         metadata = _callback_metadata(app, output_fragment)
         dependencies = {(item["id"], item["property"]) for item in metadata["inputs"]}
-        assert expected <= dependencies, output_fragment
+        assert committed <= dependencies, output_fragment
+        assert draft.isdisjoint(dependencies), output_fragment
 
     for output_fragment in (
         "pl-send-all-status.children",
@@ -518,7 +542,8 @@ def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> 
     ):
         metadata = _callback_metadata(app, output_fragment)
         dependencies = {(item["id"], item["property"]) for item in metadata["state"]}
-        assert expected <= dependencies, output_fragment
+        assert committed <= dependencies, output_fragment
+        assert draft.isdisjoint(dependencies), output_fragment
 
 
 def test_send_all_builds_once_and_sends_independent_defensive_copies(
@@ -565,7 +590,7 @@ def test_send_all_builds_once_and_sends_independent_defensive_copies(
     monkeypatch.setattr(pl_send_events, "collapse_pl_send_rows", collapse)
 
     send_all = _callback(app, "pl-send-all-status.children")
-    status = send_all(1, [], [], ["BOOK-A"], [], [], [])
+    status = send_all(1, _committed([[], [], ["BOOK-A"], [], []]))
 
     assert status == "success · sent 2 governed rows to SOG and Portfolio"
     assert build_calls == [True]
@@ -678,7 +703,7 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
     )
 
     send_all = _callback(app, "pl-send-all-status.children")
-    status = send_all(1, [], [], [], [], [], [])
+    status = send_all(1, None)
 
     assert calls == ["SOG", "Portfolio"]
     assert (
@@ -689,7 +714,7 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
         raise RuntimeError("mapping unavailable")
 
     monkeypatch.setattr(pl_send_events, "_effective_rows", fail_build)
-    assert send_all(2, [], [], [], [], [], []) == (
+    assert send_all(2, None) == (
         "Not sent: could not build governed P&L: mapping unavailable"
     )
     assert calls == ["SOG", "Portfolio"]
@@ -730,13 +755,21 @@ def test_pl_summary_table_is_page_owned_three_level_chevron() -> None:
         path_token(("IR",)),
         path_token(("IR", "Delta")),
     }
-    assert len(history_cells) == 3
+    assert len(history_cells) == 12
     assert {item["metric"] for item in history_cells} == {
         "Current P&L",
         "Month to Date",
         "Year to Date",
     }
-    assert all(item["underlying"] == "EUR" for item in history_cells)
+    assert {
+        (item["risk_type"], item["risk_greek"], item["underlying"])
+        for item in history_cells
+    } == {
+        ("", "", ""),
+        ("IR", "", ""),
+        ("IR", "Delta", ""),
+        ("IR", "Delta", "EUR"),
+    }
     assert "Risk Type › Greek › Underlying" in _text(table)
     assert "Month to date" in _text(table)
     assert "Year to date" in _text(table)
@@ -774,8 +807,9 @@ def test_pl_summary_underlyings_are_bounded_and_pageable() -> None:
     ]
     pages = [item for item in first_ids if item["type"] == PL_SUMMARY_PAGE_TYPE]
 
-    assert len(first_cells) == PL_SUMMARY_LEAF_PAGE_SIZE * 3
-    assert {item["underlying"] for item in first_cells} == {
+    assert len(first_cells) == (PL_SUMMARY_LEAF_PAGE_SIZE + 3) * 3
+    leaf_cells = [item for item in first_cells if item["underlying"]]
+    assert {item["underlying"] for item in leaf_cells} == {
         f"U{index:03d}" for index in range(PL_SUMMARY_LEAF_PAGE_SIZE)
     }
     assert {item["page"] for item in pages} == {0, 1}
@@ -795,7 +829,7 @@ def test_pl_summary_underlyings_are_bounded_and_pageable() -> None:
     second_cells = [
         item for item in second_ids if item["type"] == PL_SUMMARY_HISTORY_CELL_TYPE
     ]
-    assert {item["underlying"] for item in second_cells} == {
+    assert {item["underlying"] for item in second_cells if item["underlying"]} == {
         f"U{index:03d}"
         for index in range(
             PL_SUMMARY_LEAF_PAGE_SIZE,
@@ -831,6 +865,7 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
             dcc.Store(id="clear-cache-complete-store"),
             dcc.Store(id="pnl-summary-open-paths", data=[]),
             dcc.Store(id="pl-history-selection-store", data={}),
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
             build_pl_filter_bar(),
             html.Div(id="pnl-aggregate-pl-grid"),
         ]
@@ -843,12 +878,10 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
         7,
         [],
         [],
-        ["XVA"],
-        ["SOG-A"],
-        ["BOOK-A"],
-        ["Rates"],
-        ["Vanilla"],
-        ["exclude"],
+        _committed(
+            [["XVA"], ["SOG-A"], ["BOOK-A"], ["Rates"], ["Vanilla"]],
+            exclude_selected=True,
+        ),
         None,
         [],
     )
@@ -870,9 +903,11 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
     metadata = _callback_metadata(app, "pnl-aggregate-pl-grid.children")
     assert any(PL_SUMMARY_TOGGLE_TYPE in item["id"] for item in metadata["inputs"])
     assert any(PL_SUMMARY_PAGE_TYPE in item["id"] for item in metadata["inputs"])
-    assert {(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS} <= {
-        (item["id"], item["property"]) for item in metadata["inputs"]
-    }
+    dependencies = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    assert (PL_SAVED_VIEW_CONTROLS.committed_state_id, "data") in dependencies
+    assert {
+        (PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS
+    }.isdisjoint(dependencies)
 
 
 def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
@@ -1006,6 +1041,24 @@ def test_clicking_aggregate_value_stores_complete_history_selection(
         "underlying": "EUR",
     }
 
+    total_id = {
+        "type": PL_SUMMARY_HISTORY_CELL_TYPE,
+        "risk_type": "",
+        "risk_greek": "",
+        "underlying": "",
+        "metric": "Current P&L",
+    }
+    monkeypatch.setattr(
+        pl_aggregate_events,
+        "ctx",
+        SimpleNamespace(triggered_id=total_id),
+    )
+    assert select_cell([3]) == {
+        "risk_type": "",
+        "risk_greek": "",
+        "underlying": "",
+    }
+
     metadata = _callback_metadata(app, "pl-history-selection-store.data")
     pattern_id = metadata["inputs"][0]["id"]
     assert metadata["inputs"][0]["property"] == "n_clicks"
@@ -1046,12 +1099,7 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         "all",
         None,
         None,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        None,
         None,
     )
     assert calls == 0
@@ -1071,12 +1119,7 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         "all",
         None,
         None,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        None,
         None,
     )
     assert calls == 1
@@ -1102,12 +1145,7 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         "wtd",
         None,
         None,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        None,
         None,
     )
     assert calls == 1
@@ -1124,12 +1162,7 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         "all",
         None,
         None,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        None,
         {"generation": 2},
     )
     assert calls == 2
@@ -1208,12 +1241,10 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
         "custom",
         "2026-07-18",
         "2026-07-19",
-        ["XVA"],
-        ["SOG-A"],
-        ["BOOK-A"],
-        ["Rates"],
-        ["Vanilla"],
-        ["exclude"],
+        _committed(
+            [["XVA"], ["SOG-A"], ["BOOK-A"], ["Rates"], ["Vanilla"]],
+            exclude_selected=True,
+        ),
         None,
     )
 
@@ -1244,6 +1275,17 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
         }
     ]
 
+    chart(
+        {"risk_type": "IR", "risk_greek": "", "underlying": ""},
+        "both",
+        "all",
+        None,
+        None,
+        None,
+        None,
+    )
+    assert source.series_calls[-1]["criteria"] == {"Risk Type": ["IR"]}
+
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
@@ -1255,16 +1297,11 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
         "1y",
         None,
         None,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        None,
         {"generation": 3},
     )
     assert source.clear_calls == 1
-    assert len(source.series_calls) == 1
+    assert len(source.series_calls) == 2
 
 
 def test_inline_histo_callback_metadata_has_no_tree_or_raw_contract(
@@ -1284,8 +1321,7 @@ def test_inline_histo_callback_metadata_has_no_tree_or_raw_contract(
         ("pl-history-period", "value"),
         ("pl-history-date-range", "start_date"),
         ("pl-history-date-range", "end_date"),
-        *{(component_id, "value") for component_id in PL_FILTER_IDS.values()},
-        (PL_FILTER_EXCLUDE_ID, "value"),
+        (PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         ("clear-cache-complete-store", "data"),
     }
     callback_contract = " ".join(app.callback_map)
@@ -1381,8 +1417,7 @@ def test_cold_native_pnl_is_safe_before_commit_without_history_source(
         0,
         [],
         [],
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         None,
         [],
     )
@@ -1397,8 +1432,7 @@ def test_cold_native_pnl_is_safe_before_commit_without_history_source(
         0,
         0,
         0,
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         None,
         None,
     )
@@ -1409,8 +1443,7 @@ def test_cold_native_pnl_is_safe_before_commit_without_history_source(
         manager.health.revision,
         [],
         [],
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
+        None,
         None,
         [],
     )

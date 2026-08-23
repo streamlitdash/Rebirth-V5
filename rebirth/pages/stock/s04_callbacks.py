@@ -16,6 +16,7 @@ from rebirth.app.s02_contracts import RefreshManagerProtocol
 from rebirth.services.s04_savedviews import SavedFilterViewRepository
 from rebirth.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
+    committed_filter_state_values,
     register_saved_filter_view_callbacks,
     saved_view_request_id,
     saved_view_request_matches_base,
@@ -310,23 +311,24 @@ def register_callbacks(
         Output("stock-history-crds", "options"),
         Output("stock-history-activity", "options"),
         Input("stock-loaded-snapshot", "data"),
-        *[Input(STOCK_FILTER_IDS[field.key], "value") for field in STOCK_FILTER_FIELDS],
-        Input(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
+        Input(STOCK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         Input("stock-pivot-rows", "value"),
         Input("stock-pivot-column", "value"),
         Input("stock-pivot-values", "value"),
         Input("stock-pivot-open-paths", "data"),
         prevent_initial_call=True,
     )
-    def render_current_stock(loaded_snapshot, *values):
-        """Rebuild the pivot and exact row detail from one cached comparison."""
+    def render_current_stock(
+        loaded_snapshot,
+        committed_filter_state,
+        pivot_rows,
+        pivot_column,
+        pivot_values,
+        open_paths,
+    ):
+        """Rebuild the pivot from applied filters, never draft controls."""
 
         page_data = cached_page(loaded_snapshot)
-        filter_values = values[: len(STOCK_FILTER_FIELDS)]
-        offset = len(STOCK_FILTER_FIELDS)
-        exclude_value, pivot_rows, pivot_column, pivot_values, open_paths = values[
-            offset:
-        ]
         if page_data is None:
             empty = pd.DataFrame(columns=list(STOCK_DISPLAY_COLUMNS))
             pivot = build_stock_pivot(
@@ -346,6 +348,20 @@ def register_callbacks(
                 [],
                 [],
             )
+        try:
+            committed_values = committed_filter_state_values(
+                committed_filter_state,
+                STOCK_SAVED_VIEW_CONTROLS,
+            )
+        except ValueError as error:
+            app.logger.warning("Ignoring invalid committed Stock filters: %s", error)
+            committed_values = None
+        if committed_values is None:
+            defaults = default_stock_filter_values(page_data.mapped_stock)
+            filter_values = [defaults[field.key] for field in STOCK_FILTER_FIELDS]
+            exclude_value: list[str] = []
+        else:
+            filter_values, exclude_value = committed_values
         display = stock_display_rows(
             page_data.mapped_stock,
             dimension_filters=stock_filter_map(filter_values),
@@ -470,6 +486,18 @@ def register_callbacks(
             for _label, value in STOCK_PERIODS
         ]
         return period, *classes
+
+    app.clientside_callback(
+        """
+        function (period) {
+            return String(period || "").toLowerCase() === "custom"
+                ? {}
+                : {display: "none"};
+        }
+        """,
+        Output("stock-history-custom-range-control", "style"),
+        Input("stock-history-period", "data"),
+    )
 
     if stock_history_source is None:
         return

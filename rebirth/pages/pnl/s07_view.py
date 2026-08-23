@@ -70,31 +70,53 @@ def build_pl_inline_history_section(*, available: bool) -> html.Section:
             ),
             html.Div(
                 [
-                    dcc.RadioItems(
-                        id="pl-history-period",
-                        options=period_options,
-                        value="1y",
-                        inline=True,
-                        className="detail-tenor-view-radio pl-history-period",
-                    ),
-                    dcc.RadioItems(
-                        id="pl-history-series-selector",
-                        options=[
-                            {"label": "Both", "value": "both"},
-                            {"label": "Colossus", "value": "colossus"},
-                            {"label": "Predict", "value": "predict"},
+                    html.Div(
+                        [
+                            html.Span("Range", className="pl-history-toolbar-label"),
+                            dcc.RadioItems(
+                                id="pl-history-period",
+                                options=period_options,
+                                value="1y",
+                                inline=True,
+                                className="pl-history-period-segments",
+                            ),
+                            html.Div(
+                                dcc.DatePickerRange(
+                                    id="pl-history-date-range",
+                                    minimum_nights=0,
+                                    display_format="YYYY-MM-DD",
+                                    clearable=True,
+                                    start_date_placeholder_text="Start date",
+                                    end_date_placeholder_text="End date",
+                                ),
+                                id="pl-history-custom-range-control",
+                                className="pl-history-custom-range-control",
+                                style={"display": "none"},
+                            ),
                         ],
-                        value="both",
-                        inline=True,
-                        className="detail-tenor-view-radio pl-history-series-selector",
+                        className="pl-history-period-control",
                     ),
-                    dcc.DatePickerRange(
-                        id="pl-history-date-range",
-                        minimum_nights=0,
-                        display_format="YYYY-MM-DD",
-                        clearable=True,
-                        start_date_placeholder_text="Start date",
-                        end_date_placeholder_text="End date",
+                    html.Div(
+                        [
+                            html.Label(
+                                "Source",
+                                htmlFor="pl-history-series-selector",
+                                className="pl-history-toolbar-label",
+                            ),
+                            dcc.Dropdown(
+                                id="pl-history-series-selector",
+                                options=[
+                                    {"label": "Both", "value": "both"},
+                                    {"label": "Colossus", "value": "colossus"},
+                                    {"label": "Predict", "value": "predict"},
+                                ],
+                                value="both",
+                                clearable=False,
+                                searchable=False,
+                                className="pl-history-series-selector",
+                            ),
+                        ],
+                        className="pl-history-series-control",
                     ),
                 ],
                 className="pl-history-range-toolbar",

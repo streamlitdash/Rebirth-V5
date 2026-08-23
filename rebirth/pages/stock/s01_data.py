@@ -43,7 +43,8 @@ STOCK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     base_label="Base Review",
 )
 STOCK_FILTER_NOTE = (
-    "Include mode uses OR within one filter (B or D) and AND across filters "
+    "Base Review starts with Activity 1, 2 and 3. Include mode uses OR within "
+    "one filter (B or D) and AND across filters "
     "(Credit and Portfolio B or D). Exclude mode removes a row if it matches any "
     "selected value in any populated filter. Leave a filter blank for all values; "
     "Stock selections remain independent from Risk and P&L."

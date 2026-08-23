@@ -16,7 +16,6 @@ from dash import page_registry
 from dash.exceptions import UnsupportedRelativePath
 
 from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.pnl.s01_common import PL_FILTER_FIELDS
 from rebirth.pages.static_data import (
     STATIC_FILE_OPTIONS,
     build_static_data_page,
@@ -834,11 +833,11 @@ def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
     _native_page(app, "/pnl")
     aggregate = _callback_for_output(app, "pnl-aggregate-pl-grid", "children")
     aggregate(
-        "activity",
         manager.health.revision,
         [],
-        *([[]] * len(PL_FILTER_FIELDS)),
         [],
+        None,
+        None,
         [],
     )
 

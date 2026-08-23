@@ -48,6 +48,7 @@ NEW_TRADE_DETAIL_LABELS = {
     "trader code": "Trader Code",
     "trader name": "Trader Name",
 }
+TOP_PROMOTION_SIGNALS = {"vol-score": "Vol Score"}
 
 
 def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -144,14 +145,19 @@ def top_promotions_frame(
     frame: pd.DataFrame,
     *,
     limit: int = 500,
+    signal: str = "vol-score",
 ) -> pd.DataFrame:
     """Rank committed promotions by their connector-owned Vol Score.
 
     This function never classifies or recalculates promotion. It only groups
     position rows carrying the committed ``promotion reason`` and
-    ``promotion score`` fields. Promotion Score remains visible as threshold
-    context, but it no longer controls rank.
+    ``promotion score`` fields. Promotion Score is not used for ranking or
+    displayed.
     """
+
+    signal_column = TOP_PROMOTION_SIGNALS.get(str(signal))
+    if signal_column is None:
+        raise ValueError(f"Unknown Top Promotions signal: {signal}")
 
     promoted = top_book_exposure_frame(frame).rename(
         columns={
@@ -170,26 +176,21 @@ def top_promotions_frame(
         "dRisk",
         "P&L",
         "Vol Score",
-        "Promotion Score",
     ]
     if promoted.empty:
         return pd.DataFrame(columns=output_columns)
 
-    promoted["_vol_rank"] = pd.to_numeric(promoted["Vol Score"], errors="coerce")
-    promoted["_score_rank"] = pd.to_numeric(
-        promoted["Promotion Score"], errors="coerce"
-    )
+    promoted["_signal_rank"] = pd.to_numeric(promoted[signal_column], errors="coerce")
     promoted["_pl_rank"] = pd.to_numeric(promoted["P&L"], errors="coerce").abs()
     promoted = promoted.sort_values(
         [
-            "_vol_rank",
-            "_score_rank",
+            "_signal_rank",
             "_pl_rank",
             "Risk Type",
             "Risk Greek",
             "Reported Underlying",
         ],
-        ascending=[False, False, False, True, True, True],
+        ascending=[False, False, True, True, True],
         kind="mergesort",
         na_position="last",
     ).reset_index(drop=True)
@@ -201,10 +202,11 @@ def build_top_promotions_table(
     frame: pd.DataFrame,
     *,
     limit: int = 500,
+    signal: str = "vol-score",
 ) -> html.Div:
     """Render a bounded flat rank with ten visible rows per native page."""
 
-    ranked = top_promotions_frame(frame, limit=limit)
+    ranked = top_promotions_frame(frame, limit=limit, signal=signal)
     if ranked.empty:
         return html.Div(
             "No committed promotions are available for this view.",
@@ -215,7 +217,7 @@ def build_top_promotions_table(
     headers = list(ranked.columns)
     number_format = Format(precision=2, scheme=Scheme.fixed, group=",")
     score_format = Format(precision=3, scheme=Scheme.fixed, group=",")
-    numeric_columns = {"Rank", "Risk", "dRisk", "P&L", "Vol Score", "Promotion Score"}
+    numeric_columns = {"Rank", "Risk", "dRisk", "P&L", "Vol Score"}
     columns = []
     for column in headers:
         definition: dict[str, object] = {"name": column, "id": column}
@@ -223,9 +225,7 @@ def build_top_promotions_table(
             definition["type"] = "numeric"
             if column != "Rank":
                 definition["format"] = (
-                    score_format
-                    if column in {"Vol Score", "Promotion Score"}
-                    else number_format
+                    score_format if column == "Vol Score" else number_format
                 )
         columns.append(definition)
 
@@ -646,6 +646,7 @@ __all__ = [
     "NEW_TRADE_DETAIL_COLUMNS",
     "NEW_TRADE_DETAIL_LABELS",
     "NEW_TRADE_SPLIT",
+    "TOP_PROMOTION_SIGNALS",
     "build_new_trade_detail_table",
     "build_top_book_exposures",
     "build_top_promotions_table",

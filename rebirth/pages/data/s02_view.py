@@ -86,7 +86,7 @@ def build_data_page(
                                     html.Label(
                                         "Identity", htmlFor="data-identity-mode"
                                     ),
-                                    dcc.RadioItems(
+                                    dcc.Dropdown(
                                         id="data-identity-mode",
                                         options=[
                                             {
@@ -99,7 +99,8 @@ def build_data_page(
                                             },
                                         ],
                                         value="reported",
-                                        inline=True,
+                                        clearable=False,
+                                        searchable=False,
                                     ),
                                 ],
                                 className="data-control",
@@ -170,18 +171,6 @@ def build_data_page(
                         [
                             html.Div(
                                 [
-                                    html.Label("Metric", htmlFor="data-metric"),
-                                    dcc.Dropdown(
-                                        id="data-metric",
-                                        options=[{"label": "Risk", "value": "risk"}],
-                                        value="risk",
-                                        clearable=False,
-                                    ),
-                                ],
-                                className="data-control",
-                            ),
-                            html.Div(
-                                [
                                     html.Label("Period", htmlFor="data-period"),
                                     dcc.RadioItems(
                                         id="data-period",
@@ -191,7 +180,7 @@ def build_data_page(
                                         ],
                                         value="all",
                                         inline=True,
-                                        className="detail-tenor-view-radio",
+                                        className="data-period-segmented",
                                     ),
                                 ],
                                 className="data-control data-period-control",
@@ -321,16 +310,16 @@ def build_data_page(
                     html.Div(
                         [
                             html.Span(
-                                "Static view",
+                                "Static",
                                 id="data-player-mode-pill",
                                 className="data-player-mode-pill",
                             ),
                             html.Button(
-                                "▶  Play",
+                                "Play",
                                 id="data-player-button",
                                 n_clicks=0,
                                 disabled=True,
-                                className="data-player-button",
+                                className="data-player-button data-playback-toggle",
                                 title="Play through archive dates",
                                 **{"aria-label": "Play through archive dates"},
                             ),

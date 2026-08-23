@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
-from dash import Dash, Input
+from dash import Dash
 
 from rebirth.app.s02_contracts import RefreshManagerProtocol, RefreshSnapshotProtocol
 from rebirth.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
@@ -34,15 +34,10 @@ def register_callbacks(
     dimension_filter_ids = [
         DIMENSION_FILTER_IDS[field.key] for field in FILTER_DIMENSION_FIELDS
     ]
-    dimension_filter_inputs = [
-        Input(component_id, "value") for component_id in dimension_filter_ids
-    ]
-
     register_promotion_callbacks(
         app,
         cache,
         refresh_manager,
-        dimension_filter_ids,
     )
     register_refresh_callbacks(
         app,
@@ -55,15 +50,12 @@ def register_callbacks(
         app,
         refresh_manager,
         cache,
-        dimension_filter_ids,
-        dimension_filter_inputs,
     )
     register_explorer_callbacks(
         app,
         refresh_manager,
         cache,
         dimension_filter_ids,
-        dimension_filter_inputs,
     )
 
 

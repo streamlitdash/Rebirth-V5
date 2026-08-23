@@ -78,6 +78,7 @@ from rebirth.pages.stock.s05_pivot import (
     toggle_stock_pivot_path,
 )
 from rebirth.app.s07_factory import build_app
+from rebirth.ui.s03_filters import committed_filter_state
 from tools.s01_fixtures import (
     HISTORICAL_MARKET_DATES,
     _materialize_history_leaf,
@@ -836,6 +837,7 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
         "stock-history-crds",
         "stock-history-activity",
         "stock-history-date-range",
+        "stock-history-custom-range-control",
         "stock-history-load-button",
         "stock-history-chart",
         *(
@@ -866,6 +868,12 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
         if getattr(component, "id", None) == "stock-history-load-button"
     )
     assert load.disabled is False
+    custom_range = next(
+        component
+        for component in components
+        if getattr(component, "id", None) == "stock-history-custom-range-control"
+    )
+    assert custom_range.style == {"display": "none"}
 
 
 def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() -> None:
@@ -951,6 +959,12 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history(
         '["Activity 1","Core","CRDS-1"]',
     ):
         open_paths = toggle_stock_pivot_path(open_paths, path)
+    committed = committed_filter_state(
+        STOCK_SAVED_VIEW_CONTROLS,
+        "__base__",
+        [["Activity 1"], [], [], [], []],
+        [],
+    )
     (
         rows,
         _columns,
@@ -962,12 +976,7 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history(
         _activity_options,
     ) = render(
         token,
-        ["Activity 1"],
-        [],
-        [],
-        [],
-        [],
-        [],
+        committed,
         list(STOCK_PIVOT_DEFAULT_ROWS),
         "",
         ["Stock", "dStock"],
@@ -1003,12 +1012,7 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history(
     )
     pivot_only = render(
         token,
-        ["Activity 1"],
-        [],
-        [],
-        [],
-        [],
-        [],
+        committed,
         list(STOCK_PIVOT_DEFAULT_ROWS),
         "",
         ["Stock", "dStock"],
@@ -1070,6 +1074,23 @@ def test_stock_saved_view_contract_is_base_review_with_five_filters() -> None:
         "category",
         "subcategory",
     )
+    page = build_stock_page_shell(
+        current_date="2026-08-14",
+        prior_date="2026-08-13",
+    )
+    saved_views = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "stock-saved-view-bar"
+    )
+    saved_ids = {getattr(item, "id", None) for item in _walk(saved_views)}
+    assert set(STOCK_FILTER_IDS.values()) <= saved_ids
+    assert STOCK_SAVED_VIEW_CONTROLS.exclude_id in saved_ids
+    assert {
+        STOCK_SAVED_VIEW_CONTROLS.apply_id,
+        STOCK_SAVED_VIEW_CONTROLS.cancel_id,
+        STOCK_SAVED_VIEW_CONTROLS.committed_state_id,
+    } <= saved_ids
 
 
 def test_v41_history_is_read_only_after_click_or_load(
@@ -1182,3 +1203,18 @@ def test_v41_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> Non
     assert set(owners.values()) == {1}
     assert ("stock-current-table", "data") in owners
     assert ("stock-history-chart", "figure") in owners
+    pivot_metadata = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == "stock-current-table"
+            and output.component_property == "data"
+            for output in _callback_outputs(metadata)
+        )
+    )
+    pivot_inputs = {(item["id"], item["property"]) for item in pivot_metadata["inputs"]}
+    assert (STOCK_SAVED_VIEW_CONTROLS.committed_state_id, "data") in pivot_inputs
+    assert not any(
+        (component_id, "value") in pivot_inputs
+        for component_id in STOCK_FILTER_IDS.values()
+    )

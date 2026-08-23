@@ -59,7 +59,8 @@ Patch behavior. `requirements-dev.txt` adds Plotly Cloud, pytest, and Ruff.
 
 ### Risk
 
-The top workspace has exactly four tabs in this order:
+The top workspace is one open-by-default **Ag P&L** disclosure with exactly
+four compact tabs in this order:
 
 1. **Aggregate P&L** renders the mapped snapshot by the selected governed
    dimension.
@@ -67,11 +68,13 @@ The top workspace has exactly four tabs in this order:
    hierarchy, and can hand it to Data.
 3. **Quick Market** resolves one committed quote identity, renders its current
    matrix, and can hand the editable identity to Data for history.
-4. **Top Promotions** is a flat Vol Score rank with ten rows per page.
+4. **Top Promotions** is a flat Vol Score rank with ten rows per page. Its
+   connector-signal selector defaults to Vol Score; the internal promotion
+   threshold score is not shown as a table column.
 
 The Data handoff is only a prefill. It never locks Data controls. A strict
 Quick handoff performs one initial history request; after that, Risk Type,
-Risk Greek, underlying, identity mode, metric, dates, projection, and slice are
+Risk Greek, underlying, identity mode, dates, projection, and slice are
 normal Data controls again.
 
 The Risk Explorer has only **Cross** and **SplitVA** tabs. Both expose their
@@ -79,7 +82,11 @@ Risk Type/Greek families as expandable, chevron-driven financial hierarchies;
 Credit also retains its Single/Multi presentation.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
 baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
-Category, and Sub Category, with explicit include/exclude semantics.
+Category, and Sub Category, with explicit include/exclude semantics. Saved
+Views is a form: selecting a named view or changing a selector edits a draft;
+only **Apply filters** changes Risk outputs, and **Cancel changes** restores the
+last committed selection. Stock and P&L use the same small contract while
+keeping independent page state.
 
 Promotions are computed against thresholds at exact Risk Type + Risk Greek
 grain. The baseline generation uses Activities 1-3 and is committed with the
@@ -91,26 +98,32 @@ connector-owned **Vol Score**. Reset returns to the baseline generation.
 
 ### Data
 
-Data has **Risk History** and **Market History** tabs. Risk can use reported or
-raw underlying identity; Market uses its exact raw identity. The user can then
-choose Risk Type, Risk Greek, underlying, metric, and WTD/MTD/YTD/1Y/5Y/All/
-Custom dates.
+Data has **Risk History** and **Market History** tabs. Risk uses a reported/raw
+underlying dropdown and always plots `Risk`; Market uses its exact raw identity
+and always plots the archived `Official` value. There is no redundant metric
+selector. The user then chooses Risk Type, Risk Greek, underlying, and a
+segmented WTD/MTD/YTD/1Y/5Y/All/Custom period. Custom start/end dates appear
+only for Custom.
 `Load history` snapshots those controls into one immutable request; changing a
 control alone does not scan the archive. Quick handoffs are consumed once, so
 the controls remain editable after navigation.
 
 The returned bundle drives ProductSpec-shaped projection and slice controls,
 Date A/Date B comparison, a canonical scalar/line/surface plot, and bounded
-selected-date details. The compact browser-side player supports static mode,
-play/pause, live slider dragging, and wheel scrubbing without another server
-query. There is no default raw-history table or second raw payload. Loading
-status appears immediately while the single history read is running.
+selected-date details. Two-axis swap/option-over-time projections default the
+fixed axis to **Sum**, using a null-preserving sum across its tenors, while each
+individual tenor remains selectable. The compact browser-side player supports
+static mode, play/pause, live slider dragging, and wheel scrubbing without
+another server query. There is no default raw-history table or second raw
+payload. Loading status appears immediately while the single history read is
+running.
 
 ### Stock
 
 Stock first paints an empty shell, then loads the latest connector comparison
-asynchronously. The five governed filters—Activity, Signoff Group, Portfolio,
-Category, and Sub Category—default to the same Activities 1-3 scope as Risk.
+asynchronously. Its Saved Views disclosure owns the five governed filters—
+Activity, Signoff Group, Portfolio, Category, and Sub Category—which default to
+the same Activities 1-3 scope as Risk and affect the pivot only after Apply.
 A configurable chevron pivot defaults to Activity → Category (Bucket) → CRDS
 → CPTY, with optional Currency/Product columns and `Stock`/`dStock` values.
 The underlying detail stays position-level and preserves portfolio and static
@@ -118,7 +131,8 @@ metadata rather than aggregating it.
 
 Clicking a CRDS/CPTY leaf loads its history chart on the same page. The same
 selection can be made manually with always-visible WTD/MTD/YTD/1Y/All/Custom
-controls. Period and custom-date changes update the selected history directly.
+controls; start/end dates appear only for Custom. Period and custom-date
+changes update the selected history directly.
 History is chart-only: it does not open another route or send a raw history
 table to the browser.
 
@@ -129,15 +143,18 @@ Category, and Sub Category—governs every P&L section. The page-owned review is
 Risk Type → Risk Greek → Underlying and carries **Today**, **MTD**, and **YTD**.
 It reads its historical summary when the P&L page is entered, independently of
 the Risk-page Aggregate P&L callback. Underlying children are bounded so a
-large Greek cannot send thousands of rows to the browser at once. Clicking an
-Underlying metric is the only action that reveals its inline Colossus/Predict
-history. The chart supports WTD/MTD/YTD/1Y/All/Custom and
-Both/Colossus/Predict; no raw history table remains.
+large Greek cannot send thousands of rows to the browser at once. Clicking a
+Today/MTD/YTD value at Total, Risk Type, Greek, or Underlying level reveals the
+summed inline history for that exact hierarchy scope. The chart uses segmented
+WTD/MTD/YTD/1Y/All/Custom controls, shows start/end only for Custom, and has one
+Both/Colossus/Predict source dropdown; no raw history table remains.
 
 The lower workflow contains the current Send All, SOG editor, Portfolio editor,
 adjustment-save, and Validate P&L sections. Derived fields stay locked. Validate
-P&L compares official Predict/Risk results with Colossus. Missing historical
-dates remain missing rather than being silently filled with zero.
+P&L compares official Predict/Risk results with Colossus. Its hierarchy is
+loaded once for the chosen date/filter state and chevrons then expand entirely
+in the browser without rerunning the comparison. Missing historical dates
+remain missing rather than being silently filled with zero.
 
 ### Statics
 
@@ -150,11 +167,12 @@ Write is intentionally limited to:
 - `s08_concerto.csv`
 - `s09_reported.csv`
 
-The editable table provides Add row, editable cells, row deletion, column
-hiding, Save, and Cancel. Governed connector columns cannot be permanently
-deleted because doing so would make the source unreadable. Save validates the
-complete schema and domain invariants, writes a temporary file, and publishes
-it with an atomic replace. Cancel reloads the governed file.
+The editable table provides Add row, editable existing cells, row deletion,
+column hiding, Save, and Cancel. Governed connector columns cannot be
+permanently deleted because doing so would make the source unreadable. Save
+validates the complete schema and domain invariants, writes a temporary file,
+publishes it with an atomic replace, and refreshes the Read table immediately.
+Cancel reloads the governed file.
 
 ## Runtime, status, and failure behavior
 
@@ -438,8 +456,8 @@ The application path overrides are `CONCERTO_MAPPING_PATH`,
 
 Local Statics writes are durable filesystem changes. Saved filter views are
 small validated JSON files in `data/saved_views/`; P&L adjustments are complete
-per-portfolio CSV files under `adjustments/YYYY-MM-DD/`. Both repositories use
-atomic replacement and reject malformed or stale writes.
+per-portfolio CSV files under `adjustments/YYYY-MM-DD/`. All three write
+boundaries use atomic replacement and reject malformed or stale writes.
 
 Plotly and similar deployments may provide ephemeral or release-local writable
 filesystems. A Statics edit, saved view, or adjustment made inside a deployed

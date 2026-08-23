@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from threading import Lock
-from typing import Mapping, Sequence
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
-from dash import ALL, Input, Output, State, ctx, dcc, html
+from dash import Input, Output, State, dcc, html
 from dash.exceptions import PreventUpdate
 
 from rebirth.domain.s08_pnl import (
@@ -46,14 +46,13 @@ from rebirth.ui.s01_constants import (
 from rebirth.ui.s02_aggregation import format_number, number_sign_class
 
 from .s01_common import (
-    PL_FILTER_EXCLUDE_ID,
-    PL_FILTER_IDS,
+    PL_SAVED_VIEW_CONTROLS,
     apply_pl_filters,
+    committed_pl_filter_values,
     pl_external_filter_map,
 )
 
 
-VALIDATE_PL_ROW_TOGGLE_TYPE = "validate-pl-row-toggle"
 VALIDATE_PL_JOIN_KEYS = (
     SIGNOFF_GROUP,
     RISK_TYPE,
@@ -64,6 +63,7 @@ VALIDATE_PL_JOIN_KEYS = (
 )
 VALIDATE_PL_GROUPS = VALIDATE_PL_JOIN_KEYS
 VALIDATE_PL_METRICS = ("risk", "drisk", "pl", "colossus")
+VALIDATE_PL_CHILD_LIMIT = 10
 VALIDATE_PL_DIMENSION_COLUMNS = (
     ACTIVITY,
     SIGNOFF_GROUP,
@@ -136,32 +136,6 @@ def normalize_validate_pl_open_paths(value: object) -> list[str]:
         if parsed is not None:
             paths[_path_token(parsed)] = None
     return sorted(paths)
-
-
-def toggle_validate_pl_open_paths(current: object, requested: object) -> list[str]:
-    """Toggle one hierarchy path while keeping page-local state normalized."""
-
-    parsed = _path_from_token(requested)
-    normalized = normalize_validate_pl_open_paths(current)
-    if parsed is None:
-        return normalized
-    token = _path_token(parsed)
-    selected = set(normalized)
-    if token in selected:
-        selected.remove(token)
-        # A collapsed parent cannot retain invisible open descendants.
-        selected = {
-            candidate
-            for candidate in selected
-            if not (
-                (child := _path_from_token(candidate)) is not None
-                and len(child) > len(parsed)
-                and all(child.get(key) == value for key, value in parsed.items())
-            )
-        }
-    else:
-        selected.add(token)
-    return sorted(selected)
 
 
 def _normalize_colossus(frame: pd.DataFrame) -> pd.DataFrame:
@@ -402,31 +376,33 @@ def _tree_rows(
     *,
     level: int = 0,
     context: Mapping[str, str] | None = None,
+    visible: bool = True,
 ) -> list[html.Tr]:
     context = dict(context or {})
     if level >= len(VALIDATE_PL_GROUPS):
         return []
     column = VALIDATE_PL_GROUPS[level]
     rows: list[html.Tr] = []
-    for value in _ordered_values(frame, column):
+    values = _ordered_values(frame, column)[:VALIDATE_PL_CHILD_LIMIT]
+    for value in values:
         next_context = {**context, column: value}
         scoped = _scope(frame, {column: value})
         if scoped.empty:
             continue
         token = _path_token(next_context)
+        parent_token = _path_token(context) if context else ""
         can_expand = level + 1 < len(VALIDATE_PL_GROUPS)
         is_open = can_expand and token in open_paths
         if can_expand:
             toggle = html.Button(
                 ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH,
-                id={"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": token},
-                n_clicks=0,
                 type="button",
-                className="row-toggle",
+                className="row-toggle validate-pl-row-toggle",
                 title=("Collapse" if is_open else "Expand") + f" {value}",
                 **{
                     "aria-label": ("Collapse" if is_open else "Expand") + f" {value}",
                     "aria-expanded": str(is_open).lower(),
+                    "data-validate-path": token,
                 },
             )
         else:
@@ -451,13 +427,21 @@ def _tree_rows(
                 for metric in VALIDATE_PL_METRICS
             ),
         ]
-        props: dict[str, object] = {"aria-level": str(level + 1)}
+        props: dict[str, object] = {
+            "aria-level": str(level + 1),
+            "data-validate-path": token,
+            "data-validate-parent-path": parent_token,
+            "data-validate-depth": str(level),
+            "data-validate-open": str(is_open).lower(),
+        }
         if can_expand:
             props["aria-expanded"] = str(is_open).lower()
         rows.append(
             html.Tr(
                 cells,
+                hidden=not visible,
                 className=(
+                    "validate-pl-hierarchy-row "
                     f"group-row group-level-{level} group-kind-{column.replace(' ', '-')}"
                     + (
                         " hierarchy-total-row"
@@ -468,13 +452,14 @@ def _tree_rows(
                 **props,
             )
         )
-        if is_open:
+        if can_expand:
             rows.extend(
                 _tree_rows(
                     scoped,
                     open_paths,
                     level=level + 1,
                     context=next_context,
+                    visible=visible and is_open,
                 )
             )
     return rows
@@ -523,20 +508,32 @@ def _validate_tree_table(
     rows = [html.Tr(total_cells, className="total-row")]
     rows.extend(_tree_rows(comparison, open_paths))
     return html.Div(
-        html.Table(
-            [
-                html.Caption(
-                    "Official historical Risk hierarchy with Predict and Colossus P&L",
-                    className="sr-only",
+        [
+            html.P(
+                "Totals include every filtered row. Each expanded branch shows at "
+                f"most {VALIDATE_PL_CHILD_LIMIT} children in the governed order; "
+                "use the page filters to inspect a narrower set.",
+                className="pl-editor-guide validate-pl-limit-note",
+            ),
+            html.Div(
+                html.Table(
+                    [
+                        html.Caption(
+                            "Official historical Risk hierarchy with Predict and "
+                            "Colossus P&L",
+                            className="sr-only",
+                        ),
+                        html.Thead(html.Tr(headers)),
+                        html.Tbody(rows),
+                    ],
+                    className="risk-table validate-pl-table",
+                    role="treegrid",
+                    **{"aria-label": "Official historical Risk hierarchy"},
                 ),
-                html.Thead(html.Tr(headers)),
-                html.Tbody(rows),
-            ],
-            className="risk-table validate-pl-table",
-            role="treegrid",
-            **{"aria-label": "Official historical Risk hierarchy"},
-        ),
-        className="risk-table-wrap validate-pl-table-wrap",
+                className="risk-table-wrap validate-pl-table-wrap",
+            ),
+        ],
+        className="validate-pl-mapped",
     )
 
 
@@ -717,27 +714,12 @@ def build_validate_pl_section() -> html.Details:
                         type="dot",
                         delay_show=160,
                     ),
-                    dcc.Store(id="pl-validate-open-paths", data=[]),
                 ],
                 className="pl-send-panel",
             ),
         ],
         className="aux-details",
     )
-
-
-def _clicked_path(
-    ids: Sequence[Mapping[str, object]] | None,
-    clicks: Sequence[int | None] | None,
-    triggered_id: object,
-) -> str | None:
-    if not isinstance(triggered_id, Mapping):
-        return None
-    for component_id, n_clicks in zip(ids or (), clicks or ()):
-        if component_id == triggered_id and int(n_clicks or 0) > 0:
-            value = component_id.get("path")
-            return value if isinstance(value, str) else None
-    return None
 
 
 def register_validate_pl_callbacks(app, root: str | Path) -> None:
@@ -782,27 +764,11 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
     @app.callback(
         Output("pl-validate-table", "children"),
         Output("pl-validate-status", "children"),
-        Output("pl-validate-open-paths", "data"),
         Input("pl-validate-date", "value"),
-        *[Input(component_id, "value") for component_id in PL_FILTER_IDS.values()],
-        Input(PL_FILTER_EXCLUDE_ID, "value"),
-        Input({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
-        State({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "id"),
-        State("pl-validate-open-paths", "data"),
+        Input(PL_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         prevent_initial_call=True,
     )
-    def render_validate_pl(
-        market_date,
-        activity_filter,
-        signoff_filter,
-        portfolio_filter,
-        category_filter,
-        subcategory_filter,
-        exclude_filter,
-        toggle_clicks,
-        toggle_ids,
-        open_paths,
-    ):
+    def render_validate_pl(market_date, committed_filter_state):
         if not market_date:
             return (
                 html.Div(
@@ -810,42 +776,20 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
                     className="empty-state",
                 ),
                 "",
-                [],
             )
-        triggered_id = ctx.triggered_id
-        effective_open = (
-            []
-            if isinstance(triggered_id, str)
-            and triggered_id
-            in {
-                "pl-validate-date",
-                *PL_FILTER_IDS.values(),
-                PL_FILTER_EXCLUDE_ID,
-            }
-            else normalize_validate_pl_open_paths(open_paths)
-        )
-        requested = _clicked_path(toggle_ids, toggle_clicks, triggered_id)
-        if requested is not None:
-            effective_open = toggle_validate_pl_open_paths(effective_open, requested)
         try:
             comparison = read_comparison(str(market_date))
+            filter_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
+            comparison = apply_pl_filters(
+                comparison,
+                pl_external_filter_map(filter_values),
+                exclude_selected="exclude" in exclude_value,
+            )
         except (OSError, TypeError, ValueError) as exc:
             message = f"Official Risk snapshot {market_date} could not be loaded: {exc}"
-            return html.Div(message, className="empty-state"), message, []
-
-        comparison = apply_pl_filters(
-            comparison,
-            pl_external_filter_map(
-                [
-                    activity_filter,
-                    signoff_filter,
-                    portfolio_filter,
-                    category_filter,
-                    subcategory_filter,
-                ]
-            ),
-            exclude_selected="exclude" in (exclude_filter or []),
-        )
+            return html.Div(message, className="empty-state"), message
 
         counts = comparison["comparison status"].value_counts()
         matched = int(counts.get("Matched", 0))
@@ -864,21 +808,19 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         if unmapped:
             status += f" · {unmapped:,} Unmapped Colossus"
         return (
-            build_validate_pl_table(comparison, open_paths=effective_open),
+            build_validate_pl_table(comparison),
             status,
-            effective_open,
         )
 
 
 __all__ = [
+    "VALIDATE_PL_CHILD_LIMIT",
     "VALIDATE_PL_GROUPS",
     "VALIDATE_PL_JOIN_KEYS",
     "VALIDATE_PL_METRICS",
-    "VALIDATE_PL_ROW_TOGGLE_TYPE",
     "build_validate_pl_comparison",
     "build_validate_pl_table",
     "build_validate_pl_section",
     "normalize_validate_pl_open_paths",
     "register_validate_pl_callbacks",
-    "toggle_validate_pl_open_paths",
 ]

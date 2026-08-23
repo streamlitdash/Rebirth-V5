@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dash import dash_table, dcc, html
+from dash.dash_table.Format import Format, Scheme
 
 from .s01_common import DISPLAY_COLUMNS
 from .s06_validation import build_validate_pl_section
@@ -11,6 +12,7 @@ from .s06_validation import build_validate_pl_section
 def _editor_columns(*, portfolio_editable: bool) -> list[dict[str, object]]:
     """Return native DataTable columns with explicitly governed editability."""
     editable_columns = {"Risk Type", "Risk Greek", "PL"}
+    pl_format = Format(precision=0, scheme=Scheme.fixed, group=",")
     if portfolio_editable:
         editable_columns.add("Portfolio")
     return [
@@ -21,6 +23,7 @@ def _editor_columns(*, portfolio_editable: bool) -> list[dict[str, object]]:
             **(
                 {
                     "type": "numeric",
+                    "format": pl_format,
                     "on_change": {"action": "coerce", "failure": "reject"},
                 }
                 if column == "PL"

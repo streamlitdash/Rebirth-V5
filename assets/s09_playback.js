@@ -4,7 +4,7 @@
 
   const CAMERA = { eye: { x: 1.55, y: 1.65, z: 1.25 } };
   const ASPECT = { x: 1.30, y: 1.08, z: 0.78 };
-
+  const SUM_SLICE = "__sum__";
   const dataProjectionOptions = (axisCount) => {
     if (axisCount === 0) {
       return [{ label: "Timeline", value: "zero_timeline" }];
@@ -39,7 +39,7 @@
     return values.includes(selected) ? selected : fallback;
   };
   const dropdownOptions = (values) => values.map((value) => ({
-    label: value,
+    label: value === SUM_SLICE ? "Sum" : value,
     value,
   }));
 
@@ -62,13 +62,13 @@
     if (axes.length === 2 && projection === "two_swap") {
       return {
         label: `Fixed ${axes[1]?.column || "Tenor Option"}`,
-        values: dataLabels(axes[1]),
+        values: [SUM_SLICE, ...dataLabels(axes[1])],
       };
     }
     if (axes.length === 2 && projection === "two_option") {
       return {
         label: `Fixed ${axes[0]?.column || "Tenor Swap"}`,
-        values: dataLabels(axes[0]),
+        values: [SUM_SLICE, ...dataLabels(axes[0])],
       };
     }
     return { label: "Slice", values: [] };
@@ -106,6 +106,13 @@
     if (value === null || value === undefined || value === "") return null;
     const selected = Number(value);
     return Number.isFinite(selected) ? selected : null;
+  };
+
+  const dataNullSafeSum = (values) => {
+    const finite = values.map(finiteNumber).filter((value) => value !== null);
+    return finite.length
+      ? finite.reduce((total, value) => total + value, 0)
+      : null;
   };
 
   const dataBoundsForValues = (values) => {
@@ -363,20 +370,28 @@
     };
     if (projection === "two_compare") return twoAxisComparison(shared);
     if (projection === "two_swap") {
-      const selected = retainedValue(secondLabels, slice, secondLabels[0] ?? null);
-      const selectedValues = firstLabels.map(
-        (label) => dataHistoryPoint(points, [selectedDate, label, selected]),
-      );
+      const choices = [SUM_SLICE, ...secondLabels];
+      const selected = retainedValue(choices, slice, SUM_SLICE);
+      const point = (date, firstLabel) => selected === SUM_SLICE
+        ? dataNullSafeSum(secondLabels.map((secondLabel) => dataHistoryPoint(
+          points,
+          [date, firstLabel, secondLabel],
+        )))
+        : dataHistoryPoint(points, [date, firstLabel, selected]);
+      const grid = dates.map((date) => firstLabels.map((label) => point(date, label)));
+      const selectedValues = firstLabels.map((label) => point(selectedDate, label));
+      const sliceBounds = dataBoundsForValues(grid.flat());
+      const sliceLabel = selected === SUM_SLICE
+        ? `Sum of ${secondColumn}`
+        : `Fixed ${secondColumn} · ${selected}`;
       return {
         data: [
           dataSurface(
             firstLabels,
             dates,
-            dates.map((value) => firstLabels.map(
-              (label) => dataHistoryPoint(points, [value, label, selected]),
-            )),
-            `Fixed ${secondColumn} · ${selected}`,
-            bounds,
+            grid,
+            sliceLabel,
+            sliceBounds,
             { colorbar: { title: { text: metric } } },
           ),
           {
@@ -391,26 +406,41 @@
           },
         ],
         layout: {
-          scene: dataScene(firstColumn, firstLabels, "Date", dates, metric, bounds),
+          scene: dataScene(
+            firstColumn,
+            firstLabels,
+            "Date",
+            dates,
+            metric,
+            sliceBounds,
+          ),
         },
-        title: `${metric} · fixed ${secondColumn} ${selected}`,
+        title: `${metric} · ${sliceLabel}`,
       };
     }
     if (projection === "two_option") {
-      const selected = retainedValue(firstLabels, slice, firstLabels[0] ?? null);
-      const selectedValues = secondLabels.map(
-        (label) => dataHistoryPoint(points, [selectedDate, selected, label]),
-      );
+      const choices = [SUM_SLICE, ...firstLabels];
+      const selected = retainedValue(choices, slice, SUM_SLICE);
+      const point = (date, secondLabel) => selected === SUM_SLICE
+        ? dataNullSafeSum(firstLabels.map((firstLabel) => dataHistoryPoint(
+          points,
+          [date, firstLabel, secondLabel],
+        )))
+        : dataHistoryPoint(points, [date, selected, secondLabel]);
+      const grid = dates.map((date) => secondLabels.map((label) => point(date, label)));
+      const selectedValues = secondLabels.map((label) => point(selectedDate, label));
+      const sliceBounds = dataBoundsForValues(grid.flat());
+      const sliceLabel = selected === SUM_SLICE
+        ? `Sum of ${firstColumn}`
+        : `Fixed ${firstColumn} · ${selected}`;
       return {
         data: [
           dataSurface(
             secondLabels,
             dates,
-            dates.map((value) => secondLabels.map(
-              (label) => dataHistoryPoint(points, [value, selected, label]),
-            )),
-            `Fixed ${firstColumn} · ${selected}`,
-            bounds,
+            grid,
+            sliceLabel,
+            sliceBounds,
             { colorbar: { title: { text: metric } } },
           ),
           {
@@ -425,9 +455,16 @@
           },
         ],
         layout: {
-          scene: dataScene(secondColumn, secondLabels, "Date", dates, metric, bounds),
+          scene: dataScene(
+            secondColumn,
+            secondLabels,
+            "Date",
+            dates,
+            metric,
+            sliceBounds,
+          ),
         },
-        title: `${metric} · fixed ${firstColumn} ${selected}`,
+        title: `${metric} · ${sliceLabel}`,
       };
     }
     return {
@@ -554,9 +591,9 @@
     0,
     true,
     pill,
-    "▶  Play",
+    "Play",
     true,
-    "Static view",
+    "Static",
     true,
     { playing: false, index: 0, key: null },
     { display: "none" },
@@ -668,9 +705,9 @@
       index,
       !hasPlayer,
       selectedDate,
-      playing ? "Ⅱ  Pause" : "▶  Play",
+      playing ? "Pause" : "Play",
       !hasPlayer,
-      playing ? "Playing" : "Static view",
+      playing ? "Playing" : "Static",
       !playing,
       state,
       hasPlayer ? {} : { display: "none" },
@@ -684,7 +721,6 @@
       dataProjectionSlice,
     }),
   });
-
   // Keep wheel scrubbing on Dash's public property boundary. Synthetic
   // keyboard events are ignored by some rc-slider/browser combinations.
   document.addEventListener("wheel", (event) => {

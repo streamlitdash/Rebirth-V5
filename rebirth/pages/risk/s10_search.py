@@ -196,13 +196,18 @@ def _product_shaped_quick_search_indexes(
         for axis in PRODUCT_SPECS_BY_SOURCE_TYPE[source_type].axes
     }
     selected = tuple(str(column) for column in index_columns)
-    non_tenors = tuple(
-        column for column in selected if column not in _QUICK_SEARCH_TENOR_INDEXES
+    non_tenors = (
+        "Underlying",
+        *(
+            column
+            for column in selected
+            if column not in _QUICK_SEARCH_TENOR_INDEXES and column != "Underlying"
+        ),
     )
     axes = tuple(
         column for column in ("Tenor Swap", "Tenor Option") if column in supported_axes
     )
-    return (*non_tenors, *axes) or ("Underlying", *axes)
+    return (*non_tenors, *axes)
 
 
 def _render_quick_search_pivot(

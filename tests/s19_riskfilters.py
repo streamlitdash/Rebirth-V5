@@ -480,6 +480,41 @@ def test_risk_filter_values_and_mode_have_one_callback_owner() -> None:
     assert set(owners.values()) == {1}
 
 
+def test_only_the_committed_risk_filter_state_reaches_applied_stores() -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == "dimension-filter-values-store"
+            for output in _callback_outputs(item)
+        )
+    )
+    inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    callback = metadata["callback"].__wrapped__
+    values = [
+        [f"VALUE-{index}"] for index, _field in enumerate(FILTER_DIMENSION_FIELDS)
+    ]
+    committed = {
+        "scope": "risk",
+        "view_id": "base",
+        "filters": {
+            field.key: selected
+            for field, selected in zip(FILTER_DIMENSION_FIELDS, values, strict=True)
+        },
+        "exclude_selected": True,
+    }
+
+    applied_values, applied_exclude = callback(committed, 1)
+
+    assert applied_values == values
+    assert applied_exclude == ["exclude"]
+    assert inputs == {
+        (RISK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
+        ("data-revision-store", "data"),
+    }
+
+
 def test_split_selection_only_publishes_when_context_prunes_it() -> None:
     effective, value_update = events_module._pruned_split_selection(
         ["Risk", "New Trades"],
@@ -530,9 +565,15 @@ def test_quick_risk_identity_choices_follow_the_governed_filter_view() -> None:
     )
     assert {
         ("split-filter", "value"),
-        ("risk-filter-exclude-selected", "value"),
-        *((component_id, "value") for component_id in DIMENSION_FILTER_IDS.values()),
+        ("dimension-filter-values-store", "data"),
+        ("risk-filter-exclude-applied-store", "data"),
     } <= inputs
+    assert ("quick-search-identity-mode", "value") not in inputs
+    assert ("risk-filter-exclude-selected", "value") not in inputs
+    assert (
+        not {(component_id, "value") for component_id in DIMENSION_FILTER_IDS.values()}
+        & inputs
+    )
 
 
 def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
@@ -640,13 +681,21 @@ def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> N
         for item in components
         if isinstance(item, dcc.Tabs) and item.id == "risk-workspace-tabs"
     )
+    disclosure = next(
+        item
+        for item in components
+        if isinstance(item, html.Details)
+        and getattr(item, "id", None) == "ag-pl-details"
+    )
 
+    assert disclosure.open is True
+    assert workspace in list(_walk(disclosure))
     assert workspace.value == "aggregate-pl"
     assert [(tab.label, tab.value) for tab in workspace.children] == [
-        ("Aggregate P&L", "aggregate-pl"),
-        ("Quick Risk", "quick-risk"),
-        ("Quick Market", "quick-market"),
-        ("Top Promotions", "top-promotions"),
+        ("Ag P&L", "aggregate-pl"),
+        ("· Quick Risk", "quick-risk"),
+        ("· Quick Market", "quick-market"),
+        ("· Top Promotions", "top-promotions"),
     ]
     ids = {str(getattr(item, "id", "")) for item in components}
     assert {
@@ -655,6 +704,13 @@ def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> N
         "quick-market-details",
         "top-promotions-grid",
     } <= ids
+    signal = next(
+        item
+        for item in components
+        if isinstance(item, dcc.Dropdown) and item.id == "top-promotions-signal"
+    )
+    assert signal.value == "vol-score"
+    assert signal.options == [{"label": "Vol Score", "value": "vol-score"}]
     assert "top-book-details" not in ids
     assert "top-book-grid" not in ids
     assert "top-book-summary" not in ids
@@ -679,14 +735,15 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
         1,
         None,
         [],
-        *([None] * len(FILTER_DIMENSION_FIELDS)),
+        [[] for _field in FILTER_DIMENSION_FIELDS],
         [],
+        "vol-score",
     )
 
     assert closed_grid is None
     assert "Select Top Promotions" in closed_status
     assert ("risk-workspace-tabs", "value") in inputs
-    assert ("top-promotions-rank-by", "value") not in inputs
+    assert ("top-promotions-signal", "value") in inputs
     assert ("promotion-generation-store", "data") in inputs
     assert not any(
         str(component_id).startswith("top-book") for component_id, _ in inputs
@@ -709,6 +766,9 @@ def test_promotion_recalculation_captures_split_without_callback_cycle() -> None
 
     assert ("split-filter", "value") not in inputs
     assert ("split-filter", "value") in states
+    assert ("dimension-filter-values-store", "data") in inputs
+    assert ("risk-filter-exclude-applied-store", "data") in inputs
+    assert ("risk-filter-exclude-selected", "value") not in inputs
 
 
 def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
@@ -804,8 +864,8 @@ def test_aggregate_pl_can_group_by_portfolio() -> None:
 
 def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() -> None:
     app = build_app(refresh_manager=_warm_manager())
-    exclusion = ("risk-filter-exclude-selected", "value")
-    portfolio = ("portfolio-filter", "value")
+    applied_exclusion = ("risk-filter-exclude-applied-store", "data")
+    applied_filters = ("dimension-filter-values-store", "data")
 
     for output_id in (
         "aggregate-pl-grid",
@@ -814,16 +874,19 @@ def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() 
         "quick-search-results",
     ):
         inputs = _callback_inputs_for_output(app, output_id, "children")
-        assert exclusion in inputs
-        assert portfolio in inputs
+        assert applied_exclusion in inputs
+        assert applied_filters in inputs
+        assert ("risk-filter-exclude-selected", "value") not in inputs
+        assert ("portfolio-filter", "value") not in inputs
 
     explorer_inputs = _callback_inputs_for_output(app, "risk-grid", "children")
-    assert exclusion in explorer_inputs
-    assert ("dimension-filter-values-store", "data") in explorer_inputs
+    assert applied_exclusion in explorer_inputs
+    assert applied_filters in explorer_inputs
     sync_inputs = _callback_inputs_for_output(
         app, "dimension-filter-values-store", "data"
     )
-    assert portfolio in sync_inputs
+    assert ("risk-saved-view-committed", "data") in sync_inputs
+    assert ("portfolio-filter", "value") not in sync_inputs
 
 
 def test_unmapped_inventory_applies_only_its_meaningful_portfolio_dimension() -> None:

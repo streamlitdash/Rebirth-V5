@@ -142,7 +142,7 @@ def test_quick_risk_and_market_search_use_native_collapsible_chevrons() -> None:
     )
 
 
-def test_quick_search_keeps_identity_authority_separate_from_pivot_levels() -> None:
+def test_quick_search_uses_reported_identity_and_product_shaped_pivot_levels() -> None:
     search = build_quick_search()
     picker = next(
         item
@@ -160,17 +160,8 @@ def test_quick_search_keeps_identity_authority_separate_from_pivot_levels() -> N
     assert "Tenor Option" in values
     assert "Tnr" not in values
     assert "Tenor Opt" not in values
-    identity_mode = next(
-        item
-        for item in _walk(search)
-        if isinstance(item, dcc.RadioItems) and item.id == "quick-search-identity-mode"
-    )
-    assert identity_mode.value == "reported"
-    assert identity_mode.options == [
-        {"label": "Reported Underlying", "value": "reported"},
-        {"label": "Underlying", "value": "underlying"},
-    ]
     ids = {getattr(item, "id", None) for item in _walk(search)}
+    assert "quick-search-identity-mode" not in ids
     assert "greek-filter" not in ids
     assert "quick-search-greek-filter" not in ids
 
@@ -968,6 +959,19 @@ def test_quick_risk_uses_product_spec_axes_before_pivoting(
     )
 
 
+def test_quick_risk_keeps_underlying_first_with_extra_reporting_levels() -> None:
+    class Manager:
+        def resolve_history_identity(self, *_args, **_kwargs):
+            return SimpleNamespace(source_types=("ir/delta",))
+
+    assert _product_shaped_quick_search_indexes(
+        Manager(),
+        "identity",
+        "reported",
+        ("Portfolio", "Tenor Option"),
+    ) == ("Underlying", "Portfolio", "Tenor Swap")
+
+
 def test_small_detail_table_only_shows_meaningful_tenor_axes() -> None:
     frame = pd.DataFrame(
         {
@@ -1280,7 +1284,14 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
     assert ranked["Rank"].tolist() == [1, 2]
     assert ranked["Reported Underlying"].tolist() == ["USD-SOFR", "EURUSD"]
     assert ranked["Vol Score"].tolist() == [90.0, 20.0]
-    assert ranked["Promotion Score"].tolist() == [1.25, 2.5]
+    assert "Promotion Score" not in ranked
+    tied = frame.iloc[:2].copy()
+    tied["vol score"] = 50.0
+    tied["promotion score"] = [100.0, 0.0]
+    assert top_promotions_frame(tied)["Reported Underlying"].tolist() == [
+        "EURUSD",
+        "USD-SOFR",
+    ]
     assert [column["name"] for column in table.columns] == [
         "Rank",
         "Promotion Reason",
@@ -1291,7 +1302,6 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
         "dRisk",
         "P&L",
         "Vol Score",
-        "Promotion Score",
     ]
     assert table.page_action == "native"
     assert table.page_size == 10

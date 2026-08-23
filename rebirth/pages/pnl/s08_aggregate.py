@@ -26,7 +26,9 @@ from .s01_common import (
     PL_FILTER_IDS,
     PL_SUMMARY_HISTORY_CELL_TYPE,
     PL_SUMMARY_TOGGLE_TYPE,
+    PL_SAVED_VIEW_CONTROLS,
     PLRiskSummaryQueryProtocol,
+    committed_pl_filter_values,
     pl_external_filter_map,
     pl_filter_options,
 )
@@ -67,6 +69,7 @@ def register_pl_aggregate_callbacks(
         if isinstance(history_source, PLRiskSummaryQueryProtocol)
         else None
     )
+    consumer_controls = saved_view_controls or PL_SAVED_VIEW_CONTROLS
 
     def current_filter_frame() -> pd.DataFrame | None:
         """Read mapped live data only to populate the five filter selectors."""
@@ -212,8 +215,7 @@ def register_pl_aggregate_callbacks(
             {"type": PL_SUMMARY_PAGE_TYPE, "path": ALL, "page": ALL},
             "n_clicks",
         ),
-        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-        Input("pnl-filter-exclude-selected", "value"),
+        Input(consumer_controls.committed_state_id, "data"),
         Input("clear-cache-complete-store", "data"),
         State("pnl-summary-open-paths", "data"),
     )
@@ -221,13 +223,12 @@ def register_pl_aggregate_callbacks(
         _data_revision,
         row_clicks,
         page_clicks,
-        *filter_values_mode_cache_and_open,
+        committed_filter_state,
+        _cache_generation,
+        open_raw,
     ):
         """Query one page-owned summary and reveal only expanded branches."""
 
-        selected_values = filter_values_mode_cache_and_open[: len(PL_FILTER_FIELDS)]
-        exclude_value = filter_values_mode_cache_and_open[len(PL_FILTER_FIELDS)]
-        open_raw = filter_values_mode_cache_and_open[-1]
         effective_tokens = _ordered_open_tokens(open_raw)
         updated_open = no_update
         try:
@@ -298,6 +299,9 @@ def register_pl_aggregate_callbacks(
         if trigger == "clear-cache-complete-store":
             query_source.clear()
         try:
+            selected_values, exclude_value = committed_pl_filter_values(
+                committed_filter_state
+            )
             result = query_source.risk_summary(
                 filters=pl_external_filter_map(selected_values),
                 exclude_selected="exclude" in (exclude_value or []),
@@ -346,7 +350,7 @@ def register_pl_aggregate_callbacks(
         prevent_initial_call=True,
     )
     def select_pl_history_cell(clicks):
-        """Turn an Underlying leaf into an inline daily-history request."""
+        """Turn one summary value into an inline aggregated-history request."""
 
         if not clicks or max(int(value or 0) for value in clicks) <= 0:
             return no_update

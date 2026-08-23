@@ -56,7 +56,7 @@ def build_pl_history_figure(
                 customdata=[[history_type, label] for _index in scoped.index],
                 hovertemplate=(
                     "Market Date %{x}<br>P&L Type %{customdata[0]}<br>"
-                    "Scope %{customdata[1]}<br>P&L %{y:,.2f}<extra></extra>"
+                    "Scope %{customdata[1]}<br>P&L %{y:,.0f}<extra></extra>"
                 ),
             )
         )
@@ -79,7 +79,7 @@ def build_pl_history_figure(
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
     )
     figure.update_xaxes(type="date", automargin=True)
-    figure.update_yaxes(automargin=True, tickformat=",.2f", zeroline=True)
+    figure.update_yaxes(automargin=True, tickformat=",.0f", zeroline=True)
     return figure
 
 

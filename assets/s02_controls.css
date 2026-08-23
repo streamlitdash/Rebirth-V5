@@ -261,6 +261,17 @@ details > summary::-webkit-details-marker { display: none; }
 .saved-view-status { color: var(--text); font-size: 12px; font-weight: 750; }
 .saved-view-persistence-note { margin-top: 3px; color: var(--text-muted); font-size: 10px; line-height: 1.35; }
 .saved-view-filter-note { grid-column: 1 / -1; line-height: 1.45; }
+.saved-view-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--outline);
+}
+.saved-view-draft-note { color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.saved-view-form-buttons { display: flex; align-items: center; gap: 8px; }
 .stock-compare-action { align-self: end; }
 .stock-compare-button { width: 100%; }
 

@@ -111,6 +111,7 @@ def build_static_data_page() -> html.Div:
     write_value = STATIC_WRITE_OPTIONS[0]["value"] if STATIC_WRITE_OPTIONS else None
     return html.Div(
         [
+            dcc.Store(id="static-data-revision", data=0),
             html.Header(
                 [
                     html.P("REFERENCE DATA", className="page-eyebrow"),
@@ -187,7 +188,9 @@ def build_static_data_page() -> html.Div:
                         "Edit cells directly, remove rows with the row action, and hide "
                         "columns from the header menu. Governed connector columns stay "
                         "locked so a saved edit cannot break the application. Save "
-                        "validates the complete table and replaces the CSV atomically.",
+                        "validates the complete table and replaces the CSV atomically. "
+                        "Saved rows are read back when this page is reopened; Plotly "
+                        "runtime files may still reset after a restart or redeploy.",
                         className="page-note",
                     ),
                     dash_table.DataTable(

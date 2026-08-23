@@ -73,31 +73,6 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                             html.Div(
                                 [
                                     html.Label(
-                                        "Search using",
-                                        htmlFor="quick-search-identity-mode",
-                                    ),
-                                    dcc.RadioItems(
-                                        id="quick-search-identity-mode",
-                                        options=[
-                                            {
-                                                "label": "Reported Underlying",
-                                                "value": "reported",
-                                            },
-                                            {
-                                                "label": "Underlying",
-                                                "value": "underlying",
-                                            },
-                                        ],
-                                        value="reported",
-                                        inline=True,
-                                        className="quick-search-identity-mode",
-                                    ),
-                                ],
-                                className="quick-search-selector-control",
-                            ),
-                            html.Div(
-                                [
-                                    html.Label(
                                         "Search Risk",
                                         htmlFor="quick-search-combine-udl",
                                     ),

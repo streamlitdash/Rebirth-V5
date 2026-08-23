@@ -9,7 +9,7 @@ from uuid import uuid4
 from dash import Dash, Input, Output, State, ctx, no_update
 
 from rebirth.history import HistoryHandoff, RiskFilterView
-from rebirth.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
 from rebirth.app.s02_contracts import RefreshManagerProtocol
 
 
@@ -109,11 +109,6 @@ def register_callbacks(
 ) -> None:
     """Register the only cross-page writer for the session handoff store."""
 
-    dimension_states = [
-        State(DIMENSION_FILTER_IDS[field.key], "value")
-        for field in FILTER_DIMENSION_FIELDS
-    ]
-
     @app.callback(
         Output("quick-search-open-data", "disabled"),
         Output("quick-market-open-data", "disabled"),
@@ -133,10 +128,9 @@ def register_callbacks(
         Input("quick-market-open-data", "n_clicks"),
         Input("quick-search-combine-udl", "value"),
         Input("quick-market-combine-udl", "value"),
-        State("quick-search-identity-mode", "value"),
         State("split-filter", "value"),
-        State("risk-filter-exclude-selected", "value"),
-        *dimension_states,
+        State("dimension-filter-values-store", "data"),
+        State("risk-filter-exclude-applied-store", "data"),
         State("reset-generation-store", "data"),
         prevent_initial_call=True,
     )
@@ -145,10 +139,10 @@ def register_callbacks(
         _market_clicks,
         risk_identity,
         market_identity,
-        risk_identity_mode,
         selected_splits,
+        dimension_values,
         exclude_value,
-        *state_values,
+        reset_generation,
     ):
         if refresh_manager is None:
             return no_update, no_update, "Data history is unavailable.", no_update
@@ -156,19 +150,13 @@ def register_callbacks(
             return no_update, no_update, "", no_update
         if ctx.triggered_id == "quick-market-combine-udl":
             return no_update, no_update, no_update, ""
-        reset_generation = state_values[-1]
-        dimension_values = state_values[:-1]
         kind = "market" if ctx.triggered_id == "quick-market-open-data" else "risk"
         try:
             handoff = build_history_handoff(
                 refresh_manager,
                 kind=kind,
                 combine_udl=(market_identity if kind == "market" else risk_identity),
-                identity_mode=(
-                    "underlying"
-                    if kind == "market"
-                    else str(risk_identity_mode or "reported")
-                ),
+                identity_mode=("underlying" if kind == "market" else "reported"),
                 reset_generation=reset_generation,
                 selected_splits=selected_splits,
                 dimension_values=dimension_values,

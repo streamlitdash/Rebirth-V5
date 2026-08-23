@@ -15,19 +15,19 @@ from dash import Dash, dcc, html
 from rebirth.history import archive_official_snapshot
 from rebirth.domain.s08_pnl import HISTORY_MAPPING_STATUS
 from rebirth.domain.s01_schema import UNMAPPED_VALUE
-from rebirth.pages.pnl import s06_validation as validate_pl_module
 from rebirth.pages.pnl.s01_common import (
-    PL_FILTER_IDS,
+    PL_FILTER_FIELDS,
+    PL_SAVED_VIEW_CONTROLS,
     apply_pl_filters,
     pl_external_filter_map,
 )
 from rebirth.pages.pnl.s06_validation import (
+    VALIDATE_PL_CHILD_LIMIT,
     build_validate_pl_comparison,
     build_validate_pl_table,
     build_validate_pl_section,
     normalize_validate_pl_open_paths,
     register_validate_pl_callbacks,
-    toggle_validate_pl_open_paths,
 )
 from rebirth.pages.pnl.s07_view import build_pl_filter_bar, build_pl_send_sections
 from tools.s01_fixtures import FAKE_NOTICE, HISTORICAL_MARKET_DATES, HISTORY_END_DATE
@@ -101,6 +101,22 @@ def _colossus(*, duplicate: bool = False) -> pd.DataFrame:
 
 def _token(**values: str) -> str:
     return json.dumps(values, sort_keys=True, separators=(",", ":"))
+
+
+def _committed(
+    *,
+    portfolio: list[str] | None = None,
+    exclude_selected: bool = False,
+) -> dict[str, object]:
+    return {
+        "scope": "pnl",
+        "view_id": "__base__",
+        "filters": {
+            field.key: list(portfolio or []) if field.key == "portfolio" else []
+            for field in PL_FILTER_FIELDS
+        },
+        "exclude_selected": exclude_selected,
+    }
 
 
 def test_comparison_aggregates_predict_before_one_to_one_colossus_join() -> None:
@@ -267,7 +283,7 @@ def test_validate_pl_table_uses_risk_explorer_chevrons_at_truthful_comparison_gr
         component
         for component in _walk(table)
         if isinstance(component, html.Button)
-        and getattr(component, "className", None) == "row-toggle"
+        and "row-toggle" in str(getattr(component, "className", "")).split()
     ]
 
     assert headers == ["Index", "Risk", "dRisk", "P", "C"]
@@ -338,9 +354,7 @@ def test_validate_pl_table_keeps_unmapped_colossus_out_of_mapped_total() -> None
     assert [item["data-copy-value"] for item in unmapped_metrics] == ["", "7.0"]
 
 
-def test_validate_pl_open_state_is_page_local_normalized_and_prunes_descendants() -> (
-    None
-):
+def test_validate_pl_open_state_is_page_local_and_rows_are_browser_owned() -> None:
     risk_type = _token(**{"SignoffGroup": "SOG-A", "Risk Type": "IR"})
     greek = _token(
         **{
@@ -352,7 +366,29 @@ def test_validate_pl_open_state_is_page_local_normalized_and_prunes_descendants(
     malformed = '{"tenor swap":"1Y"}'
 
     assert normalize_validate_pl_open_paths([greek, malformed, greek]) == [greek]
-    assert toggle_validate_pl_open_paths([risk_type, greek], risk_type) == []
+    table = build_validate_pl_table(
+        build_validate_pl_comparison(_raw_risk(), _colossus())
+    )
+    rows = [
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Tr)
+        and "validate-pl-hierarchy-row" in str(getattr(item, "className", "")).split()
+    ]
+    toggles = [
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Button)
+        and "validate-pl-row-toggle" in str(getattr(item, "className", "")).split()
+    ]
+
+    assert risk_type != greek
+    assert rows[0].hidden is False
+    assert all(row.hidden is True for row in rows[1:])
+    assert toggles
+    assert all(
+        "data-validate-path" in toggle.to_plotly_json()["props"] for toggle in toggles
+    )
 
 
 def test_validate_pl_stays_lazy_and_history_remains_page_owned() -> None:
@@ -390,7 +426,6 @@ def test_validate_pl_stays_lazy_and_history_remains_page_owned() -> None:
 
 def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     tmp_path,
-    monkeypatch,
 ) -> None:
     snapshot = SimpleNamespace(
         revision=1,
@@ -406,7 +441,13 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     incomplete.mkdir(parents=True)
 
     app = Dash(__name__)
-    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
+    app.layout = html.Div(
+        [
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            build_pl_filter_bar(),
+            build_validate_pl_section(),
+        ]
+    )
     register_validate_pl_callbacks(app, tmp_path)
     key = next(key for key in app.callback_map if "pl-validate-date.options" in key)
     discover = app.callback_map[key]["callback"].__wrapped__
@@ -422,27 +463,9 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
         key for key in app.callback_map if "pl-validate-table.children" in key
     )
     render = app.callback_map[render_key]["callback"].__wrapped__
-    monkeypatch.setattr(
-        validate_pl_module,
-        "ctx",
-        SimpleNamespace(triggered_id="pl-validate-date"),
-    )
-
-    table, render_status, open_paths = render(
-        selected,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
+    table, render_status = render(selected, None)
 
     assert "Official 2026-08-14" in render_status
-    assert open_paths == []
     assert any(
         isinstance(component, html.Table)
         and getattr(component, "className", None) == "risk-table validate-pl-table"
@@ -450,12 +473,16 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     )
 
 
-def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl(
-    monkeypatch,
-) -> None:
+def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> None:
     history_root = Path(__file__).resolve().parents[1] / "data" / "histo"
     app = Dash(__name__)
-    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
+    app.layout = html.Div(
+        [
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            build_pl_filter_bar(),
+            build_validate_pl_section(),
+        ]
+    )
     register_validate_pl_callbacks(app, history_root)
     catalog_key = next(
         key for key in app.callback_map if "pl-validate-date.options" in key
@@ -473,28 +500,10 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl(
         key for key in app.callback_map if "pl-validate-table.children" in key
     )
     render = app.callback_map[render_key]["callback"].__wrapped__
-    monkeypatch.setattr(
-        validate_pl_module,
-        "ctx",
-        SimpleNamespace(triggered_id="pl-validate-date"),
-    )
-
-    table, render_status, open_paths = render(
-        selected,
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
+    table, render_status = render(selected, None)
 
     assert f"Official {HISTORY_END_DATE}" in render_status
     assert "matched" in render_status
-    assert open_paths == []
     labels = [
         component.children
         for component in _walk(table)
@@ -505,10 +514,7 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl(
     assert any(FAKE_NOTICE in str(label) for label in labels[1:])
 
 
-def test_validate_callback_uses_page_filter_and_resets_open_paths(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_validate_callback_uses_committed_page_filter(tmp_path) -> None:
     snapshot = SimpleNamespace(
         revision=1,
         refreshed_at=datetime(2026, 8, 14, 22, 5, tzinfo=timezone.utc),
@@ -530,36 +536,66 @@ def test_validate_callback_uses_page_filter_and_resets_open_paths(
     )
     archive_official_snapshot(snapshot, lambda _date: colossus, tmp_path)
     app = Dash(__name__)
-    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
+    app.layout = html.Div(
+        [
+            dcc.Store(id=PL_SAVED_VIEW_CONTROLS.committed_state_id),
+            build_pl_filter_bar(),
+            build_validate_pl_section(),
+        ]
+    )
     register_validate_pl_callbacks(app, tmp_path)
     render = next(
         metadata["callback"].__wrapped__
         for metadata in app.callback_map.values()
         if "pl-validate-table.children" in str(metadata["output"])
     )
-    monkeypatch.setattr(
-        validate_pl_module,
-        "ctx",
-        SimpleNamespace(triggered_id=PL_FILTER_IDS["portfolio"]),
-    )
-
-    table, status, open_paths = render(
-        "2026-08-14",
-        [],
-        [],
-        ["book-z"],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [_token(**{"SignoffGroup": "SOG-A"})],
-    )
+    table, status = render("2026-08-14", _committed(portfolio=["book-z"]))
 
     assert "1 filtered rows" in status
     assert "0 mapped" in status
     assert "1 Unmapped Colossus" in status
-    assert open_paths == []
     assert "Unmapped Colossus (1)" in [
         item.children for item in _walk(table) if isinstance(item, html.Summary)
     ]
+
+
+def test_validate_pl_caps_browser_tree_without_changing_total() -> None:
+    risk = pd.concat(
+        [
+            _raw_risk().assign(
+                SignoffGroup=f"SOG-{index:02d}",
+                Portfolio=f"BOOK-{index:02d}",
+            )
+            for index in range(VALIDATE_PL_CHILD_LIMIT + 4)
+        ],
+        ignore_index=True,
+    )
+    colossus = pd.DataFrame(
+        [
+            [f"BOOK-{index:02d}", "USD-SOFR", "IR", "Delta", 12.0]
+            for index in range(VALIDATE_PL_CHILD_LIMIT + 4)
+        ],
+        columns=["Portfolio", "Underlying", "Risk Type", "Risk Greek", "PL"],
+    )
+    table = build_validate_pl_table(build_validate_pl_comparison(risk, colossus))
+    labels = [
+        item.children
+        for item in _walk(table)
+        if isinstance(item, html.Span)
+        and getattr(item, "className", None) == "row-label-text"
+    ]
+    total_predict = next(
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Td)
+        and item.to_plotly_json()["props"].get("data-metric") == "pl"
+    )
+
+    assert labels[0] == "TOTAL"
+    assert (
+        len([label for label in labels if str(label).startswith("SOG-")])
+        == VALIDATE_PL_CHILD_LIMIT
+    )
+    assert float(total_predict.to_plotly_json()["props"]["data-copy-value"]) == (
+        10.0 * (VALIDATE_PL_CHILD_LIMIT + 4)
+    )

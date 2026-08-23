@@ -5,6 +5,67 @@
   let gesture = null;
   let suppressTrustedClickUntil = 0;
 
+  const syncValidateHierarchy = (table) => {
+    if (!table?.matches?.(".validate-pl-table")) return;
+    const rows = Array.from(
+      table.querySelectorAll("tbody tr.validate-pl-hierarchy-row"),
+    );
+    const rowsByPath = new Map(
+      rows.map((row) => [row.dataset.validatePath, row]),
+    );
+    rows.forEach((row) => {
+      const depth = Number(row.dataset.validateDepth);
+      const parent = rowsByPath.get(row.dataset.validateParentPath);
+      row.hidden = depth > 0 && !Boolean(
+        parent
+        && !parent.hidden
+        && parent.dataset.validateOpen === "true"
+      );
+
+      const toggle = row.querySelector(".validate-pl-row-toggle");
+      if (!toggle) return;
+      const expanded = row.dataset.validateOpen === "true";
+      const label = row.querySelector(".row-label-text")?.textContent?.trim()
+        || "row";
+      const action = expanded ? "Collapse" : "Expand";
+      toggle.textContent = expanded ? "\u2212" : "\u25b8";
+      row.setAttribute("aria-expanded", String(expanded));
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.setAttribute("aria-label", `${action} ${label}`);
+      toggle.title = `${action} ${label}`;
+    });
+  };
+
+  const toggleValidateHierarchy = (toggle) => {
+    if (!toggle || toggle.disabled) return false;
+    const row = toggle.closest("tr.validate-pl-hierarchy-row");
+    const table = toggle.closest("table.validate-pl-table");
+    if (!row || !table) return false;
+    const opening = row.dataset.validateOpen !== "true";
+    row.dataset.validateOpen = String(opening);
+    if (!opening) {
+      const rows = Array.from(
+        table.querySelectorAll("tbody tr.validate-pl-hierarchy-row"),
+      );
+      const rowsByPath = new Map(
+        rows.map((candidate) => [candidate.dataset.validatePath, candidate]),
+      );
+      rows.forEach((candidate) => {
+        let parent = rowsByPath.get(candidate.dataset.validateParentPath);
+        while (parent) {
+          if (parent === row) {
+            candidate.dataset.validateOpen = "false";
+            break;
+          }
+          parent = rowsByPath.get(parent.dataset.validateParentPath);
+        }
+      });
+    }
+    syncValidateHierarchy(table);
+    window.__rebirthV4Assets?.clearSelection?.();
+    return true;
+  };
+
   const cellFromTarget = (target) =>
     target?.closest?.(".pl-send-editor-table td.dash-cell") || null;
 
@@ -112,6 +173,13 @@
   }, true);
 
   document.addEventListener("click", (event) => {
+    const validateToggle = event.target?.closest?.(".validate-pl-row-toggle");
+    if (validateToggle) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      toggleValidateHierarchy(validateToggle);
+      return;
+    }
     if (
       event.isTrusted
       && Date.now() < suppressTrustedClickUntil

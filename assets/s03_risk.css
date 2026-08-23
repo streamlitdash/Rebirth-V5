@@ -1,6 +1,15 @@
 /* 09. Aggregate P&L and Top Promotions ---------------------------------- */
+.ag-pl-details,
 .aggregate-pl-details,
 .top-book-details { margin-top: 18px; }
+.ag-pl-details { overflow: hidden; border: 1px solid var(--outline); border-radius: var(--radius); background: var(--surface); }
+.ag-pl-details[open] > .risk-workspace-summary { border-bottom: 1px solid var(--outline); }
+.risk-workspace-summary { display: flex; align-items: baseline; gap: 10px; min-height: 48px; padding: 12px 16px; background: var(--surface-soft); cursor: pointer; }
+.risk-workspace-title { color: var(--text); font-size: 15px; font-weight: 850; }
+.risk-workspace-summary-note { color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.ag-pl-details .risk-workspace-tabs { margin: 0; }
+.ag-pl-details .risk-workspace-tabs .tab { min-height: 42px; padding: 11px 14px !important; border: 0 !important; border-bottom: 2px solid transparent !important; background: var(--surface) !important; color: var(--text-muted) !important; font-size: 12px; font-weight: 750; }
+.ag-pl-details .risk-workspace-tabs .tab--selected { border-bottom-color: var(--text) !important; color: var(--text) !important; }
 .aggregate-pl-panel { margin: 0; overflow: hidden; border: 0; border-radius: 0; }
 .aggregate-pl-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 13px 18px; border-bottom: 1px solid var(--outline); background: var(--surface-soft); }
 .aggregate-pl-title { color: var(--text); font-size: 16px; font-weight: 850; }
@@ -20,7 +29,7 @@
 .top-promotions-heading-copy p { margin: 3px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 .top-promotions-rank-control { padding: 9px 11px; border: 1px solid var(--outline); border-radius: 9px; background: var(--surface); }
 .top-promotions-rank-control .eyebrow { display: block; margin-bottom: 3px; }
-.top-promotions-rank-control strong { color: var(--text); font-size: 12px; }
+.top-promotions-rank-control .Select-control { min-height: 34px; }
 .top-promotions-status,
 .top-promotions-count { padding: 10px 16px 0; color: var(--text-muted); font-size: 11px; }
 .top-promotions-table-wrap { max-width: 100%; overflow: auto; padding: 10px 16px 4px; }
@@ -99,16 +108,6 @@
 .empty-detail,
 .empty-state { color: var(--text-muted); }
 .empty-state { display: grid; min-height: 180px; padding: 28px; place-items: center; gap: 5px; text-align: center; }
-
-/* 11b. Force all Plotly graph containers to fixed 600px height --------- */
-.js-plotly-plot {
-  height: 600px !important;
-}
-
-/* Heatmap overrides: taller tenor surface graphs */
-.tenor-surface-graph .js-plotly-plot .plotly {
-  height: 600px !important;
-}
 
 /* 11c. Reduce Plotly hover tooltip font size ---------------------------- */
 .js-plotly-plot .plotly .hovertext span {

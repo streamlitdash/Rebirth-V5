@@ -11,7 +11,10 @@ import pandas as pd
 
 from rebirth.app.s02_contracts import AdjustmentRepositoryProtocol
 from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
-from rebirth.ui.s03_filters import SavedFilterViewControls
+from rebirth.ui.s03_filters import (
+    SavedFilterViewControls,
+    committed_filter_state_values,
+)
 
 
 DISPLAY_COLUMNS = (
@@ -118,6 +121,17 @@ def pl_filter_map(
     }
 
 
+def committed_pl_filter_values(
+    value: object,
+) -> tuple[tuple[list[str], ...], list[str]]:
+    """Resolve the applied P&L filter state, with Base meaning no filters."""
+
+    resolved = committed_filter_state_values(value, PL_SAVED_VIEW_CONTROLS)
+    if resolved is not None:
+        return resolved
+    return tuple([] for _field in PL_FILTER_FIELDS), []
+
+
 def pl_filter_options(frame: pd.DataFrame) -> dict[str, list[dict[str, str]]]:
     """Return stable options for each independent P&L reporting filter."""
     result: dict[str, list[dict[str, str]]] = {}
@@ -202,6 +216,7 @@ __all__ = [
     "PLSendConfig",
     "SendFunction",
     "apply_pl_filters",
+    "committed_pl_filter_values",
     "pl_external_filter_map",
     "pl_filter_map",
     "pl_filter_options",

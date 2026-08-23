@@ -22,7 +22,6 @@ from rebirth.ui.s01_constants import (
     CREDIT_MEASURES,
     DETAIL_COMPONENT_LABELS,
     DETAIL_COMPONENTS,
-    DIMENSION_FILTER_IDS,
     EXPANDABLE_METRICS,
     FILTER_DIMENSION_FIELDS,
     METRIC_COLUMNS,
@@ -33,6 +32,7 @@ from rebirth.ui.s01_constants import (
 from rebirth.app.s02_contracts import RefreshManagerProtocol
 from rebirth.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
+    committed_filter_state_values,
     saved_view_request_id,
     saved_view_request_matches_base,
     saved_view_request_values,
@@ -79,17 +79,29 @@ def register_explorer_callbacks(
     refresh_manager: RefreshManagerProtocol | None,
     cache: _RiskDataCache,
     dimension_filter_ids: Sequence[str],
-    dimension_filter_inputs: Sequence[Any],
 ) -> None:
     """Register Cross, Split VA, detail, filters, and tree interactions."""
 
     @app.callback(
         Output("dimension-filter-values-store", "data"),
-        *dimension_filter_inputs,
+        Output("risk-filter-exclude-applied-store", "data"),
+        Input(RISK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
+        Input("data-revision-store", "data"),
     )
-    def sync_dimension_filters(*filter_values):
-        """Sync filter dropdown values to the positional reducer store."""
-        return list(filter_values)
+    def sync_dimension_filters(committed_state, _revision):
+        """Publish only applied filters to visible Risk consumers."""
+        try:
+            selected = committed_filter_state_values(
+                committed_state,
+                RISK_SAVED_VIEW_CONTROLS,
+            )
+        except ValueError as error:
+            app.logger.warning("risk.filters.committed invalid error=%s", error)
+            selected = None
+        if selected is None:
+            return default_risk_filter_values(cache.current(refresh_manager)), []
+        filter_values, exclude_value = selected
+        return [list(values) for values in filter_values], list(exclude_value)
 
     @app.callback(
         Output("risk-type-tabs", "children"),
@@ -484,7 +496,7 @@ def register_explorer_callbacks(
         Input("plot-component", "value"),
         Input("detail-tenor-view", "value"),
         Input("dimension-filter-values-store", "data"),
-        Input("risk-filter-exclude-selected", "value"),
+        Input("risk-filter-exclude-applied-store", "data"),
         Input("promotion-toggle-store", "data"),
         Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
         Input("region-toggle-store", "data"),
@@ -554,7 +566,7 @@ def register_explorer_callbacks(
             "credit-multi-metric.value",
             "alt-metric.value",
             "dimension-filter-values-store.data",
-            "risk-filter-exclude-selected.value",
+            "risk-filter-exclude-applied-store.data",
             "promotion-toggle-store.data",
             f"{PROMOTION_GENERATION_STORE_ID}.data",
             "region-toggle-store.data",
@@ -851,15 +863,15 @@ def register_explorer_callbacks(
         Output("unmapped-books-grid", "children"),
         Input("unmapped-books-summary", "n_clicks"),
         Input("data-revision-store", "data"),
-        Input(DIMENSION_FILTER_IDS["portfolio"], "value"),
-        Input("risk-filter-exclude-selected", "value"),
+        Input("dimension-filter-values-store", "data"),
+        Input("risk-filter-exclude-applied-store", "data"),
         State("unmapped-books-details", "open"),
         prevent_initial_call=True,
     )
     def render_unmapped_books(
         _summary_clicks,
         _revision,
-        selected_portfolios,
+        dimension_values,
         exclude_value,
         is_open,
     ):
@@ -875,6 +887,16 @@ def register_explorer_callbacks(
             refresh_manager.read_frame("unmapped_frame").frame
             if refresh_manager is not None
             else pd.DataFrame()
+        )
+        portfolio_index = next(
+            index
+            for index, field in enumerate(FILTER_DIMENSION_FIELDS)
+            if field.key == "portfolio"
+        )
+        selected_portfolios = (
+            (dimension_values or [])[portfolio_index]
+            if len(dimension_values or []) > portfolio_index
+            else []
         )
         frame = filter_unmapped_portfolios(
             frame,
