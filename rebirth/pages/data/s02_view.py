@@ -150,6 +150,7 @@ def build_data_page(
                                 "Load history",
                                 id="data-load-history-button",
                                 n_clicks=0,
+                                disabled=True,
                                 className="data-player-button",
                             ),
                             html.Span(

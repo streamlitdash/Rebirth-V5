@@ -703,6 +703,33 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
 
 def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
+    choose_underlying = _callback_for_output(app, "data-underlying", "options")
+    assert choose_underlying(
+        None,
+        "risk",
+        "reported",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ) == ([], None, True)
+    options, selected, disabled = choose_underlying(
+        _catalog().to_mapping(),
+        "risk",
+        "reported",
+        "IR",
+        "Delta",
+        None,
+        None,
+        None,
+        None,
+    )
+    assert options
+    assert selected is not None
+    assert disabled is False
+
     request = _callback_metadata(app, "data-history-request-store", "data")
     request_inputs = {(item["id"], item["property"]) for item in request["inputs"]}
     assert {
@@ -738,9 +765,7 @@ def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -
         for item in app._callback_list
         if "data-history-bundle-store.data" in item["output"]
     )
-    assert (
-        registration["running"]["running"]["data-load-history-button.disabled"] is True
-    )
+    assert "data-load-history-button.disabled" not in registration["running"]["running"]
     assert (
         registration["running"]["running"]["data-load-history-button.children"]
         == "Loading history…"
@@ -970,6 +995,11 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         stock_href="/proxy/stock",
     )
     page_ids = {getattr(component, "id", None) for component in _walk(page)}
+    load_button = next(
+        component
+        for component in _walk(page)
+        if getattr(component, "id", None) == "data-load-history-button"
+    )
     assert {
         "data-page",
         "data-history-kind-tabs",
@@ -985,6 +1015,7 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         "data-selected-table",
         "data-player-visibility-store",
     } <= page_ids
+    assert load_button.disabled is True
     assert "data-history-request-store" not in page_ids
     assert "data-unlock-identity-button" not in page_ids
     assert "data-history-lock-store" not in page_ids

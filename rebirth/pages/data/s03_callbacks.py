@@ -524,6 +524,7 @@ def register_callbacks(
     @app.callback(
         Output("data-underlying", "options"),
         Output("data-underlying", "value"),
+        Output("data-load-history-button", "disabled"),
         Input("data-history-catalog-store", "data"),
         Input("data-history-kind-tabs", "value"),
         Input("data-identity-mode", "value"),
@@ -546,7 +547,7 @@ def register_callbacks(
         consumed_nonce,
     ):
         if risk_type is None or risk_greek is None:
-            return [], None
+            return [], None, True
         if raw_catalog is None:
             try:
                 handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
@@ -555,15 +556,19 @@ def register_callbacks(
                     and handoff.identity.risk_type == str(risk_type)
                     and handoff.identity.risk_greek == str(risk_greek)
                 ):
-                    return [
-                        {
-                            "label": handoff.identity.underlying,
-                            "value": QUICK_HANDOFF_ENTRY_KEY,
-                        }
-                    ], QUICK_HANDOFF_ENTRY_KEY
+                    return (
+                        [
+                            {
+                                "label": handoff.identity.underlying,
+                                "value": QUICK_HANDOFF_ENTRY_KEY,
+                            }
+                        ],
+                        QUICK_HANDOFF_ENTRY_KEY,
+                        False,
+                    )
             except (HistoryValidationError, TypeError, ValueError):
                 pass
-            return [], None
+            return [], None, True
         try:
             options = underlying_options(
                 raw_catalog,
@@ -595,9 +600,10 @@ def register_callbacks(
                     raw_catalog,
                     selected_handoff.to_mapping(),
                 )
-            return options, selected_value(options, current, preferred)
+            selected = selected_value(options, current, preferred)
+            return options, selected, selected is None
         except (HistoryValidationError, TypeError, ValueError):
-            return [], None
+            return [], None, True
 
     @app.callback(
         Output("data-history-request-store", "data"),
@@ -737,7 +743,6 @@ def register_callbacks(
         Input("data-history-cache-state-store", "data"),
         Input("reset-generation-store", "data"),
         running=[
-            (Output("data-load-history-button", "disabled"), True, False),
             (
                 Output("data-load-history-button", "children"),
                 "Loading history…",
