@@ -26,6 +26,11 @@ from rebirth.history import (
     PL_HISTORY_SUMMARY_COLUMNS,
     PL_HISTORY_YTD_COLOSSUS,
     PL_HISTORY_YTD_PREDICT,
+    PL_RISK_SUMMARY_COLUMNS,
+    PL_RISK_SUMMARY_CURRENT,
+    PL_RISK_SUMMARY_MTD,
+    PL_RISK_SUMMARY_PATH,
+    PL_RISK_SUMMARY_YTD,
     SQLPLHistoryRepository,
     open_history_database,
 )
@@ -536,6 +541,41 @@ def test_sql_pl_repository_matches_projected_history_and_stays_bounded(
     }
     assert_summary_contract(hierarchy.summary, expected, first_level_paths)
     assert_summary_contract(sql_summary, expected, opened_paths)
+
+    risk_summary = repository.risk_summary()
+    assert risk_summary.as_of_date == "2026-08-17"
+    assert list(risk_summary.summary.columns) == list(PL_RISK_SUMMARY_COLUMNS)
+    assert {tuple(path) for path in risk_summary.summary[PL_RISK_SUMMARY_PATH]} >= {
+        (),
+        ("IR",),
+        ("IR", "Delta"),
+        ("IR", "Delta", "EUR"),
+    }
+    fx_delta = risk_summary.summary.loc[
+        risk_summary.summary[PL_RISK_SUMMARY_PATH].map(
+            lambda path: tuple(path) == ("FX", "Delta", "EUR/USD")
+        )
+    ].iloc[0]
+    latest = expected.loc[
+        pd.to_datetime(expected["Market Date"]).eq(pd.Timestamp("2026-08-17"))
+        & expected[HISTORY_TYPE].eq(PREDICT_TYPE)
+        & expected["Risk Type"].eq("FX")
+        & expected["Risk Greek"].eq("Delta")
+        & expected["Underlying"].eq("EUR/USD"),
+        "PL",
+    ].sum(min_count=1)
+    official = expected.loc[
+        expected[HISTORY_TYPE].eq(COLOSSUS_TYPE)
+        & expected["Risk Type"].eq("FX")
+        & expected["Risk Greek"].eq("Delta")
+        & expected["Underlying"].eq("EUR/USD"),
+        "PL",
+    ].sum(min_count=1)
+    assert fx_delta[PL_RISK_SUMMARY_CURRENT] == pytest.approx(latest)
+    assert fx_delta[PL_RISK_SUMMARY_MTD] == pytest.approx(official)
+    assert fx_delta[PL_RISK_SUMMARY_YTD] == pytest.approx(official)
+    cached = repository.risk_summary()
+    pd.testing.assert_frame_equal(cached.summary, risk_summary.summary)
     selected_activity = str(expected[ACTIVITY].iloc[0])
     filtered_expected = expected.loc[expected[ACTIVITY].eq(selected_activity)]
     filtered_hierarchy = repository.hierarchy(filters={ACTIVITY: [selected_activity]})

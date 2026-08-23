@@ -1,0 +1,62 @@
+/* Risk Explorer promotion actions. */
+.promotion-generation-scope {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.promotion-generation-controls {
+  display: grid;
+  grid-template-columns: auto auto minmax(210px, 1fr);
+  flex: 1 1 520px;
+  align-items: center;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.risk-explorer-action-field { grid-column: span 2; }
+.risk-explorer-actions { flex-wrap: wrap; }
+.promotion-generation-copy { min-width: 0; }
+.promotion-generation-copy .filter-note {
+  color: var(--text);
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.promotion-action-button {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.promotion-recalculate-button {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+}
+
+.promotion-action-button:disabled { cursor: not-allowed; opacity: 0.48; }
+.promotion-generation-controls .is-running::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 2px solid var(--outline);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: refresh-spin 0.8s linear infinite;
+}
+
+@media (max-width: 720px) {
+  .risk-explorer-action-field { grid-column: 1; }
+  .promotion-generation-controls { grid-template-columns: 1fr; }
+}

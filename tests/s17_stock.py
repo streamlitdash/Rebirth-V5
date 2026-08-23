@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from dash import no_update
 from flask import Flask
 
 from rebirth.adapters import s08_stock as stock_adapter
@@ -51,6 +52,9 @@ from rebirth.pages.stock import s04_callbacks as stock_callbacks
 from rebirth.pages.stock import layout as stock_page_layout
 from rebirth.pages.stock.s01_data import (
     STOCK_DISPLAY_COLUMNS,
+    STOCK_FILTER_FIELDS,
+    STOCK_FILTER_IDS,
+    STOCK_SAVED_VIEW_CONTROLS,
     default_stock_activities,
     default_stock_dates,
     normalize_stock_date_pair,
@@ -66,6 +70,12 @@ from rebirth.pages.stock.s02_history import (
 )
 from rebirth.pages.stock.s03_view import (
     build_stock_page_shell,
+)
+from rebirth.pages.stock.s05_pivot import (
+    STOCK_PIVOT_DEFAULT_ROWS,
+    build_stock_pivot,
+    stock_pivot_row_payload,
+    toggle_stock_pivot_path,
 )
 from rebirth.app.s07_factory import build_app
 from tools.s01_fixtures import (
@@ -620,13 +630,13 @@ def test_stock_promotion_and_hierarchy_preserve_identity_and_totals() -> None:
 @pytest.mark.parametrize(
     ("reference", "expected"),
     [
-        ("2026-08-14", ("2026-08-13", "2026-08-12")),  # Friday
-        ("2026-08-17", ("2026-08-14", "2026-08-13")),  # Monday
+        ("2026-08-14", ("2026-08-14", "2026-08-13")),  # Friday
+        ("2026-08-17", ("2026-08-17", "2026-08-14")),  # Monday
         ("2026-08-15", ("2026-08-14", "2026-08-13")),  # Saturday
         ("2026-08-16", ("2026-08-14", "2026-08-13")),  # Sunday
     ],
 )
-def test_stock_default_dates_use_business_day_offsets(
+def test_stock_default_dates_use_reference_market_date_and_prior_business_day(
     reference: str,
     expected: tuple[str, str],
 ) -> None:
@@ -819,7 +829,10 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
 
     assert {
         "stock-current-table",
-        "stock-current-activity",
+        "stock-position-detail-table",
+        "stock-pivot-rows",
+        "stock-pivot-column",
+        "stock-pivot-values",
         "stock-history-crds",
         "stock-history-activity",
         "stock-history-date-range",
@@ -836,6 +849,7 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
                 ("Custom", "custom"),
             )
         ),
+        *(STOCK_FILTER_IDS[field.key] for field in STOCK_FILTER_FIELDS),
     } <= ids
     assert {
         "stock-workspace-tabs",
@@ -879,18 +893,22 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() 
         "0",
         0,
         {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-        None,
-        None,
-        "v41-current",
     )
     cached = load(
         1,
         "0",
         0,
         {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-        loaded[2],
+    )
+    filters = _callback_for_output(app, "stock-filter-ready", "data")
+    filter_state = filters(
         loaded[0],
-        "v41-current",
+        None,
+        0,
+        *([] for _field in STOCK_FILTER_FIELDS),
+        [],
+        None,
+        False,
     )
 
     assert calls == [
@@ -898,11 +916,13 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three() 
         ("stock", pd.Timestamp("2026-08-13")),
         ("config", pd.Timestamp("2026-08-14")),
     ]
-    assert loaded[2] == ["Activity 1", "Activity 2", "Activity 3"]
+    assert filter_state[1] == ["Activity 1", "Activity 2", "Activity 3"]
     assert cached[0] == loaded[0]
 
 
-def test_v41_filter_and_row_click_use_cache_then_prefill_history() -> None:
+def test_v41_filter_and_row_click_use_cache_then_prefill_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     current, prior = _comparison_legs()
     calls = 0
 
@@ -922,15 +942,48 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history() -> None:
         "0",
         0,
         {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-        None,
-        None,
-        "v41-filter",
     )
     render = _callback_for_output(app, "stock-current-table", "data")
-    rows, row_count, mapped, unmapped, crds_options = render(token, ["Activity 1"])
-    select = _callback_for_input(app, "stock-current-table")
+    open_paths: list[str] = []
+    for path in (
+        '["Activity 1"]',
+        '["Activity 1","Core"]',
+        '["Activity 1","Core","CRDS-1"]',
+    ):
+        open_paths = toggle_stock_pivot_path(open_paths, path)
+    (
+        rows,
+        _columns,
+        detail,
+        row_count,
+        mapped,
+        unmapped,
+        crds_options,
+        _activity_options,
+    ) = render(
+        token,
+        ["Activity 1"],
+        [],
+        [],
+        [],
+        [],
+        [],
+        list(STOCK_PIVOT_DEFAULT_ROWS),
+        "",
+        ["Stock", "dStock"],
+        open_paths,
+    )
+    selected_row = next(
+        row for row in rows if stock_pivot_row_payload(row["id"])["kind"] == "history"
+    )
+    select = _callback_for_output(app, "stock-history-crds", "value")
     crds, activity, autoload = select(
-        {"row_id": rows[0]["id"], "row": 0, "column": 0, "column_id": "CRDS"},
+        {
+            "row_id": selected_row["id"],
+            "row": rows.index(selected_row),
+            "column": 0,
+            "column_id": "Hierarchy",
+        },
         token,
     )
 
@@ -938,9 +991,85 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history() -> None:
     assert row_count == "Rows: 1 of 3"
     assert mapped == "Mapped: 1"
     assert unmapped == "Unmapped: 0"
+    assert len(detail) == 1
     assert len(crds_options) == 3  # manual history remains independent of table filter
     assert (crds, activity) == ("CRDS-1", "Activity 1")
     assert autoload == {"crds": "CRDS-1", "activity": "Activity 1"}
+
+    monkeypatch.setattr(
+        stock_callbacks,
+        "ctx",
+        SimpleNamespace(triggered_id="stock-pivot-open-paths"),
+    )
+    pivot_only = render(
+        token,
+        ["Activity 1"],
+        [],
+        [],
+        [],
+        [],
+        [],
+        list(STOCK_PIVOT_DEFAULT_ROWS),
+        "",
+        ["Stock", "dStock"],
+        open_paths[:-1],
+    )
+    assert pivot_only[0]
+    assert pivot_only[1]
+    assert all(value is no_update for value in pivot_only[2:])
+
+
+def test_stock_pivot_defaults_to_activity_bucket_crds_cpty_and_toggles() -> None:
+    current, prior = _comparison_legs()
+    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    display = stock_display_rows(mapped)
+
+    closed = build_stock_pivot(display)
+    assert closed.columns[0]["name"] == "Activity / Bucket / CRDS / CPTY"
+    assert [row["Hierarchy"] for row in closed.records] == [
+        "▸ Activity 1",
+        "▸ Activity 2",
+        "▸ Activity 3",
+    ]
+
+    opened = toggle_stock_pivot_path([], '["Activity 1"]')
+    activity_open = build_stock_pivot(display, open_paths=opened)
+    assert any(
+        row["Hierarchy"] == "\u00a0\u00a0▸ Core" for row in activity_open.records
+    )
+    assert sum(row["Stock"] for row in closed.records) == pytest.approx(
+        display["Stock"].sum()
+    )
+
+
+def test_stock_pivot_column_split_and_values_are_bounded() -> None:
+    current, prior = _comparison_legs()
+    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    display = stock_display_rows(mapped)
+
+    pivot = build_stock_pivot(
+        display,
+        row_fields=["Activity", "CRDS"],
+        column_field="Currency",
+        value_fields=["Stock"],
+    )
+
+    assert [column["name"] for column in pivot.columns[2:]] == [
+        ["GBP", "Stock"],
+        ["USD", "Stock"],
+    ]
+    assert all("dStock" not in column["id"] for column in pivot.columns)
+
+
+def test_stock_saved_view_contract_is_base_review_with_five_filters() -> None:
+    assert STOCK_SAVED_VIEW_CONTROLS.base_label == "Base Review"
+    assert tuple(STOCK_FILTER_IDS) == (
+        "activity",
+        "signoffgroup",
+        "portfolio",
+        "category",
+        "subcategory",
+    )
 
 
 def test_v41_history_is_read_only_after_click_or_load(
@@ -977,9 +1106,6 @@ def test_v41_history_is_read_only_after_click_or_load(
         "0",
         0,
         {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-        None,
-        None,
-        "v41-history",
     )
     assert history_calls == []
 
@@ -993,17 +1119,38 @@ def test_v41_history_is_read_only_after_click_or_load(
         {"crds": "CRDS-1", "activity": "Activity 1"},
         0,
         0,
-        "CRDS-1",
-        "Activity 1",
         "1y",
         "2025-08-15",
         "2026-08-14",
+        "CRDS-1",
+        "Activity 1",
         token,
     )
 
     assert len(history_calls) == 1
     assert [trace.name for trace in figure.data] == ["Stock", "dStock"]
     assert "Loaded" in status
+
+    monkeypatch.setattr(
+        stock_callbacks,
+        "ctx",
+        SimpleNamespace(triggered_id="stock-history-period"),
+    )
+    refreshed, refreshed_status = history_callback(
+        {"crds": "CRDS-1", "activity": "Activity 1"},
+        0,
+        0,
+        "mtd",
+        "2025-08-15",
+        "2026-08-14",
+        "CRDS-1",
+        "Activity 1",
+        token,
+    )
+
+    assert len(history_calls) == 2
+    assert [trace.name for trace in refreshed.data] == ["Stock", "dStock"]
+    assert "2026-08-01" in refreshed_status
 
 
 def test_v41_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> None:

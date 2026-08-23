@@ -20,8 +20,6 @@ from rebirth.domain.s08_pnl import (
     validate_pl_history_frame,
 )
 from rebirth.history import PLHistorySeriesResult
-from rebirth.ui.s01_constants import VIEW_DIMENSION_FIELDS
-
 from .s01_common import (
     PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
@@ -34,12 +32,6 @@ from .s01_common import (
 from .s03_history import build_pl_history_figure
 
 
-_DIMENSION_EXTERNAL = {
-    field.key: field.external_name for field in VIEW_DIMENSION_FIELDS
-}
-_DIMENSION_LABEL = {field.key: field.label for field in VIEW_DIMENSION_FIELDS}
-
-
 def _empty_figure():
     return build_pl_history_figure(pd.DataFrame(), path=())
 
@@ -50,15 +42,13 @@ def _selection_criteria(selection: Mapping[str, object]) -> dict[str, list[str]]
     criteria: dict[str, list[str]] = {}
     risk_type = str(selection.get("risk_type", "")).strip()
     risk_greek = str(selection.get("risk_greek", "")).strip()
-    dimension = str(selection.get("dimension", "")).strip()
-    value = str(selection.get("value", "")).strip()
+    underlying = str(selection.get("underlying", "")).strip()
     if risk_type:
         criteria["Risk Type"] = [risk_type]
     if risk_greek:
         criteria["Risk Greek"] = [risk_greek]
-    external = _DIMENSION_EXTERNAL.get(dimension)
-    if external and value and value != "__total__":
-        criteria[external] = [value]
+    if underlying:
+        criteria["Underlying"] = [underlying]
     return criteria
 
 
@@ -67,13 +57,9 @@ def _selection_label(selection: Mapping[str, object]) -> str:
     greek = str(selection.get("risk_greek", "")).strip()
     if greek:
         parts.append(greek)
-    dimension = str(selection.get("dimension", "")).strip()
-    value = str(selection.get("value", "")).strip()
-    parts.append(
-        "Total"
-        if value == "__total__" or not value
-        else f"{_DIMENSION_LABEL.get(dimension, dimension)}: {value}"
-    )
+    underlying = str(selection.get("underlying", "")).strip()
+    if underlying:
+        parts.append(underlying)
     return " · ".join(parts)
 
 
@@ -154,6 +140,7 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
         Output("pl-history-chart", "figure"),
         Output("pl-history-plot-status", "children"),
         Output("pl-history-selection-label", "children"),
+        Output("pnl-history-workspace", "style"),
         Input("pl-history-selection-store", "data"),
         Input("pl-history-series-selector", "value"),
         Input("pl-history-period", "value"),
@@ -189,6 +176,7 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
                 _empty_figure(),
                 "History loads only after a P&L value is selected.",
                 "No P&L value selected.",
+                {"display": "none"},
             )
 
         selected_types = {
@@ -243,6 +231,7 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
                 _empty_figure(),
                 f"Historical P&L could not be loaded: {exc}",
                 _selection_label(selection),
+                {},
             )
 
         label = _selection_label(selection)
@@ -251,12 +240,13 @@ def register_pl_history_callbacks(app: Dash, config: PLSendConfig) -> None:
                 _empty_figure(),
                 "No Colossus/Predict P&L history matches this selection.",
                 label,
+                {},
             )
         status = (
             f"{resolved_start} to {resolved_end} · {len(visible):,} observed points. "
             "Missing dates remain missing rather than being filled with zero."
         )
-        return build_pl_history_figure(visible, path=(label,)), status, label
+        return build_pl_history_figure(visible, path=(label,)), status, label, {}
 
 
 __all__ = ["register_pl_history_callbacks"]

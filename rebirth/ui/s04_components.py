@@ -749,9 +749,10 @@ def build_shared_refresh_shell(
     style: Mapping[str, str] | None = None,
 ) -> html.Div:
     """Build the one persistent refresh lifecycle mounted above Dash Pages."""
-    bootstrap_polling = (initial_loading or keep_polling) and (
-        not style or style.get("display") != "none"
-    )
+    # The router initially hides this persistent shell and reveals it after
+    # resolving the active page. Keep the cold-start follower alive while
+    # hidden so direct visits to Data, Stock, or Statics can receive revision 1.
+    bootstrap_polling = initial_loading or keep_polling
     applied_forced_dates = (
         {
             str(source): pd.Timestamp(value).date().isoformat()

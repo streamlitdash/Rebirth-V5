@@ -221,6 +221,7 @@ NUMERIC_COLUMNS = [
     "current",
     "move",
     "promotion score",
+    "vol score",
     *PROMOTION_THRESHOLD_COLUMNS,
     *BREAKDOWN_DEFAULTS,
 ]

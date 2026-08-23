@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import pandas as pd
 
-from rebirth.domain.s02_products import ProductConnectorAdapter
+from rebirth.domain.s02_products import VOL_SCORE, ProductConnectorAdapter
 from rebirth.domain.s01_schema import TENOR_SWAP, TENOR_SWAP_ORDER
 
 from .s01_common import MarketSource, RiskSource, exact_frame, market_frame
 
 
-FX_DELTA_RISK = ("Underlying", "Portfolio", "Group", "Risk", "dRisk")
+FX_DELTA_RISK = ("Underlying", "Portfolio", "Group", "Risk", "dRisk", VOL_SCORE)
 FX_DELTA_OPEN = ("Underlying", "Open")
 FX_DELTA_CURRENT = ("Underlying", "Current")
 
-FX_GAMMA_RISK = ("Underlying", "Portfolio", "Group", "Risk", "dRisk")
+FX_GAMMA_RISK = ("Underlying", "Portfolio", "Group", "Risk", "dRisk", VOL_SCORE)
 FX_GAMMA_OPEN = ("Underlying", "Open")
 FX_GAMMA_CURRENT = ("Underlying", "Current")
 
@@ -25,6 +25,7 @@ FX_VEGA_RISK = (
     "Group",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 FX_VEGA_OPEN = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Open")
 FX_VEGA_CURRENT = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Current")

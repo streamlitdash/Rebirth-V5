@@ -33,15 +33,16 @@ from rebirth.pages.risk.s06_explorertables import (
     build_tree_rows,
     metric_header,
 )
-from rebirth.pages.risk.s15_workspacetables import (
+from rebirth.pages.risk.s13_workspacetables import (
     build_new_trade_detail_table,
     build_top_book_exposures,
     build_top_promotions_table,
     top_promotions_frame,
 )
-from rebirth.pages.risk.s18_view import build_unmapped_books_table
+from rebirth.pages.risk.s16_view import build_unmapped_books_table
 from rebirth.ui.s02_aggregation import ordered_unique, row_key
 from rebirth.pages.risk.s10_search import (
+    _product_shaped_quick_search_indexes,
     _prune_quick_search_indexes,
     _render_quick_search_pivot,
 )
@@ -133,38 +134,11 @@ def test_quick_risk_and_market_search_use_native_collapsible_chevrons() -> None:
         and getattr(item, "id", None) == "quick-market-surface-metric-control"
     )
     assert surface_control.hidden is True
-    history = next(
-        item
-        for item in _walk(market)
-        if isinstance(item, html.Details)
-        and getattr(item, "id", None) == "quick-market-history-details"
-    )
-    assert history.open is False
-    assert history.children[0].id == "quick-market-history-summary"
-    assert history.children[0].n_clicks == 0
-    assert "Historical data" in str(history.children[0].children)
-    history_components = list(_walk(history))
-    period = next(
-        item
-        for item in history_components
-        if isinstance(item, dcc.RadioItems) and item.id == "quick-market-history-period"
-    )
-    assert period.value == "all"
-    assert [option["value"] for option in period.options] == [
-        "wtd",
-        "mtd",
-        "ytd",
-        "all",
-        "custom",
-    ]
-    assert any(
-        isinstance(item, dcc.DatePickerRange)
-        and item.id == "quick-market-history-date-range"
-        for item in history_components
-    )
-    assert any(
-        isinstance(item, dcc.Dropdown) and item.id == "quick-market-history-cell"
-        for item in history_components
+    component_ids = {getattr(item, "id", None) for item in _walk(market)}
+    assert "quick-market-open-data" in component_ids
+    assert not any(
+        str(component_id or "").startswith("quick-market-history-")
+        for component_id in component_ids
     )
 
 
@@ -968,6 +942,32 @@ def test_quick_risk_reruns_with_effective_axes_and_syncs_picker() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("source_type", "expected"),
+    [
+        ("fx/delta", ("Underlying",)),
+        ("ir/delta", ("Underlying", "Tenor Swap")),
+        ("ir/deltavega", ("Underlying", "Tenor Swap", "Tenor Option")),
+    ],
+)
+def test_quick_risk_uses_product_spec_axes_before_pivoting(
+    source_type, expected
+) -> None:
+    class Manager:
+        def resolve_history_identity(self, *_args, **_kwargs):
+            return SimpleNamespace(source_types=(source_type,))
+
+    assert (
+        _product_shaped_quick_search_indexes(
+            Manager(),
+            "identity",
+            "underlying",
+            ("Underlying", "Tenor Swap", "Tenor Option"),
+        )
+        == expected
+    )
+
+
 def test_small_detail_table_only_shows_meaningful_tenor_axes() -> None:
     frame = pd.DataFrame(
         {
@@ -1140,6 +1140,7 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
         index_columns=("Risk Type", "Risk Greek"),
     )
     table = next(item for item in _walk(component) if isinstance(item, html.Table))
+    chart = next(item for item in _walk(component) if isinstance(item, dcc.Graph))
     rows = [
         item
         for item in _walk(table)
@@ -1150,6 +1151,8 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
     leaf_spacer = rows[1].children[0].children[0]
 
     assert table.role == "treegrid"
+    assert chart.className == "quick-risk-current-chart"
+    assert len(chart.figure.data) == 1
     assert root_toggle.children == "−"
     assert {"row-toggle", "quick-search-hierarchy-toggle"} <= set(
         str(root_toggle.className).split()
@@ -1238,6 +1241,7 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
                 "reported underlying": "USD-SOFR",
                 "promotion reason": "Big Risk",
                 "promotion score": 1.25,
+                "vol score": 90.0,
                 "risk": 500.0,
                 "drisk": 2.0,
                 "pl": 1.0,
@@ -1248,6 +1252,7 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
                 "reported underlying": "EURUSD",
                 "promotion reason": "Big PL",
                 "promotion score": 2.5,
+                "vol score": 20.0,
                 "risk": 10.0,
                 "drisk": 1.0,
                 "pl": -20.0,
@@ -1258,6 +1263,7 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
                 "reported underlying": "IGNORED",
                 "promotion reason": "",
                 "promotion score": 99.0,
+                "vol score": 100.0,
                 "risk": 10_000.0,
                 "drisk": 10_000.0,
                 "pl": 10_000.0,
@@ -1265,14 +1271,17 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
         ]
     )
 
-    ranked = top_promotions_frame(frame, rank_by="score")
-    component = build_top_promotions_table(frame, rank_by="score")
-    table = next(item for item in _walk(component) if isinstance(item, html.Table))
+    ranked = top_promotions_frame(frame)
+    component = build_top_promotions_table(frame)
+    table = next(
+        item for item in _walk(component) if isinstance(item, dash_table.DataTable)
+    )
 
     assert ranked["Rank"].tolist() == [1, 2]
-    assert ranked["Reported Underlying"].tolist() == ["EURUSD", "USD-SOFR"]
-    assert ranked["Promotion Score"].tolist() == [2.5, 1.25]
-    assert _table_headers(component) == [
+    assert ranked["Reported Underlying"].tolist() == ["USD-SOFR", "EURUSD"]
+    assert ranked["Vol Score"].tolist() == [90.0, 20.0]
+    assert ranked["Promotion Score"].tolist() == [1.25, 2.5]
+    assert [column["name"] for column in table.columns] == [
         "Rank",
         "Promotion Reason",
         "Risk Type",
@@ -1281,11 +1290,12 @@ def test_top_promotions_is_flat_ranked_and_uses_committed_classification() -> No
         "Risk",
         "dRisk",
         "P&L",
+        "Vol Score",
         "Promotion Score",
     ]
-    assert table.to_plotly_json()["props"]["aria-label"] == (
-        "Top Promotions flat ranked table"
-    )
+    assert table.page_action == "native"
+    assert table.page_size == 10
+    assert len(table.data) == 2
     assert not any(
         isinstance(item, html.Button)
         or "row-toggle" in str(getattr(item, "className", ""))

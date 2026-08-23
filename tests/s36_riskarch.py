@@ -8,15 +8,15 @@ from pathlib import Path
 
 RISK_PACKAGE = Path(__file__).resolve().parents[1] / "rebirth" / "pages" / "risk"
 CALLBACK_OWNERS = {
-    "s17_refresh.py": ("refresh-commit-revision", "risk-date-editor"),
-    "s16_workspacecallbacks.py": ("aggregate-pl-grid", "quick-market-results"),
+    "s15_refresh.py": ("refresh-commit-revision", "risk-date-editor"),
+    "s14_workspacecallbacks.py": ("aggregate-pl-grid", "quick-market-results"),
     "s07_explorer.py": ("risk-grid", "table-view-tabs"),
 }
 PRESENTATION_OWNERS = (
     "s08_quickrisk.py",
     "s09_quickmarket.py",
     "s06_explorertables.py",
-    "s15_workspacetables.py",
+    "s13_workspacetables.py",
 )
 
 
@@ -36,7 +36,7 @@ def _imported_modules(filename: str) -> set[str]:
 
 
 def test_risk_callback_facade_only_composes_owned_callback_groups() -> None:
-    source = _source("s19_callbacks.py")
+    source = _source("s17_callbacks.py")
     assert "@app.callback" not in source
     assert "clientside_callback" not in source
     for registrar in (
@@ -44,9 +44,9 @@ def test_risk_callback_facade_only_composes_owned_callback_groups() -> None:
         "register_workspace_callbacks",
         "register_explorer_callbacks",
         "register_promotion_callbacks",
-        "register_pivot_callbacks",
     ):
         assert registrar in source
+    assert "register_pivot_callbacks" not in source
     assert len(source.splitlines()) < 120
 
 
@@ -58,7 +58,7 @@ def test_public_page_boundary_keeps_callback_loading_lazy() -> None:
         for node in tree.body
         if isinstance(node, ast.ImportFrom) and node.module
     }
-    assert "s19_callbacks" not in top_level_imports
+    assert "s17_callbacks" not in top_level_imports
     assert '__all__ = ["layout", "register_callbacks"]' in source
 
 
@@ -98,14 +98,14 @@ def test_risk_modules_do_not_reach_into_other_pages_or_source_adapters() -> None
 
 
 def test_workspace_and_explorer_tab_contracts_remain_ordered() -> None:
-    source = _source("s18_view.py")
+    source = _source("s16_view.py")
     workspace_values = (
         'value="aggregate-pl"',
         'value="quick-risk"',
         'value="quick-market"',
         'value="top-promotions"',
     )
-    explorer_values = ('value="main"', 'value="alt"', 'value="custom"')
+    explorer_values = ('value="main"', 'value="alt"')
     assert [source.index(value) for value in workspace_values] == sorted(
         source.index(value) for value in workspace_values
     )
@@ -116,3 +116,4 @@ def test_workspace_and_explorer_tab_contracts_remain_ordered() -> None:
         source.index(value, source.index('id="table-view-tabs"'))
         for value in explorer_values
     )
+    assert 'value="custom"' not in source[source.index('id="table-view-tabs"') :]

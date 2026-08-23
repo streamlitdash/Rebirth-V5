@@ -24,8 +24,8 @@ DISPLAY_COLUMNS = (
     "Adjustment",
 )
 GRID_ROW_ID = "id"
-PL_AGGREGATE_TOGGLE_TYPE = "pnl-aggregate-row-toggle"
-PL_AGGREGATE_HISTORY_CELL_TYPE = "pnl-aggregate-history-cell"
+PL_SUMMARY_TOGGLE_TYPE = "pnl-summary-row-toggle"
+PL_SUMMARY_HISTORY_CELL_TYPE = "pnl-summary-history-cell"
 PL_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
 PL_FILTER_IDS = {
     field.key: f"pnl-{field.key}-filter" for field in FILTER_DIMENSION_FIELDS
@@ -73,6 +73,20 @@ class PLHistoryQueryProtocol(Protocol):
         end_date: object = None,
         filters: Mapping[str, Sequence[object] | None] | None = None,
         criteria: Mapping[str, Sequence[object] | None] | None = None,
+        exclude_selected: bool = False,
+    ) -> object: ...
+
+
+@runtime_checkable
+class PLRiskSummaryQueryProtocol(Protocol):
+    """Independent history summary source owned by the P&L page."""
+
+    def clear(self) -> None: ...
+
+    def risk_summary(
+        self,
+        *,
+        filters: Mapping[str, Sequence[object] | None] | None = None,
         exclude_selected: bool = False,
     ) -> object: ...
 
@@ -175,8 +189,8 @@ def apply_pl_filters(
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
-    "PL_AGGREGATE_TOGGLE_TYPE",
-    "PL_AGGREGATE_HISTORY_CELL_TYPE",
+    "PL_SUMMARY_HISTORY_CELL_TYPE",
+    "PL_SUMMARY_TOGGLE_TYPE",
     "PL_FILTER_FIELDS",
     "PL_FILTER_EXCLUDE_ID",
     "PL_FILTER_IDS",
@@ -184,6 +198,7 @@ __all__ = [
     "PL_SAVED_VIEW_CONTROLS",
     "PLHistoryFunction",
     "PLHistoryQueryProtocol",
+    "PLRiskSummaryQueryProtocol",
     "PLSendConfig",
     "SendFunction",
     "apply_pl_filters",

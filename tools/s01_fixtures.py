@@ -62,6 +62,7 @@ from rebirth.domain.s02_products import (  # noqa: E402 - support execution from
     PRODUCT_SPECS_BY_SOURCE_TYPE,
     RISK,
     SOURCE_TYPE,
+    VOL_SCORE,
 )
 from rebirth.domain.s06_reporting import (  # noqa: E402 - support execution from any directory
     load_reported_underlying_mapping,
@@ -98,6 +99,8 @@ HISTORY_MARKET_ROWS = 5_000
 HISTORY_COLOSSUS_ROWS = 5_000
 HISTORY_STOCK_ROWS = 5_000
 HISTORY_MATCHED_COLOSSUS_ROWS = 2_000
+CURRENT_RISK_ROWS = 10_000
+CURRENT_PORTFOLIO_COUNT = 500
 HISTORY_SOURCE_TYPES = tuple(PRODUCT_SPECS_BY_SOURCE_TYPE)
 RISK_ARCHIVE_DIRECTORY = DATA_DIRECTORY / "histo"
 
@@ -280,7 +283,10 @@ MAPPED_PORTFOLIOS = (
     ("BOOK_E", "Hedges", "Activity 3", "SOG_GAMMA", "Hedge"),
 )
 UNMAPPED_PORTFOLIO = "BOOK_UNMAPPED"
-RISK_PORTFOLIOS = tuple(row[0] for row in MAPPED_PORTFOLIOS) + (UNMAPPED_PORTFOLIO,)
+RISK_PORTFOLIOS = tuple(
+    f"BOOK-{number + 1:04d} · TRADER-{(number // 2) % 160 + 1:03d}"
+    for number in range(CURRENT_PORTFOLIO_COUNT)
+)
 HISTORY_PORTFOLIO_COUNT = 640
 STOCK_PORTFOLIO_COUNT = 500
 
@@ -308,6 +314,7 @@ SCHEMAS = {
         "Group",
         "Risk",
         "dRisk",
+        VOL_SCORE,
         *CREDIT_MEASURE_COLUMNS,
     ),
     "s04_open.csv": (
@@ -439,6 +446,17 @@ def _risk_values(
     return risk, drisk
 
 
+def _vol_score(
+    source_type: str,
+    market_key: tuple[str, ...],
+    portfolio: str,
+) -> float:
+    """Return one stable connector-owned fake percentile-style score."""
+
+    seed = _stable_int(source_type, *market_key, portfolio, "vol-score")
+    return 5.0 + (seed % 95_001) / 1_000.0
+
+
 def _fixture_group(source_type: str, underlying: str) -> str:
     """Return connector-owned demo Group metadata for one raw Underlying."""
 
@@ -483,27 +501,35 @@ def _market_values(
 def _build_risk_rows() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     schema = SCHEMAS["s03_risk.csv"]
-    for source_type in EXPECTED_SOURCE_TYPES:
+    risk_keys = [
+        (source_type, market_key)
+        for source_type in EXPECTED_SOURCE_TYPES
+        for market_key in _market_keys(source_type, risk_only=True)
+    ]
+    for row_index in range(CURRENT_RISK_ROWS):
+        source_type, market_key = risk_keys[row_index % len(risk_keys)]
         product = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
-        for market_key in _market_keys(source_type, risk_only=True):
-            for raw_portfolio in RISK_PORTFOLIOS:
-                risk, drisk = _risk_values(source_type, market_key, raw_portfolio)
-                row = {column: "" for column in schema}
-                row.update(
-                    {
-                        "Source Type": source_type,
-                        **_key_fields(source_type, market_key),
-                        "Portfolio": _fake(raw_portfolio),
-                        "Group": _fixture_group(source_type, market_key[0]),
-                        "Risk": _number(risk, 2),
-                        "dRisk": _number(drisk, 2),
-                    }
-                )
-                if product.risk_type == "Credit":
-                    for measure, factor in CREDIT_FACTORS.items():
-                        row[f"Risk {measure}"] = _number(risk * factor, 2)
-                        row[f"dRisk {measure}"] = _number(drisk * factor, 2)
-                rows.append(row)
+        raw_portfolio = RISK_PORTFOLIOS[row_index % CURRENT_PORTFOLIO_COUNT]
+        risk, drisk = _risk_values(source_type, market_key, raw_portfolio)
+        row = {column: "" for column in schema}
+        row.update(
+            {
+                "Source Type": source_type,
+                **_key_fields(source_type, market_key),
+                "Portfolio": _fake(raw_portfolio),
+                "Group": _fixture_group(source_type, market_key[0]),
+                "Risk": _number(risk, 2),
+                "dRisk": _number(drisk, 2),
+                VOL_SCORE: _number(
+                    _vol_score(source_type, market_key, raw_portfolio), 3
+                ),
+            }
+        )
+        if product.risk_type == "Credit":
+            for measure, factor in CREDIT_FACTORS.items():
+                row[f"Risk {measure}"] = _number(risk * factor, 2)
+                row[f"dRisk {measure}"] = _number(drisk * factor, 2)
+        rows.append(row)
     return rows
 
 
@@ -724,6 +750,12 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
     market_open = datasets["s04_open.csv"]
     market_current = datasets["s05_current.csv"]
     expected_sources = set(EXPECTED_SOURCE_TYPES)
+    _require(len(risk) == CURRENT_RISK_ROWS, "Risk must contain 10,000 positions")
+    _require(
+        {row["Portfolio"] for row in risk}
+        == {_fake(portfolio) for portfolio in RISK_PORTFOLIOS},
+        "Risk must exercise exactly 500 governed Portfolios",
+    )
     for label, rows in (
         ("Risk", risk),
         ("Open", market_open),
@@ -781,9 +813,8 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
         else:
             _require(risk_keys == set(open_keys), f"{source_type} axisless keys differ")
         _require(
-            {row["Portfolio"] for row in risk_rows}
-            == {_fake(portfolio) for portfolio in RISK_PORTFOLIOS},
-            f"{source_type} must cover every fake Portfolio",
+            len({row["Portfolio"] for row in risk_rows}) >= 100,
+            f"{source_type} must exercise a broad Portfolio sample",
         )
 
         for row in risk_rows:
@@ -796,6 +827,13 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
                 _require(row[column] == "", f"{source_type} must leave {column} blank")
             _finite_numeric(row["Risk"], label=f"{source_type} Risk")
             _finite_numeric(row["dRisk"], label=f"{source_type} dRisk")
+            vol_score = _finite_numeric(
+                row[VOL_SCORE], label=f"{source_type} Vol Score"
+            )
+            _require(
+                0.0 <= vol_score <= 100.0,
+                f"{source_type} Vol Score must be between 0 and 100",
+            )
             if product.risk_type == "Credit":
                 for column in CREDIT_MEASURE_COLUMNS:
                     _finite_numeric(row[column], label=f"{source_type} {column}")

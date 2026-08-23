@@ -1,7 +1,9 @@
-"""V4 P&L filter ownership and aggregate-table callbacks."""
+"""P&L-page filter ownership and historical summary callbacks."""
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from threading import RLock
 from typing import Callable
 
@@ -9,8 +11,9 @@ import pandas as pd
 from dash import ALL, Dash, Input, Output, State, ctx, html, no_update
 
 from rebirth.app.s02_contracts import RefreshManagerProtocol
-from rebirth.ui.s02_aggregation import apply_filters, prepare_risk_data
-from rebirth.ui.s01_constants import RISK_TYPE_ORDER
+from rebirth.domain.s08_pnl import PLSendValidationError
+from rebirth.history import PLRiskSummaryResult
+from rebirth.ui.s02_aggregation import prepare_risk_data
 from rebirth.ui.s03_filters import (
     SavedFilterViewControls,
     saved_view_request_id,
@@ -19,30 +22,55 @@ from rebirth.ui.s03_filters import (
 )
 
 from .s01_common import (
-    PL_AGGREGATE_HISTORY_CELL_TYPE,
-    PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
-    pl_filter_map,
+    PL_SUMMARY_HISTORY_CELL_TYPE,
+    PL_SUMMARY_TOGGLE_TYPE,
+    PLRiskSummaryQueryProtocol,
+    pl_external_filter_map,
     pl_filter_options,
 )
-from .s07_view import build_pl_aggregate_table
+from .s10_summary import (
+    PL_SUMMARY_PAGE_TYPE,
+    build_pl_summary_table,
+    decode_open_paths,
+)
+
+
+def _ordered_open_tokens(raw: object) -> list[str]:
+    """Return validated, stable browser-owned hierarchy tokens."""
+
+    return sorted(
+        (
+            json.dumps(list(path), separators=(",", ":"))
+            for path in decode_open_paths(raw)
+        ),
+        key=str.casefold,
+    )
 
 
 def register_pl_aggregate_callbacks(
     app: Dash,
     refresh_manager: RefreshManagerProtocol,
     *,
+    history_source: object = None,
     prepared_frame_loader: Callable[[], pd.DataFrame | None] | None = None,
     saved_view_controls: SavedFilterViewControls | None = None,
 ) -> None:
-    """Register P&L-local filters and the always-visible Aggregate P&L."""
+    """Register the P&L page's filters and independent historical hierarchy."""
+
     cache_lock = RLock()
     cached_revision = -1
     cached_frame: pd.DataFrame | None = None
+    query_source = (
+        history_source
+        if isinstance(history_source, PLRiskSummaryQueryProtocol)
+        else None
+    )
 
-    def current_aggregate_frame() -> pd.DataFrame | None:
-        """Read only the mapped dashboard frame and prepare it once per revision."""
+    def current_filter_frame() -> pd.DataFrame | None:
+        """Read mapped live data only to populate the five filter selectors."""
+
         nonlocal cached_frame, cached_revision
         if prepared_frame_loader is not None:
             return prepared_frame_loader()
@@ -55,15 +83,15 @@ def register_pl_aggregate_callbacks(
         with cache_lock:
             if cached_frame is not None and cached_revision == manager_revision:
                 return cached_frame
-
         try:
             dashboard = refresh_manager.read_frame("dashboard_frame")
         except RuntimeError:
             return None
-        if dashboard.frame.empty:
-            prepared = dashboard.frame.copy(deep=True)
-        else:
-            prepared = prepare_risk_data(dashboard.frame)
+        prepared = (
+            dashboard.frame.copy(deep=True)
+            if dashboard.frame.empty
+            else prepare_risk_data(dashboard.frame)
+        )
         with cache_lock:
             if int(dashboard.revision) >= cached_revision:
                 cached_revision = int(dashboard.revision)
@@ -99,7 +127,8 @@ def register_pl_aggregate_callbacks(
         *apply_states,
     )
     def update_pl_filter_controls(_data_revision, *values):
-        """Own all P&L filter values, including validated saved-view requests."""
+        """Own all P&L selector values, including saved-view application."""
+
         offset = 0
         request = None
         if saved_view_controls is not None:
@@ -110,7 +139,7 @@ def register_pl_aggregate_callbacks(
             for selected in values[offset : offset + len(PL_FILTER_FIELDS)]
         ]
         exclude_value = list(values[offset + len(PL_FILTER_FIELDS)] or [])
-        applied_saved_view_request = (
+        applied_request = (
             values[offset + len(PL_FILTER_FIELDS) + 1]
             if saved_view_controls is not None
             else None
@@ -120,28 +149,23 @@ def register_pl_aggregate_callbacks(
         except Exception:
             trigger = None
         request_id = saved_view_request_id(request)
-        saved_view_pending = bool(
-            request_id and request_id != applied_saved_view_request
-        )
-        request_matches_base = False
-        if saved_view_pending and saved_view_controls is not None:
+        pending = bool(request_id and request_id != applied_request)
+        matches_base = False
+        if pending and saved_view_controls is not None:
             try:
-                request_matches_base = saved_view_request_matches_base(
+                matches_base = saved_view_request_matches_base(
                     request,
                     saved_view_controls,
                     selected_values,
                     exclude_value,
                 )
             except ValueError:
-                request_matches_base = False
-        apply_pending = (
-            saved_view_pending
+                matches_base = False
+        if (
+            pending
             and saved_view_controls is not None
-            and (
-                trigger == saved_view_controls.apply_request_id or request_matches_base
-            )
-        )
-        if apply_pending:
+            and (trigger == saved_view_controls.apply_request_id or matches_base)
+        ):
             try:
                 applied = saved_view_request_values(request, saved_view_controls)
             except ValueError:
@@ -150,13 +174,13 @@ def register_pl_aggregate_callbacks(
                 applied_values, exclude_value = applied
                 selected_values = [list(selected) for selected in applied_values]
 
-        frame = current_aggregate_frame()
+        frame = current_filter_frame()
         if frame is None:
             options = {field.key: [] for field in PL_FILTER_FIELDS}
             valid_values = selected_values
         else:
             options = pl_filter_options(frame)
-            valid_values = []
+            valid_values: list[list[str]] = []
             for field, selected in zip(
                 PL_FILTER_FIELDS,
                 selected_values,
@@ -174,111 +198,168 @@ def register_pl_aggregate_callbacks(
                 valid_values.append(retained)
 
         result: list[object] = []
-        for field, selected in zip(
-            PL_FILTER_FIELDS,
-            valid_values,
-            strict=True,
-        ):
+        for field, selected in zip(PL_FILTER_FIELDS, valid_values, strict=True):
             result.extend((options[field.key], selected))
         result.append(exclude_value)
         return tuple(result)
 
     @app.callback(
-        Output("pnl-aggregate-open-risk-types", "data"),
+        Output("pnl-summary-open-paths", "data"),
         Output("pnl-aggregate-pl-grid", "children"),
-        Input("pnl-aggregate-pl-dimension", "value"),
         Input("data-revision-store", "data"),
+        Input({"type": PL_SUMMARY_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
         Input(
-            {"type": PL_AGGREGATE_TOGGLE_TYPE, "risk_type": ALL},
+            {"type": PL_SUMMARY_PAGE_TYPE, "path": ALL, "page": ALL},
             "n_clicks",
         ),
         *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
         Input("pnl-filter-exclude-selected", "value"),
-        State("pnl-aggregate-open-risk-types", "data"),
+        Input("clear-cache-complete-store", "data"),
+        State("pnl-summary-open-paths", "data"),
     )
-    def reduce_and_render_pl_aggregate(
-        dimension,
+    def reduce_and_render_pl_summary(
         _data_revision,
         row_clicks,
-        *filter_values_mode_and_open,
+        page_clicks,
+        *filter_values_mode_cache_and_open,
     ):
-        """Filter at position grain and reduce one P&L-local chevron."""
-        selected_values = filter_values_mode_and_open[: len(PL_FILTER_FIELDS)]
-        exclude_value = filter_values_mode_and_open[len(PL_FILTER_FIELDS)]
-        effective_open = list(filter_values_mode_and_open[-1] or [])
-        updated_open = no_update
-        if row_clicks and max(int(value or 0) for value in row_clicks) > 0:
-            triggered = ctx.triggered_id
-            if isinstance(triggered, dict):
-                risk_type = str(triggered.get("risk_type", "")).strip()
-                if risk_type:
-                    opened = set(effective_open)
-                    if risk_type in opened:
-                        opened.remove(risk_type)
-                    else:
-                        opened.add(risk_type)
-                    effective_open = sorted(
-                        opened,
-                        key=lambda value: (RISK_TYPE_ORDER.get(value, 99), value),
-                    )
-                    updated_open = effective_open
+        """Query one page-owned summary and reveal only expanded branches."""
 
-        frame = current_aggregate_frame()
-        if frame is None:
+        selected_values = filter_values_mode_cache_and_open[: len(PL_FILTER_FIELDS)]
+        exclude_value = filter_values_mode_cache_and_open[len(PL_FILTER_FIELDS)]
+        open_raw = filter_values_mode_cache_and_open[-1]
+        effective_tokens = _ordered_open_tokens(open_raw)
+        updated_open = no_update
+        try:
+            trigger = ctx.triggered_id
+        except Exception:
+            trigger = None
+        page_by_parent: dict[str, int] = {}
+        if (
+            isinstance(trigger, Mapping)
+            and trigger.get("type") == PL_SUMMARY_TOGGLE_TYPE
+        ):
+            token = str(trigger.get("path", ""))
+            if (
+                token
+                and row_clicks
+                and max(int(value or 0) for value in row_clicks) > 0
+            ):
+                requested = next(iter(decode_open_paths([token])), None)
+                opened = {
+                    current: path
+                    for current in effective_tokens
+                    if (path := next(iter(decode_open_paths([current])), None))
+                    is not None
+                }
+                if requested is not None and token in opened:
+                    opened = {
+                        current: path
+                        for current, path in opened.items()
+                        if path[: len(requested)] != requested
+                    }
+                elif requested is not None:
+                    if len(requested) == 2:
+                        opened = {
+                            current: path
+                            for current, path in opened.items()
+                            if len(path) != 2
+                        }
+                    opened[token] = requested
+                effective_tokens = sorted(opened, key=str.casefold)
+                updated_open = effective_tokens
+        elif (
+            isinstance(trigger, Mapping)
+            and trigger.get("type") == PL_SUMMARY_PAGE_TYPE
+            and page_clicks
+            and max(int(value or 0) for value in page_clicks) > 0
+        ):
+            token = str(trigger.get("path", ""))
+            requested = next(iter(decode_open_paths([token])), None)
+            page = trigger.get("page")
+            if (
+                requested is not None
+                and len(requested) == 2
+                and token in effective_tokens
+                and isinstance(page, int)
+                and not isinstance(page, bool)
+            ):
+                page_by_parent[token] = max(page, 0)
+
+        if query_source is None:
             return (
                 updated_open,
                 html.Div(
-                    "P&L data is still loading. Aggregate P&L will update after the first committed refresh.",
+                    "Historical P&L is not configured for this application.",
                     className="empty-state",
                     role="status",
                 ),
             )
-        filtered = apply_filters(
-            frame,
-            None,
-            None,
-            pl_filter_map(selected_values),
-            exclude_selected="exclude" in (exclude_value or []),
-        )
-        valid_types = (
-            set(filtered["risk type"].astype(str)) if not filtered.empty else set()
-        )
-        valid_open = [value for value in effective_open if value in valid_types]
-        if valid_open != effective_open:
-            effective_open = valid_open
-            updated_open = effective_open
-        return (
-            updated_open,
-            build_pl_aggregate_table(filtered, dimension, effective_open),
-        )
+        if trigger == "clear-cache-complete-store":
+            query_source.clear()
+        try:
+            result = query_source.risk_summary(
+                filters=pl_external_filter_map(selected_values),
+                exclude_selected="exclude" in (exclude_value or []),
+            )
+            if not isinstance(result, PLRiskSummaryResult):
+                raise TypeError("P&L history source returned an invalid summary")
+            valid_paths = {
+                tuple(str(value) for value in path)
+                for path in result.summary.get("Hierarchy Path", [])
+                if isinstance(path, tuple) and 1 <= len(path) <= 2
+            }
+            retained_tokens = [
+                token
+                for token in effective_tokens
+                if next(iter(decode_open_paths([token])), ()) in valid_paths
+            ]
+            if retained_tokens != effective_tokens:
+                effective_tokens = retained_tokens
+                updated_open = retained_tokens
+            content = build_pl_summary_table(
+                result.summary,
+                effective_tokens,
+                as_of_date=result.as_of_date,
+                page_by_parent=page_by_parent,
+            )
+        except (PLSendValidationError, TypeError, ValueError, OSError) as exc:
+            content = html.Div(
+                f"Historical P&L could not be loaded: {exc}",
+                className="empty-state has-error",
+                role="alert",
+            )
+        return updated_open, content
 
     @app.callback(
         Output("pl-history-selection-store", "data"),
         Input(
             {
-                "type": PL_AGGREGATE_HISTORY_CELL_TYPE,
+                "type": PL_SUMMARY_HISTORY_CELL_TYPE,
                 "risk_type": ALL,
                 "risk_greek": ALL,
-                "dimension": ALL,
-                "value": ALL,
+                "underlying": ALL,
+                "metric": ALL,
             },
             "n_clicks",
         ),
         prevent_initial_call=True,
     )
     def select_pl_history_cell(clicks):
-        """Turn a current Aggregate P&L cell into one lazy history request."""
+        """Turn an Underlying leaf into an inline daily-history request."""
 
         if not clicks or max(int(value or 0) for value in clicks) <= 0:
             return no_update
-        triggered = ctx.triggered_id
-        if not isinstance(triggered, dict):
+        try:
+            triggered = ctx.triggered_id
+        except Exception:
+            triggered = None
+        if not isinstance(triggered, Mapping):
             return no_update
         return {
             "risk_type": str(triggered.get("risk_type", "")).strip(),
             "risk_greek": str(triggered.get("risk_greek", "")).strip(),
-            "dimension": str(triggered.get("dimension", "")).strip(),
-            "value": str(triggered.get("value", "")).strip(),
+            "underlying": str(triggered.get("underlying", "")).strip(),
         }
 
 

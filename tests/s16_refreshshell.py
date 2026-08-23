@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import no_update
 from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.risk import s17_refresh as risk_callbacks
+from rebirth.pages.risk import s15_refresh as risk_callbacks
 from rebirth.pages.risk import s02_state as risk_state
 from rebirth.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY
 from rebirth.ui.s04_components import (
@@ -345,6 +345,23 @@ def test_force_actions_disable_for_busy_and_clean_states() -> None:
         True,
         True,
     )
+
+    stale_clean = dict(clean)
+    stale_clean["base_revision"] = snapshot.revision - 1
+    reconciling = callback(stale_clean, 2, False, "force-risk-apply-button")
+    assert reconciling == (
+        True,
+        True,
+        "Reconciling applied date settings…",
+        "force-risk-edit-status",
+    )
+
+    genuine_conflict = dict(stale_clean)
+    genuine_conflict["conflict"] = True
+    conflicted = callback(genuine_conflict, 2, False, "force-risk-apply-button")
+    assert conflicted[:2] == (True, False)
+    assert "changed while you were editing" in conflicted[2]
+    assert "is-error" in conflicted[3]
 
 
 def test_control_labels_and_committed_settings_are_unambiguous() -> None:

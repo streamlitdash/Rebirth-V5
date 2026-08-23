@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from rebirth.domain.s02_products import ProductConnectorAdapter
+from rebirth.domain.s02_products import VOL_SCORE, ProductConnectorAdapter
 from rebirth.domain.s01_schema import TENOR_SWAP, TENOR_SWAP_ORDER
 
 from .s01_common import MarketSource, RiskSource, exact_frame, market_frame
@@ -23,6 +23,7 @@ COMMO_DELTA_RISK = (
     "Group",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 COMMO_DELTA_OPEN = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Open")
 COMMO_DELTA_CURRENT = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Current")

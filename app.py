@@ -11,7 +11,7 @@ from rebirth.adapters.s08_stock import get_stock
 from rebirth.app.s07_factory import build_app
 from rebirth.app.s03_logging import configure_runtime_logging, perf_span
 from rebirth.app.s01_settings import RuntimeSettings, resolve_data_path
-from rebirth.history import SQLPLHistoryRepository, build_market_history_loader
+from rebirth.history import SQLPLHistoryRepository
 from rebirth.pages.pnl import PLSendConfig
 from rebirth.pages.stock.s02_history import SQLStockHistoryRepository
 from rebirth.services.s03_adjustments import LocalCsvAdjustmentRepository
@@ -77,7 +77,6 @@ def create_app(settings: RuntimeSettings | None = None):
             stock_history_source=SQLStockHistoryRepository(history_path),
             saved_view_root=saved_view_path,
             pl_history_root=history_path,
-            market_history_loader=build_market_history_loader(history_path),
             dash_kwargs=settings.dash_kwargs,
         )
 

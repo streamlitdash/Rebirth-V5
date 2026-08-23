@@ -208,9 +208,9 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
     assert refresh_progress.hidden is False
     assert refresh_progress.to_plotly_json()["props"]["data-initial-load"] == "true"
     assert refresh_function.children == "Waiting for the server-started refresh"
-    # The hidden base shell carries the hero but does not poll on Stock/Statics.
-    # The mounted Risk interval activates the shared lifecycle after first paint.
-    assert bootstrap_interval.disabled is True
+    # The router reveals this shell after resolving the URL. Its follower must
+    # already be live so direct Data/Stock/Statics visits receive revision 1.
+    assert bootstrap_interval.disabled is False
     assert {"cube-page-container", "initial-load-trigger"} <= risk_ids
     assert "refresh-progress-function" not in risk_ids
     assert len(mounted_ids) == len(set(mounted_ids))
@@ -619,19 +619,14 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     assert stock_history_repositories[0]._root.resolve() == history_root
 
 
-def test_composed_app_binds_quick_market_history_to_shared_pl_root(
+def test_composed_app_uses_data_page_as_the_only_market_history_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     import app as app_module
 
     captured: dict[str, object] = {}
-    expected_loader = object()
     expected_stock_history = object()
-
-    def bind_history(root):
-        captured["history_root"] = root
-        return expected_loader
 
     def capture_app(**kwargs):
         captured["app_kwargs"] = kwargs
@@ -642,21 +637,19 @@ def test_composed_app_binds_quick_market_history_to_shared_pl_root(
         return expected_stock_history
 
     monkeypatch.setenv("PL_HISTORICAL_PATH", str(tmp_path))
-    monkeypatch.setattr(app_module, "build_market_history_loader", bind_history)
     monkeypatch.setattr(app_module, "SQLStockHistoryRepository", bind_stock_history)
     monkeypatch.setattr(app_module, "build_app", capture_app)
 
     result = app_module.create_app()
 
     assert isinstance(result, SimpleNamespace)
-    assert captured["history_root"] == tmp_path.resolve()
     app_kwargs = captured["app_kwargs"]
     assert isinstance(app_kwargs, dict)
     assert app_kwargs["pl_history_root"] == tmp_path.resolve()
     history_repository = app_kwargs["pl_send_config"].history_source
     assert isinstance(history_repository, app_module.SQLPLHistoryRepository)
     assert history_repository.root == tmp_path.resolve()
-    assert app_kwargs["market_history_loader"] is expected_loader
+    assert "market_history_loader" not in app_kwargs
     assert app_kwargs["stock_history_source"] is expected_stock_history
     assert captured["stock_history_root"] == tmp_path.resolve()
 
@@ -711,6 +704,7 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
         "P&L",
         "Statics",
     ]
+    assert primary_navigation.children[-1].refresh is True
 
     static_page, metadata = _native_page(app, "/static-data")
     static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
@@ -723,7 +717,7 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     assert pnl_class == "app-nav-link cube-nav-link"
     assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link is-active"
-    assert shell_style == {"display": "none"}
+    assert shell_style == {}
     assert {"static-data-page", "static-data-file-selector"} <= static_ids
     assert any(
         getattr(item, "children", None) == "Statics" for item in _walk(static_page)
@@ -793,7 +787,7 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     assert pnl_class == "app-nav-link cube-nav-link"
     assert stock_class == "app-nav-link cube-nav-link is-active"
     assert static_class == "app-nav-link cube-nav-link"
-    assert shell_style == {"display": "none"}
+    assert shell_style == {}
     assert {"stock-page", "stock-unavailable"} <= stock_ids
     assert "cube-page-container" not in stock_ids
 
@@ -871,7 +865,7 @@ def test_native_pages_match_the_public_prefix_exactly() -> None:
     assert pnl_class == "app-nav-link cube-nav-link"
     assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link is-active"
-    assert shell_style == {"display": "none"}
+    assert shell_style == {}
     assert "static-data-page" in static_ids
 
     not_found, _metadata = _native_page(app, "/nested/static-data")

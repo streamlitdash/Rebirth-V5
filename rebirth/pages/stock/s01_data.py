@@ -15,6 +15,7 @@ from rebirth.adapters.s08_stock import (
     build_stock_adapter,
     normalize_stock_date,
 )
+from rebirth.domain.s03_calculations import market_date_for
 from rebirth.domain.s09_stock import (
     CURRENT_MARKET_VALUE_COLUMN,
     CURRENT_QUANTITY_COLUMN,
@@ -22,6 +23,7 @@ from rebirth.domain.s09_stock import (
     MARKET_VALUE_CHANGE_COLUMN,
     STOCK_FILTER_COLUMN_BY_KEY,
     STOCK_IDENTITY_COLUMNS,
+    filter_stock_comparison,
     map_stock_comparison_portfolios,
 )
 from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
@@ -38,6 +40,7 @@ STOCK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     fields=STOCK_FILTER_FIELDS,
     filter_ids=STOCK_FILTER_IDS,
     exclude_id="stock-filter-exclude-selected",
+    base_label="Base Review",
 )
 STOCK_FILTER_NOTE = (
     "Include mode uses OR within one filter (B or D) and AND across filters "
@@ -134,6 +137,9 @@ def stock_activity_options(mapped_stock: pd.DataFrame) -> list[dict[str, str]]:
 def stock_display_rows(
     mapped_stock: pd.DataFrame,
     activities: Sequence[str] | None = None,
+    *,
+    dimension_filters: Mapping[str, Sequence[str] | None] | None = None,
+    exclude_selected: bool = False,
 ) -> pd.DataFrame:
     """Project latest Stock rows for display without aggregating metadata.
 
@@ -150,10 +156,15 @@ def stock_display_rows(
     ]
     if missing:
         raise ValueError(f"mapped_stock is missing required columns: {missing}")
-    current = mapped_stock.loc[mapped_stock[CURRENT_MARKET_VALUE_COLUMN].notna()].copy()
-    selected = [str(value) for value in (activities or ()) if value is not None]
-    if selected:
-        current = current.loc[current["Activity"].astype(str).isin(selected)]
+    filters = dict(dimension_filters or {})
+    if activities and "activity" not in filters:
+        filters["activity"] = [str(value) for value in activities if value is not None]
+    filtered = filter_stock_comparison(
+        mapped_stock,
+        filters,
+        exclude_selected=exclude_selected,
+    )
+    current = filtered.loc[filtered[CURRENT_MARKET_VALUE_COLUMN].notna()].copy()
     display = current.loc[
         :,
         [
@@ -185,6 +196,17 @@ def stock_display_rows(
     return display.loc[:, list(STOCK_DISPLAY_COLUMNS)].reset_index(drop=True)
 
 
+def default_stock_filter_values(mapped_stock: pd.DataFrame) -> dict[str, list[str]]:
+    """Return the Stock Base Review: Activity 1-3 and all other dimensions."""
+
+    return {
+        field.key: (
+            default_stock_activities(mapped_stock) if field.key == "activity" else []
+        )
+        for field in STOCK_FILTER_FIELDS
+    }
+
+
 def stock_history_identities(
     mapped_stock: pd.DataFrame,
     *,
@@ -210,10 +232,10 @@ def stock_history_identities(
 
 
 def default_stock_dates(reference_date: object) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return the prior two business dates relative to a market/reference date."""
+    """Use the reference Market Date and its preceding business day."""
 
     reference = normalize_stock_date(reference_date)
-    current_date = reference - pd.offsets.BDay(1)
+    current_date = market_date_for(reference)
     prior_date = current_date - pd.offsets.BDay(1)
     return current_date, prior_date
 
@@ -260,10 +282,11 @@ def stock_filter_options(
         raise ValueError(f"Unknown Stock reporting-dimension filters: {unknown}")
     options: dict[str, list[dict[str, str]]] = {}
     valid: dict[str, list[str]] = {}
+    current = mapped_stock.loc[mapped_stock[CURRENT_MARKET_VALUE_COLUMN].notna()]
     for field in STOCK_FILTER_FIELDS:
         column = field.external_name
         available = sorted(
-            mapped_stock[column].dropna().astype(str).unique().tolist(),
+            current[column].dropna().astype(str).unique().tolist(),
             key=str.casefold,
         )
         options[field.key] = [{"label": value, "value": value} for value in available]
@@ -325,6 +348,7 @@ __all__ = [
     "STOCK_SAVED_VIEW_CONTROLS",
     "StockPageData",
     "default_stock_activities",
+    "default_stock_filter_values",
     "default_stock_dates",
     "load_stock_page_data",
     "normalize_stock_date_pair",

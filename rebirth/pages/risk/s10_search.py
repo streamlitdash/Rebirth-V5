@@ -12,6 +12,7 @@ import pandas as pd
 from dash import html, no_update
 
 from rebirth.app.s02_contracts import RefreshManagerProtocol
+from rebirth.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
 
 from .s08_quickrisk import (
     QUICK_RISK_PIVOT_LIMIT,
@@ -175,6 +176,35 @@ def _prune_quick_search_indexes(
     return ("Underlying",)
 
 
+def _product_shaped_quick_search_indexes(
+    manager: RefreshManagerProtocol,
+    combine_udl: str,
+    identity_mode: str,
+    index_columns: Sequence[str],
+) -> tuple[str, ...]:
+    """Resolve ProductSpec axes before pivoting the exact Risk identity."""
+
+    resolved = manager.resolve_history_identity(
+        "risk",
+        combine_udl,
+        identity_mode=identity_mode,
+    )
+    source_types = tuple(getattr(resolved, "source_types", ()) or ())
+    supported_axes = {
+        axis.column
+        for source_type in source_types
+        for axis in PRODUCT_SPECS_BY_SOURCE_TYPE[source_type].axes
+    }
+    selected = tuple(str(column) for column in index_columns)
+    non_tenors = tuple(
+        column for column in selected if column not in _QUICK_SEARCH_TENOR_INDEXES
+    )
+    axes = tuple(
+        column for column in ("Tenor Swap", "Tenor Option") if column in supported_axes
+    )
+    return (*non_tenors, *axes) or ("Underlying", *axes)
+
+
 def _render_quick_search_pivot(
     manager: RefreshManagerProtocol,
     *,
@@ -201,6 +231,18 @@ def _render_quick_search_pivot(
             index_update,
         )
     try:
+        try:
+            shaped_indexes = _product_shaped_quick_search_indexes(
+                manager,
+                selected_identity,
+                selected_mode,
+                selected_indexes,
+            )
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            shaped_indexes = selected_indexes
+        if shaped_indexes != selected_indexes:
+            selected_indexes = shaped_indexes
+            index_update = list(selected_indexes)
         pivot = manager.pivot_combined_hierarchy
         pivot_kwargs: dict[str, object] = {
             "index_columns": selected_indexes,
@@ -270,6 +312,7 @@ __all__ = [
     "_combine_udl_dropdown_options",
     "_normalise_quick_search_index",
     "_prune_quick_search_indexes",
+    "_product_shaped_quick_search_indexes",
     "_quick_search_result_parts",
     "_render_quick_search_pivot",
 ]

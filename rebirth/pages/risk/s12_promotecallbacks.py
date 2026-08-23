@@ -9,7 +9,6 @@ from typing import Protocol
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, no_update
 
-from rebirth.domain.s11_riskviews import PivotSpec
 from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
 from rebirth.app.s02_contracts import RefreshManagerProtocol
 
@@ -20,7 +19,6 @@ from .s11_promotion import (
     PROMOTION_STATUS_ID,
     PromotionBasis,
     PromotionGeneration,
-    apply_promotion_local_filters,
     baseline_promotion_generation,
     calculate_current_view_promotion,
     promotion_basis_is_stale,
@@ -84,11 +82,11 @@ def register_promotion_callbacks(
         Input("data-revision-store", "data"),
         Input("risk-type-tabs", "value"),
         Input("ir-family-tabs", "value"),
-        Input("split-filter", "value"),
-        Input("table-view-tabs", "value"),
-        Input("risk-custom-pivot-applied", "data", allow_optional=True),
         *filter_inputs,
         Input("risk-filter-exclude-selected", "value"),
+        # The Risk reducer also owns this selector's value.  Capture it only
+        # when the user explicitly recalculates to avoid a browser-side cycle.
+        State("split-filter", "value"),
         State(PROMOTION_GENERATION_STORE_ID, "data"),
         prevent_initial_call=False,
     )
@@ -98,15 +96,13 @@ def register_promotion_callbacks(
         data_revision,
         risk_type,
         ir_family,
-        splits,
-        table_view,
-        custom_pivot,
-        *filter_values_exclude_and_generation,
+        *filter_values_exclude_split_and_generation,
     ):
         filter_count = len(FILTER_DIMENSION_FIELDS)
-        filter_values = filter_values_exclude_and_generation[:filter_count]
-        exclude_value = filter_values_exclude_and_generation[filter_count]
-        current_store = filter_values_exclude_and_generation[filter_count + 1]
+        filter_values = filter_values_exclude_split_and_generation[:filter_count]
+        exclude_value = filter_values_exclude_split_and_generation[filter_count]
+        splits = filter_values_exclude_split_and_generation[filter_count + 1]
+        current_store = filter_values_exclude_split_and_generation[filter_count + 2]
         revision = int(data_revision or cache.revision)
         filters = {
             field.key: list(selected or [])
@@ -116,24 +112,12 @@ def register_promotion_callbacks(
                 strict=True,
             )
         }
-        local_filters: dict[str, list[str]] = {}
-        if table_view == "custom" and custom_pivot:
-            try:
-                pivot = PivotSpec.from_dict(custom_pivot)
-                local_filters = {
-                    field: list(selected)
-                    for field, selected in pivot.filters
-                    if selected
-                }
-            except (TypeError, ValueError):
-                local_filters = {}
         basis = PromotionBasis.build(
             revision,
             risk_type=risk_type,
             ir_family=ir_family,
             splits=splits,
             filters=filters,
-            local_filters=local_filters,
             exclude_selected="exclude" in (exclude_value or []),
         )
         scope = promotion_basis_summary(basis)
@@ -153,7 +137,7 @@ def register_promotion_callbacks(
                 "filter-note",
                 True,
                 "Scope: committed Activities 1–3 policy",
-                "Recalculate visible view",
+                "Recalculate promotions",
                 False,
                 "false",
             )
@@ -169,7 +153,6 @@ def register_promotion_callbacks(
                     filters,
                     exclude_selected=basis.exclude_selected,
                 )
-                filtered = apply_promotion_local_filters(filtered, local_filters)
                 generation = calculate_current_view_promotion(filtered, basis)
                 generation_store = cache.publish_promotion_generation(generation)
             except (TypeError, ValueError) as error:
@@ -184,7 +167,7 @@ def register_promotion_callbacks(
                     "filter-note has-errors",
                     True,
                     scope,
-                    "Recalculate visible view",
+                    "Recalculate promotions",
                     False,
                     "false",
                 )
@@ -204,7 +187,7 @@ def register_promotion_callbacks(
                 "filter-note",
                 False,
                 scope,
-                "Recalculate visible view",
+                "Recalculate promotions",
                 False,
                 "false",
             )
@@ -219,7 +202,7 @@ def register_promotion_callbacks(
                 "filter-note has-warning",
                 False,
                 scope,
-                "Recalculate visible view",
+                "Recalculate promotions",
                 False,
                 "false",
             )
@@ -232,7 +215,7 @@ def register_promotion_callbacks(
                     "filter-note has-warning",
                     True,
                     "Scope: committed Activities 1–3 policy",
-                    "Recalculate visible view",
+                    "Recalculate promotions",
                     False,
                     "false",
                 )
@@ -242,7 +225,7 @@ def register_promotion_callbacks(
                 "filter-note",
                 False,
                 scope,
-                "Recalculate visible view",
+                "Recalculate promotions",
                 False,
                 "false",
             )
@@ -252,7 +235,7 @@ def register_promotion_callbacks(
             "filter-note",
             True,
             "Scope: committed Activities 1–3 policy",
-            "Recalculate visible view",
+            "Recalculate promotions",
             False,
             "false",
         )

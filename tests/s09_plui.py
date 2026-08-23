@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -11,7 +12,11 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from rebirth.history import PLHistorySeriesResult
+from rebirth.history import (
+    PL_RISK_SUMMARY_COLUMNS,
+    PLHistorySeriesResult,
+    PLRiskSummaryResult,
+)
 from rebirth.domain.s08_pnl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
@@ -28,23 +33,28 @@ from rebirth.pages.pnl import s05_sendcallbacks as pl_send_events
 from rebirth.pages.pnl.s08_aggregate import register_pl_aggregate_callbacks
 from rebirth.pages.pnl.s01_common import (
     DISPLAY_COLUMNS,
-    PL_AGGREGATE_HISTORY_CELL_TYPE,
-    PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
     PL_FILTER_NOTE,
     PL_SAVED_VIEW_CONTROLS,
+    PL_SUMMARY_HISTORY_CELL_TYPE,
+    PL_SUMMARY_TOGGLE_TYPE,
     PLSendConfig,
 )
 from rebirth.pages.pnl.s06_validation import register_validate_pl_callbacks
 from rebirth.pages.pnl.s07_view import (
-    build_pl_aggregate_table,
     build_pl_filter_bar,
     build_pl_page,
     build_pl_send_sections,
 )
-from rebirth.ui.s02_aggregation import format_number, prepare_risk_data
+from rebirth.pages.pnl.s10_summary import (
+    PL_SUMMARY_LEAF_PAGE_SIZE,
+    PL_SUMMARY_PAGE_TYPE,
+    build_pl_summary_table,
+    path_token,
+)
+from rebirth.ui.s02_aggregation import prepare_risk_data
 from rebirth.app.s07_factory import build_app
 from rebirth.ui.s03_filters import build_saved_filter_view_bar
 
@@ -196,22 +206,37 @@ def test_closed_pl_sections_never_build_or_serialize_effective_rows(
     monkeypatch.setattr(pl_send_events, "_effective_store", forbidden)
     monkeypatch.setattr(pl_editor, "_display_records", forbidden)
 
-    sog = _callback(app, "pl-send-sog-effective-store.data")
-    portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
-
-    for callback in (sog, portfolio):
-        store, options, selected = callback(
-            0, 7, [], 0, *([[]] * len(PL_FILTER_FIELDS)), [], None
-        )
-        assert store == {}
-        assert options is no_update
-        assert selected is no_update
-        store, options, selected = callback(
-            2, 8, ["include"], 1, *([[]] * len(PL_FILTER_FIELDS)), [], "stale"
-        )
-        assert store == {}
-        assert options is no_update
-        assert selected is no_update
+    callback = _callback(app, "pl-send-effective-query-store.data")
+    result = callback(
+        0,
+        0,
+        7,
+        [],
+        [],
+        0,
+        0,
+        0,
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
+        None,
+        None,
+    )
+    assert result == ({}, no_update, no_update, no_update, no_update)
+    result = callback(
+        2,
+        2,
+        8,
+        ["include"],
+        ["include"],
+        1,
+        1,
+        1,
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
+        "stale",
+        "stale",
+    )
+    assert result == ({}, no_update, no_update, no_update, no_update)
 
 
 def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
@@ -219,7 +244,7 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _manager = _registered_pl_app(tmp_path)
-    effective = _effective_frame()
+    effective = pd.concat([_effective_frame()] * 3_346, ignore_index=True).iloc[:6_691]
     calls: list[bool] = []
 
     def effective_rows(
@@ -231,41 +256,62 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
         exclude_value,
     ):
         calls.append(include_adjustments)
-        assert filter_values == tuple([[]] * len(PL_FILTER_FIELDS))
+        assert filter_values == [[]] * len(PL_FILTER_FIELDS)
         assert exclude_value == []
         governance = effective[["Portfolio"]].drop_duplicates()
         return effective.copy(deep=True), pd.DataFrame(), governance
 
     monkeypatch.setattr(pl_send_events, "_effective_rows", effective_rows)
-    sog = _callback(app, "pl-send-sog-effective-store.data")
-    portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
-
-    sog_store, sog_options, selected_sog = sog(
-        1, 7, [], 4, *([[]] * len(PL_FILTER_FIELDS)), [], None
-    )
-    assert [option["value"] for option in sog_options] == ["SOG-A", "SOG-B"]
-    assert selected_sog == "SOG-A"
-    assert len(sog_store["rows"]) == 2
-    assert sog_store["include_adjustments"] is False
-    assert sog_store["editor_epoch"] == 4
-
-    portfolio_store, portfolio_options, selected_portfolio = portfolio(
+    callback = _callback(app, "pl-send-effective-query-store.data")
+    query, sog_options, selected_sog, portfolio_options, selected_portfolio = callback(
+        1,
         1,
         7,
-        ["include"],
+        [],
+        [],
+        0,
+        4,
         5,
         *([[]] * len(PL_FILTER_FIELDS)),
         [],
+        None,
         "BOOK-B",
     )
+    assert [option["value"] for option in sog_options] == ["SOG-A", "SOG-B"]
+    assert selected_sog == "SOG-A"
     assert [option["value"] for option in portfolio_options] == [
         "BOOK-A",
         "BOOK-B",
     ]
     assert selected_portfolio == "BOOK-B"
-    assert len(portfolio_store["rows"]) == 2
-    assert portfolio_store["include_adjustments"] is True
-    assert portfolio_store["editor_epoch"] == 5
+    assert "rows" not in query
+    assert len(json.dumps(query)) < 2_048
+    assert query["sections"]["sog"] == {
+        "open": True,
+        "include_adjustments": False,
+        "editor_epoch": 4,
+    }
+    assert query["sections"]["portfolio"] == {
+        "open": True,
+        "include_adjustments": False,
+        "editor_epoch": 5,
+    }
+    assert calls == [False]
+
+    callback(
+        1,
+        1,
+        7,
+        [],
+        ["include"],
+        0,
+        4,
+        5,
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
+        selected_sog,
+        selected_portfolio,
+    )
     assert calls == [False, True]
 
 
@@ -329,8 +375,7 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     assert getattr(page, "id", None) == "pnl-page-container"
     assert {
         "pnl-page",
-        "pnl-aggregate-open-risk-types",
-        "pnl-aggregate-pl-dimension",
+        "pnl-summary-open-paths",
         "pnl-aggregate-pl-grid",
         "pnl-filter-bar",
         "pnl-filter-exclude-selected",
@@ -401,10 +446,10 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     aggregate_heading = next(
         item
         for item in _walk(page)
-        if isinstance(item, html.H2) and item.children == "Aggregate P&L"
+        if isinstance(item, html.H2) and item.children == "Current and historical P&L"
     )
     assert not any(
-        isinstance(item, html.Summary) and item.children == "Aggregate P&L"
+        isinstance(item, html.Summary) and item.children == "Current and historical P&L"
         for item in _walk(page)
     )
     assert aggregate_heading is not None
@@ -457,8 +502,7 @@ def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> 
 
     for output_fragment in (
         "pnl-aggregate-pl-grid.children",
-        "pl-send-sog-effective-store.data",
-        "pl-send-portfolio-effective-store.data",
+        "pl-send-effective-query-store.data",
         "pl-validate-table.children",
         "pl-history-chart.figure",
     ):
@@ -651,164 +695,181 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
     assert calls == ["SOG", "Portfolio"]
 
 
-def test_pl_aggregate_table_restores_page_owned_collapsible_chevrons() -> None:
-    manager = build_production_refresh_manager()
-    manager.refresh(force_risk=True, force_pl=True)
-    prepared = prepare_risk_data(manager.read_frame("dashboard_frame").frame)
+def _summary_result() -> PLRiskSummaryResult:
+    rows = [
+        [0, "TOTAL", (), False, 15.0, 110.0, 1010.0],
+        [1, "IR", ("IR",), False, 15.0, 110.0, 1010.0],
+        [2, "Delta", ("IR", "Delta"), False, 15.0, 110.0, 1010.0],
+        [3, "EUR", ("IR", "Delta", "EUR"), True, 15.0, 110.0, 1010.0],
+    ]
+    return PLRiskSummaryResult(
+        pd.DataFrame(rows, columns=list(PL_RISK_SUMMARY_COLUMNS)),
+        "2026-07-19",
+        len(rows),
+    )
 
-    table = build_pl_aggregate_table(prepared, "activity", ["IR"])
+
+def test_pl_summary_table_is_page_owned_three_level_chevron() -> None:
+    result = _summary_result()
+    table = build_pl_summary_table(
+        result.summary,
+        [path_token(("IR",)), path_token(("IR", "Delta"))],
+        as_of_date=result.as_of_date,
+    )
     pattern_ids = [
         component_id
         for item in _walk(table)
         if isinstance((component_id := getattr(item, "id", None)), dict)
     ]
-    toggle_ids = [
-        component_id
-        for component_id in pattern_ids
-        if component_id.get("type") == PL_AGGREGATE_TOGGLE_TYPE
-    ]
-    history_cell_ids = [
-        component_id
-        for component_id in pattern_ids
-        if component_id.get("type") == PL_AGGREGATE_HISTORY_CELL_TYPE
+    toggles = [item for item in pattern_ids if item["type"] == PL_SUMMARY_TOGGLE_TYPE]
+    history_cells = [
+        item for item in pattern_ids if item["type"] == PL_SUMMARY_HISTORY_CELL_TYPE
     ]
 
-    assert toggle_ids
-    assert all(
-        component_id["type"] == PL_AGGREGATE_TOGGLE_TYPE
-        and set(component_id) == {"type", "risk_type"}
-        for component_id in toggle_ids
-    )
-    assert history_cell_ids
-    assert all(
-        set(component_id) == {"type", "risk_type", "risk_greek", "dimension", "value"}
-        and component_id["dimension"] == "activity"
-        for component_id in history_cell_ids
-    )
-    assert any(
-        component_id["risk_type"] == "IR"
-        and component_id["risk_greek"]
-        and component_id["value"] != "__total__"
-        for component_id in history_cell_ids
-    )
-    assert any(isinstance(item, html.Button) for item in _walk(table))
-    assert (
-        sum(
-            getattr(item, "className", None) == "aggregate-greek-row"
-            for item in _walk(table)
-        )
-        == prepared.loc[prepared["risk type"].eq("IR"), ["risk type", "risk greek"]]
-        .drop_duplicates()
-        .shape[0]
-    )
-
-
-def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
-    manager = build_production_refresh_manager()
-    manager.refresh(force_risk=True, force_pl=True)
-    app = build_app(refresh_manager=manager)
-    page = _native_page(app, "/pnl")
-    page_ids = _string_ids(page)
-    selector = next(
-        item
-        for item in _walk(page)
-        if isinstance(item, dcc.RadioItems) and item.id == "pnl-aggregate-pl-dimension"
-    )
-
-    assert {
-        "pnl-aggregate-open-risk-types",
-        "pnl-aggregate-pl-dimension",
-        "pnl-aggregate-pl-grid",
-        "pnl-unavailable",
-    } <= page_ids
-    assert selector.value == "activity"
-    assert {option["value"] for option in selector.options} >= {
-        "activity",
-        "portfolio",
+    assert {item["path"] for item in toggles} == {
+        path_token(("IR",)),
+        path_token(("IR", "Delta")),
     }
-    assert "aggregate-pl-grid" not in page_ids
-    assert "aggregate-pl-dimension" not in page_ids
-    initial_grid = next(
-        item
-        for item in _walk(page)
-        if getattr(item, "id", None) == "pnl-aggregate-pl-grid"
+    assert len(history_cells) == 3
+    assert {item["metric"] for item in history_cells} == {
+        "Current P&L",
+        "Month to Date",
+        "Year to Date",
+    }
+    assert all(item["underlying"] == "EUR" for item in history_cells)
+    assert "Risk Type › Greek › Underlying" in _text(table)
+    assert "Month to date" in _text(table)
+    assert "Year to date" in _text(table)
+
+
+def test_pl_summary_underlyings_are_bounded_and_pageable() -> None:
+    rows = [
+        [0, "TOTAL", (), False, 1.0, 2.0, 3.0],
+        [1, "FX", ("FX",), False, 1.0, 2.0, 3.0],
+        [2, "Delta", ("FX", "Delta"), False, 1.0, 2.0, 3.0],
+        *[
+            [
+                3,
+                f"U{index:03d}",
+                ("FX", "Delta", f"U{index:03d}"),
+                True,
+                float(index),
+                float(index),
+                float(index),
+            ]
+            for index in range(250)
+        ],
+    ]
+    summary = pd.DataFrame(rows, columns=list(PL_RISK_SUMMARY_COLUMNS))
+    opened = [path_token(("FX",)), path_token(("FX", "Delta"))]
+
+    first = build_pl_summary_table(summary, opened)
+    first_ids = [
+        component_id
+        for item in _walk(first)
+        if isinstance((component_id := getattr(item, "id", None)), dict)
+    ]
+    first_cells = [
+        item for item in first_ids if item["type"] == PL_SUMMARY_HISTORY_CELL_TYPE
+    ]
+    pages = [item for item in first_ids if item["type"] == PL_SUMMARY_PAGE_TYPE]
+
+    assert len(first_cells) == PL_SUMMARY_LEAF_PAGE_SIZE * 3
+    assert {item["underlying"] for item in first_cells} == {
+        f"U{index:03d}" for index in range(PL_SUMMARY_LEAF_PAGE_SIZE)
+    }
+    assert {item["page"] for item in pages} == {0, 1}
+    assert f"1–{PL_SUMMARY_LEAF_PAGE_SIZE} of 250" in _text(first)
+    assert len(list(_walk(first))) < 1_200
+
+    second = build_pl_summary_table(
+        summary,
+        opened,
+        page_by_parent={path_token(("FX", "Delta")): 1},
     )
-    assert any(
-        getattr(item, "className", None) == "aggregate-risk-row"
-        for item in _walk(initial_grid)
+    second_ids = [
+        component_id
+        for item in _walk(second)
+        if isinstance((component_id := getattr(item, "id", None)), dict)
+    ]
+    second_cells = [
+        item for item in second_ids if item["type"] == PL_SUMMARY_HISTORY_CELL_TYPE
+    ]
+    assert {item["underlying"] for item in second_cells} == {
+        f"U{index:03d}"
+        for index in range(
+            PL_SUMMARY_LEAF_PAGE_SIZE,
+            PL_SUMMARY_LEAF_PAGE_SIZE * 2,
+        )
+    }
+    assert (
+        f"{PL_SUMMARY_LEAF_PAGE_SIZE + 1}–{PL_SUMMARY_LEAF_PAGE_SIZE * 2} of 250"
+        in _text(second)
     )
 
-    aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
-    open_state, table = aggregate(
-        "activity",
-        manager.health.revision,
-        [],
-        *([[]] * len(PL_FILTER_FIELDS)),
-        [],
-        [],
+
+def test_pl_summary_callback_uses_history_and_governed_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SummarySource:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def clear(self) -> None:
+            pass
+
+        def risk_summary(self, **kwargs) -> PLRiskSummaryResult:
+            self.calls.append(kwargs)
+            return _summary_result()
+
+    source = SummarySource()
+    manager = SimpleNamespace(health=SimpleNamespace(revision=0))
+    app = Dash(__name__)
+    app.layout = html.Div(
+        [
+            dcc.Store(id="data-revision-store"),
+            dcc.Store(id="clear-cache-complete-store"),
+            dcc.Store(id="pnl-summary-open-paths", data=[]),
+            dcc.Store(id="pl-history-selection-store", data={}),
+            build_pl_filter_bar(),
+            html.Div(id="pnl-aggregate-pl-grid"),
+        ]
     )
-    prepared = prepare_risk_data(manager.read_frame("dashboard_frame").frame)
-    risk_rows = [
-        item
-        for item in _walk(table)
-        if getattr(item, "className", None) == "aggregate-risk-row"
-    ]
-    total_row = next(
-        item
-        for item in _walk(table)
-        if getattr(item, "className", None) == "aggregate-total-row"
+    register_pl_aggregate_callbacks(app, manager, history_source=source)
+    aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
+    monkeypatch.setattr(pl_aggregate_events, "ctx", SimpleNamespace(triggered_id=None))
+
+    open_state, table = aggregate(
+        7,
+        [],
+        [],
+        ["XVA"],
+        ["SOG-A"],
+        ["BOOK-A"],
+        ["Rates"],
+        ["Vanilla"],
+        ["exclude"],
+        None,
+        [],
     )
 
     assert open_state is no_update
-    assert len(risk_rows) == prepared["risk type"].nunique()
-    assert prepared["portfolio"].nunique() > 0
-    assert _text(total_row.children[-1]) == format_number(
-        prepared["pl"].sum(min_count=1)
-    )
-
-    activity = sorted(prepared["activity"].astype(str).unique())[0]
-    selected = [[] for _field in PL_FILTER_FIELDS]
-    activity_index = [field.key for field in PL_FILTER_FIELDS].index("activity")
-    selected[activity_index] = [activity.swapcase()]
-    _included_open, included = aggregate(
-        "activity",
-        manager.health.revision,
-        [],
-        *selected,
-        [],
-        [],
-    )
-    included_total = next(
-        item
-        for item in _walk(included)
-        if getattr(item, "className", None) == "aggregate-total-row"
-    )
-    assert _text(included_total.children[-1]) == format_number(
-        prepared.loc[prepared["activity"].eq(activity), "pl"].sum(min_count=1)
-    )
-    _excluded_open, excluded = aggregate(
-        "activity",
-        manager.health.revision,
-        [],
-        *selected,
-        ["exclude"],
-        [],
-    )
-    excluded_total = next(
-        item
-        for item in _walk(excluded)
-        if getattr(item, "className", None) == "aggregate-total-row"
-    )
-    assert _text(excluded_total.children[-1]) == format_number(
-        prepared.loc[prepared["activity"].ne(activity), "pl"].sum(min_count=1)
-    )
-
-    metadata = next(
-        value
-        for value in app.callback_map.values()
-        if "pnl-aggregate-pl-grid.children" in str(value["output"])
-    )
-    assert any(PL_AGGREGATE_TOGGLE_TYPE in item["id"] for item in metadata["inputs"])
+    assert "Today" in _text(table)
+    assert source.calls == [
+        {
+            "filters": {
+                "Activity": ["XVA"],
+                "SignoffGroup": ["SOG-A"],
+                "Portfolio": ["BOOK-A"],
+                "Category": ["Rates"],
+                "Sub Category": ["Vanilla"],
+            },
+            "exclude_selected": True,
+        }
+    ]
+    metadata = _callback_metadata(app, "pnl-aggregate-pl-grid.children")
+    assert any(PL_SUMMARY_TOGGLE_TYPE in item["id"] for item in metadata["inputs"])
+    assert any(PL_SUMMARY_PAGE_TYPE in item["id"] for item in metadata["inputs"])
     assert {(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS} <= {
         (item["id"], item["property"]) for item in metadata["inputs"]
     }
@@ -906,7 +967,8 @@ def test_clicking_aggregate_value_stores_complete_history_selection(
     app.layout = html.Div(
         [
             dcc.Store(id="data-revision-store"),
-            dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
+            dcc.Store(id="clear-cache-complete-store"),
+            dcc.Store(id="pnl-summary-open-paths", data=[]),
             dcc.Store(id="pl-history-selection-store", data={}),
             build_pl_filter_bar(),
             html.Div(id="pnl-aggregate-pl-grid"),
@@ -927,11 +989,11 @@ def test_clicking_aggregate_value_stores_complete_history_selection(
     assert select_cell([0, None]) is no_update
 
     cell_id = {
-        "type": PL_AGGREGATE_HISTORY_CELL_TYPE,
+        "type": PL_SUMMARY_HISTORY_CELL_TYPE,
         "risk_type": "IR",
         "risk_greek": "Delta",
-        "dimension": "portfolio",
-        "value": "BOOK-A",
+        "underlying": "EUR",
+        "metric": "Year to Date",
     }
     monkeypatch.setattr(
         pl_aggregate_events,
@@ -941,17 +1003,16 @@ def test_clicking_aggregate_value_stores_complete_history_selection(
     assert select_cell([0, 2]) == {
         "risk_type": "IR",
         "risk_greek": "Delta",
-        "dimension": "portfolio",
-        "value": "BOOK-A",
+        "underlying": "EUR",
     }
 
     metadata = _callback_metadata(app, "pl-history-selection-store.data")
     pattern_id = metadata["inputs"][0]["id"]
     assert metadata["inputs"][0]["property"] == "n_clicks"
-    assert PL_AGGREGATE_HISTORY_CELL_TYPE in pattern_id
+    assert PL_SUMMARY_HISTORY_CELL_TYPE in pattern_id
     assert all(
         f'"{key}"' in pattern_id
-        for key in ("risk_type", "risk_greek", "dimension", "value")
+        for key in ("risk_type", "risk_greek", "underlying", "metric")
     )
 
 
@@ -979,7 +1040,7 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         SimpleNamespace(triggered_id="pl-history-selection-store"),
     )
 
-    empty_figure, empty_status, empty_label = chart(
+    empty_figure, empty_status, empty_label, empty_style = chart(
         {},
         "both",
         "all",
@@ -997,14 +1058,14 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
     assert not empty_figure.data
     assert empty_status == "History loads only after a P&L value is selected."
     assert empty_label == "No P&L value selected."
+    assert empty_style == {"display": "none"}
 
     selection = {
         "risk_type": "IR",
         "risk_greek": "Delta",
-        "dimension": "portfolio",
-        "value": "BOOK-A",
+        "underlying": "EUR",
     }
-    both_figure, both_status, label = chart(
+    both_figure, both_status, label, visible_style = chart(
         selection,
         "both",
         "all",
@@ -1028,13 +1089,14 @@ def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
         ["2026-07-18", "2026-07-19"],
     ]
     assert [list(trace.y) for trace in both_figure.data] == [
-        [10.0, 12.0],
-        [9.0, pytest.approx(10.8)],
+        [10.0, 19.0],
+        [9.0, pytest.approx(17.1)],
     ]
     assert "4 observed points" in both_status
-    assert label == "IR · Delta · Portfolio: BOOK-A"
+    assert label == "IR · Delta · EUR"
+    assert visible_style == {}
 
-    colossus_figure, _status, _label = chart(
+    colossus_figure, _status, _label, _style = chart(
         selection,
         "colossus",
         "wtd",
@@ -1138,10 +1200,9 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
     selection = {
         "risk_type": "IR",
         "risk_greek": "Delta",
-        "dimension": "portfolio",
-        "value": "BOOK-A",
+        "underlying": "EUR",
     }
-    figure, status, label = chart(
+    figure, status, label, style = chart(
         selection,
         "predict",
         "custom",
@@ -1158,7 +1219,8 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
 
     assert [trace.name for trace in figure.data] == [PREDICT_TYPE]
     assert "1 observed points" in status
-    assert label == "IR · Delta · Portfolio: BOOK-A"
+    assert label == "IR · Delta · EUR"
+    assert style == {}
     assert source.series_calls == [
         {
             "path": (),
@@ -1176,7 +1238,7 @@ def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
             "criteria": {
                 "Risk Type": ["IR"],
                 "Risk Greek": ["Delta"],
-                "Portfolio": ["BOOK-A"],
+                "Underlying": ["EUR"],
             },
             "exclude_selected": True,
         }
@@ -1214,6 +1276,7 @@ def test_inline_histo_callback_metadata_has_no_tree_or_raw_contract(
         "pl-history-chart.figure",
         "pl-history-plot-status.children",
         "pl-history-selection-label.children",
+        "pnl-history-workspace.style",
     ]
     assert {(item["id"], item["property"]) for item in chart["inputs"]} == {
         ("pl-history-selection-store", "data"),
@@ -1256,7 +1319,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     without_pnl_page = _native_page(without_pl, "/pnl")
     without_pnl_ids = _string_ids(without_pnl_page)
     assert {
-        "pnl-aggregate-pl-dimension",
+        "pnl-summary-open-paths",
         "pnl-aggregate-pl-grid",
         "pnl-unavailable",
     } <= without_pnl_ids
@@ -1298,7 +1361,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     assert not any("pl-send-preview" in key for key in with_pl.callback_map)
 
 
-def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
+def test_cold_native_pnl_is_safe_before_commit_without_history_source(
     tmp_path: Path,
 ) -> None:
     manager = build_production_refresh_manager()
@@ -1315,33 +1378,43 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
     assert manager.health.revision == 0
     aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
     _open_state, aggregate_view = aggregate(
-        "activity",
         0,
+        [],
         [],
         *([[]] * len(PL_FILTER_FIELDS)),
         [],
+        None,
         [],
     )
-    assert "still loading" in str(aggregate_view.children)
-    sog = _callback(app, "pl-send-sog-effective-store.data")
-    store, options, selected = sog(
-        1, 0, [], 0, *([[]] * len(PL_FILTER_FIELDS)), [], None
+    assert "not configured" in str(aggregate_view.children)
+    effective_query = _callback(app, "pl-send-effective-query-store.data")
+    result = effective_query(
+        1,
+        0,
+        0,
+        [],
+        [],
+        0,
+        0,
+        0,
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
+        None,
+        None,
     )
-    assert (store, options, selected) == ({}, [], None)
+    assert result == ({}, [], None, no_update, no_update)
 
     manager.refresh(force_risk=True, force_pl=True)
     _open_state, aggregate_view = aggregate(
-        "activity",
         manager.health.revision,
+        [],
         [],
         *([[]] * len(PL_FILTER_FIELDS)),
         [],
+        None,
         [],
     )
-    assert any(
-        getattr(item, "className", None) == "aggregate-risk-row"
-        for item in _walk(aggregate_view)
-    )
+    assert "not configured" in str(aggregate_view.children)
     assert not any("pl-send-preview" in key for key in app.callback_map)
 
 

@@ -66,33 +66,28 @@ The top workspace has exactly four tabs in this order:
 2. **Quick Risk** resolves one committed risk identity, renders its exact
    hierarchy, and can hand it to Data.
 3. **Quick Market** resolves one committed quote identity, renders its current
-   matrix and lazily disclosed cell history, and can hand it to Data.
-4. **Top Promotions** is a flat ranked table, not another hierarchy.
+   matrix, and can hand the editable identity to Data for history.
+4. **Top Promotions** is a flat Vol Score rank with ten rows per page.
 
 The Data handoff is only a prefill. It never locks Data controls. A strict
 Quick handoff performs one initial history request; after that, Risk Type,
 Risk Greek, underlying, identity mode, metric, dates, projection, and slice are
 normal Data controls again.
 
-The Risk Explorer has **Cross**, **SplitVA**, and **Custom** tabs. Cross and
-SplitVA expose their Risk Type/Greek families as expandable, chevron-driven
-financial hierarchies; Credit also retains its Single/Multi presentation.
+The Risk Explorer has only **Cross** and **SplitVA** tabs. Both expose their
+Risk Type/Greek families as expandable, chevron-driven financial hierarchies;
+Credit also retains its Single/Multi presentation.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
 baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
 Category, and Sub Category, with explicit include/exclude semantics.
 
-Custom views store presentation settings rather than financial results. A user
-can create a blank view, clone Cross or SplitVA, edit rows, columns, measures,
-filters, sorting, totals, and row/column limits, then save, rename, or delete
-the named view. The custom pivot is computed only while that tab is active.
-
 Promotions are computed against thresholds at exact Risk Type + Risk Greek
 grain. The baseline generation uses Activities 1-3 and is committed with the
-refresh revision. **Recalculate visible view** is the explicit action that
+refresh revision. **Recalculate promotions** is the explicit action that
 creates a new revision-bound promotion generation from the visible scope;
-filter and display changes do not continually recompute it. Ranking uses score,
-absolute P&L, absolute Risk, and absolute dRisk. Reset returns to the baseline
-generation.
+filter and display changes do not continually recompute it. Eligibility still
+uses the governed threshold rules, while ranking uses the deterministic
+connector-owned **Vol Score**. Reset returns to the baseline generation.
 
 ### Data
 
@@ -101,38 +96,43 @@ raw underlying identity; Market uses its exact raw identity. The user can then
 choose Risk Type, Risk Greek, underlying, metric, and WTD/MTD/YTD/1Y/5Y/All/
 Custom dates.
 `Load history` snapshots those controls into one immutable request; changing a
-control alone does not scan the archive.
+control alone does not scan the archive. Quick handoffs are consumed once, so
+the controls remain editable after navigation.
 
 The returned bundle drives ProductSpec-shaped projection and slice controls,
-Date A/Date B comparison, the canonical plot, playback slider, and bounded
-selected-date details. The browser-side player advances that one canonical
-bundle. There is no default raw-history table or second raw payload. Loading
-status appears immediately while the single lazy read is running.
+Date A/Date B comparison, a canonical scalar/line/surface plot, and bounded
+selected-date details. The compact browser-side player supports static mode,
+play/pause, live slider dragging, and wheel scrubbing without another server
+query. There is no default raw-history table or second raw payload. Loading
+status appears immediately while the single history read is running.
 
 ### Stock
 
 Stock first paints an empty shell, then loads the latest connector comparison
-asynchronously. Current rows remain position-level and are never aggregated.
-They show CRDS, counterparty, portfolio and mapped static classifications,
-Quantity, `Stock` (current market value), and `dStock` (business-day change).
-Native table filters and the page-owned Activity/Signoff Group/Portfolio/
-Category/Sub Category filters remain available; the initial Activity scope is
-Activities 1-3 (including the fixture aliases).
+asynchronously. The five governed filters—Activity, Signoff Group, Portfolio,
+Category, and Sub Category—default to the same Activities 1-3 scope as Risk.
+A configurable chevron pivot defaults to Activity → Category (Bucket) → CRDS
+→ CPTY, with optional Currency/Product columns and `Stock`/`dStock` values.
+The underlying detail stays position-level and preserves portfolio and static
+metadata rather than aggregating it.
 
-Clicking a current row immediately selects its CRDS + Activity and loads the
-history chart on the same page. The same selection can be made manually with
-WTD/MTD/YTD/1Y/All/Custom controls and `Load history`. History is chart-only:
-it does not open another route or send a raw table to the browser.
+Clicking a CRDS/CPTY leaf loads its history chart on the same page. The same
+selection can be made manually with always-visible WTD/MTD/YTD/1Y/All/Custom
+controls. Period and custom-date changes update the selected history directly.
+History is chart-only: it does not open another route or send a raw history
+table to the browser.
 
 ### P&L
 
 One authoritative saved-filter row—Activity, Signoff Group, Portfolio,
-Category, and Sub Category—governs every P&L section. Aggregate P&L is always
-visible. Clicking a financial metric cell records its exact Risk
-Type, Risk Greek, dimension, and value, then renders inline daily Colossus and
-Predict history under the aggregate. The chart supports WTD/MTD/YTD/1Y/All/
-Custom and Both/Colossus/Predict; no separate Current/History workspace or raw
-history table remains.
+Category, and Sub Category—governs every P&L section. The page-owned review is
+Risk Type → Risk Greek → Underlying and carries **Today**, **MTD**, and **YTD**.
+It reads its historical summary when the P&L page is entered, independently of
+the Risk-page Aggregate P&L callback. Underlying children are bounded so a
+large Greek cannot send thousands of rows to the browser at once. Clicking an
+Underlying metric is the only action that reveals its inline Colossus/Predict
+history. The chart supports WTD/MTD/YTD/1Y/All/Custom and
+Both/Colossus/Predict; no raw history table remains.
 
 The lower workflow contains the current Send All, SOG editor, Portfolio editor,
 adjustment-save, and Validate P&L sections. Derived fields stay locked. Validate
@@ -150,14 +150,16 @@ Write is intentionally limited to:
 - `s08_concerto.csv`
 - `s09_reported.csv`
 
-The editable table provides Add row, Save, and Cancel. Save validates the
+The editable table provides Add row, editable cells, row deletion, column
+hiding, Save, and Cancel. Governed connector columns cannot be permanently
+deleted because doing so would make the source unreadable. Save validates the
 complete schema and domain invariants, writes a temporary file, and publishes
 it with an atomic replace. Cancel reloads the governed file.
 
 ## Runtime, status, and failure behavior
 
-Risk, Data, and P&L use the shared shell. Clear Cache sits beside the theme
-switch. The operational controls are:
+All five pages use the persistent shared shell. Clear Cache sits beside the
+theme switch. The operational controls are:
 
 - **Refresh Portfolios**, **Refresh Risk** (`Shift+F8`), and **Refresh PL**
   (`Shift+F9`), each with visible running/completion status.
@@ -174,20 +176,32 @@ switch. The operational controls are:
 Applied Commodity, Risk Checker, and date settings mirror the one committed
 process snapshot. Auto P&L alone is browser-local scheduling state.
 
-The first Risk or P&L paint schedules one process-owned background writer.
-Concurrent browsers follow the same attempt. Slow source work happens outside
-the reader lock, so every reader sees the previous immutable revision until
-the whole replacement is ready. A failed refresh is rejected transactionally:
-the UI keeps the last successful snapshot, reports one bounded warning, and
-offers retry. A watchdog can report a stalled attempt but never starts a
-duplicate writer. This is fail-closed at the financial boundary without
-closing or blanking the working application.
+A cold visit to any of the five routes starts or follows one process-owned
+background writer after the shell paints. Risk and P&L also schedule that same
+idempotent attempt from their page builders; direct Data, Stock, and Statics
+visits use the shared shell. Concurrent browsers follow the same attempt. Slow
+source work happens outside the reader lock, so every reader sees the previous
+immutable revision until the whole replacement is ready. A failed refresh is
+rejected transactionally: the UI keeps the last successful snapshot, reports
+one bounded warning, and offers retry. A watchdog can report a stalled attempt
+but never starts a duplicate writer. This is fail-closed at the financial
+boundary without closing or blanking the working application.
+`CUBE_STARTUP_TIMEOUT_SECONDS` changes that reporting threshold from its
+2,400-second default; it does not kill the connector call or start a replacement.
 
-`CUBE_LOG_LEVEL` selects the process log level (default `INFO`). Timed spans
-cover app build, refresh stages, preparation, filters, renders, and history
-queries. Performance logs use bounded structural fields; they do not log
-underlying identities or financial values. Warning deduplication prevents a
-single incident from flooding the page.
+On Plotly Starter, an inactive container can sleep. The platform wake-up is
+outside the Dash process and can make the first request look like a crash even
+though the application has no traceback. Once the container is awake, the
+fresh app import is kept free of data/archive I/O and is covered by the local
+startup budget. Moving to an always-on plan is the only way to eliminate the
+hosting sleep itself.
+
+`CUBE_LOG_LEVEL` selects the process log level (default `INFO`). Runtime timing
+covers app build, refresh stages, Stock current load, promotion recalculation,
+and Data/Stock/P&L history queries. The release benchmark separately times
+preparation, filtering, and Cross rendering. Performance logs use bounded
+structural fields; they do not log underlying identities or financial values.
+Warning deduplication prevents a single incident from flooding the page.
 
 ## Historical data and cache
 
@@ -211,12 +225,13 @@ and that fixture identifier intentionally do not change.
 
 Parquet is authoritative. DuckDB is an embedded query engine here, not a
 server: no service, credentials, or persistent database file are required.
-Each history owner opens an in-memory connection only after user interaction,
-builds views over the Parquet leaves, and pushes exact identity, date, and
-column predicates into the scan. Connections and distinct catalogues are
-reused while the archive-generation fingerprint is unchanged, then discarded
-after Clear Cache or an archive change. Query and canonical-cell budgets keep
-browser payloads bounded.
+Data and Stock open their in-memory history connections only after history is
+requested. P&L deliberately opens its own summary query when that page is
+entered so Today/MTD/YTD are immediately available; its leaf series remains
+click-driven. Every owner pushes exact identity, date, and column predicates
+into Parquet scans. Connections and distinct catalogues are reused while the
+archive-generation fingerprint is unchanged, then discarded after Clear Cache
+or an archive change. Query and browser-payload budgets keep results bounded.
 
 The owners are `ArchiveHistoryRepository`/`ArchiveSQLStore` for Data,
 `SQLStockHistoryRepository` for Stock, and `SQLPLHistoryRepository` for P&L.
@@ -231,7 +246,7 @@ The checked-in files document the live connector boundaries:
 |---|---|
 | `s01_readiness.csv` | Risk Type, Risk Greek, Age |
 | `s02_checker.csv` | Risk Type, Risk Greek, MMMFile, Product |
-| `s03_risk.csv` | Source Type, identity/tenors, Portfolio, Group, and the governed Risk/dRisk measure pairs |
+| `s03_risk.csv` | Source Type, identity/tenors, Portfolio, Group, connector-owned Vol Score, and governed Risk/dRisk measure pairs |
 | `s04_open.csv` | Source Type, identity/tenors and tenor order, Open |
 | `s05_current.csv` | Source Type, identity/tenors and tenor order, Current |
 | `s06_portfolios.csv` | unique Portfolio plus Product, Activity, SignoffGroup, Category, and optional Sub Category |
@@ -269,9 +284,10 @@ The financial invariants are:
 
 ## Ordered ownership tree
 
-Within each owned folder, `sNN_` gives the reading and dependency order. Files
-are deliberately small enough to have one important responsibility, while a
-page keeps its layout, callbacks, and page-only helpers together.
+Within each owned folder, `sNN_` gives a stable reading and ownership sequence;
+it is not a strict import dependency order. Files are deliberately small enough
+to have one important responsibility, while a page keeps its layout, callbacks,
+and page-only helpers together.
 
 ```text
 rebirth/
@@ -302,8 +318,7 @@ rebirth/
 │   ├── s07_governance.py      mapping and threshold validation
 │   ├── s08_pnl.py             P&L mapping/send/adjustment rules
 │   ├── s09_stock.py           Stock comparison and mapping
-│   ├── s10_search.py          exact Quick identity catalogue
-│   └── s11_riskviews.py       Cross/SplitVA view contracts
+│   └── s10_search.py          exact Quick identity catalogue
 ├── history/
 │   ├── s01_models.py          Data requests and canonical bundles
 │   ├── s02_contracts.py       archive schemas and manifests
@@ -322,7 +337,8 @@ rebirth/
 │   │   ├── s01_data.py        current comparison and filters
 │   │   ├── s02_history.py     lazy Stock SQL contract
 │   │   ├── s03_view.py        current table and inline history layout
-│   │   └── s04_callbacks.py   asynchronous current/history callbacks
+│   │   ├── s04_callbacks.py   asynchronous current/history callbacks
+│   │   └── s05_pivot.py       Stock chevron-pivot model
 │   ├── pnl/
 │   │   ├── s01_common.py      P&L page contracts
 │   │   ├── s02_editor.py      editor transformations
@@ -332,7 +348,8 @@ rebirth/
 │   │   ├── s06_validation.py  official comparison rules
 │   │   ├── s07_view.py        page and inline-history layout
 │   │   ├── s08_aggregate.py   mapped Aggregate P&L callbacks
-│   │   └── s09_drilldown.py   cell selection and inline chart callbacks
+│   │   ├── s09_drilldown.py   cell selection and inline chart callbacks
+│   │   └── s10_summary.py     bounded Today/MTD/YTD hierarchy
 │   ├── static_data/
 │   │   ├── s01_store.py       approved files, validation, atomic save
 │   │   ├── s02_view.py        Read/Write layout
@@ -350,13 +367,11 @@ rebirth/
 │       ├── s10_search.py      exact search callbacks
 │       ├── s11_promotion.py   immutable promotion model
 │       ├── s12_promotecallbacks.py promotion actions
-│       ├── s13_pivot.py       custom-pivot model and view
-│       ├── s14_pivotcallbacks.py custom-pivot actions
-│       ├── s15_workspacetables.py four-tab table builders
-│       ├── s16_workspacecallbacks.py four-tab callbacks
-│       ├── s17_refresh.py     runtime controls and progress
-│       ├── s18_view.py        Risk page composition
-│       └── s19_callbacks.py   Risk callback facade
+│       ├── s13_workspacetables.py four-tab table builders
+│       ├── s14_workspacecallbacks.py four-tab callbacks
+│       ├── s15_refresh.py     runtime controls and progress
+│       ├── s16_view.py        Risk page composition
+│       └── s17_callbacks.py   Risk callback facade
 ├── services/
 │   ├── s01_snapshots.py       immutable snapshot models
 │   ├── s02_state.py           atomic state and refresh manager
@@ -373,8 +388,8 @@ rebirth/
 
 The other ordered owners are:
 
-- `assets/s01_shell.css` through `s08_pivot.css`: shell, controls/tables, Risk,
-  P&L, responsive rules, visuals, history, and pivot styling.
+- `assets/s01_shell.css` through `s08_promotions.css`: shell, controls/tables,
+  Risk, P&L, responsive rules, visuals, history, and promotion styling.
 - `assets/s09_playback.js` through `s14_pnl.js`: Data playback, theme/Plotly,
   table interaction, refresh lifecycle, Risk interaction, and P&L cell
   selection.
@@ -447,47 +462,39 @@ Run the complete gate before a release:
 ```
 
 The benchmark is read-only. It audits a fresh-process import/app build for
-unexpected I/O, a spot refresh, prepare/filter/Cross/Custom operations on a
+unexpected I/O, a spot refresh, prepare/filter/Cross operations on a
 100,000-row and 500-portfolio fixture, and the first Risk, Market, Stock, and
 P&L queries across all 262 leaves. The enforced local regression budgets are
 2.0 s for app build, 2.0 s for spot refresh, 2.5 s for preparation, 0.5 s for
-filtering, 1.5 s for Cross, 1.0 s for a custom pivot, and 2.5/2.0/2.5/3.5 s for
-the first Risk/Market/Stock/P&L history queries. Absolute times remain
-hardware-dependent; a budget failure exits nonzero so the regression is
-visible.
+filtering, 1.5 s for Cross, and 2.5/2.0/2.5/3.5 s for the first
+Risk/Market/Stock/P&L history queries. Absolute times remain hardware-dependent;
+a budget failure exits nonzero so the regression is visible.
 
 `tools/s01_fixtures.py --check` validates the checked-in fixture without
 rewriting it. `tools/s02_archive.py` is the CLI form of the official archive
 boundary.
 
-## GitHub and Plotly cutover
+## GitHub and Plotly release
 
-V4.1 must be published as a new target, not rebound to the old V4 application.
-Create the new private GitHub repository first, then add a new remote without
-overwriting the historical remotes:
+This checkout publishes to the private `streamlitdash/Rebirth-V4.1` repository
+through the `rebirth-v4-1` remote and updates the existing Rebirth V4.1 Plotly
+application. Run the full gate, push the reviewed commit, then publish:
 
-```powershell
-git remote add rebirth-v4-1 <new-Rebirth-V4.1-private-repository-url>
-git push -u rebirth-v4-1 HEAD:main
-```
-
-Authenticate the Plotly Cloud CLI, run the full gate, then publish:
+- [GitHub repository](https://github.com/streamlitdash/Rebirth-V4.1)
+- [Live Plotly application](https://8d1e8451-d8ed-4e0b-ba89-bdaef442d5a1.plotly.app)
 
 ```powershell
 .\.venv\Scripts\python.exe publish.py
 .\.venv\Scripts\plotly.exe app status --verbose
+.\.venv\Scripts\plotly.exe app logs --type build
+.\.venv\Scripts\plotly.exe app logs --type runtime
 ```
 
-`plotly-cloud.toml` intentionally contains only `name = "rebirth-v4-1"`; it
-does not carry the old app ID or URL. `publish.py` first validates the exact
-262-day archive, stages only `app.py`, `gunicorn.conf.py`, `requirements.txt`,
-`rebirth/`, `assets/`, and `data/`, then recompresses only the staged Parquet
-copy before publishing. The governed source archive is never modified. Use
-`--keep-bundle <directory>` only when you also intend to publish and retain the
-staged runtime for inspection; it is not a dry run.
-
-After the first publish, record the new Plotly app ID and URL, then smoke-test a
-cold start, all five routes, both Data modes, Stock and P&L inline history,
-promotion recalculation, Statics validation, dark/light mode, and Clear Cache.
-Move users or integrations only after that check. Archive or delete the old V4
-deployment only after the new GitHub and Plotly targets are confirmed healthy.
+`publish.py` validates the exact 262-day archive, stages only `app.py`,
+`gunicorn.conf.py`, `requirements.txt`, `rebirth/`, `assets/`, and `data/`, then
+recompresses only the staged Parquet copy before publishing. The governed
+source archive is never modified. Use `--keep-bundle <directory>` only when you
+also intend to publish and retain the staged runtime for inspection; it is not
+a dry run. After publish, smoke-test a cold wake, all five routes, both Data
+modes, Stock and P&L inline history, promotion recalculation, Statics
+validation, dark/light mode, and Clear Cache.

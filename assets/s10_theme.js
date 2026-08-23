@@ -310,6 +310,16 @@
         "legend.font.color": palette.ink,
       };
       if (graph.layout.yaxis2) layoutUpdate.yaxis2 = themedAxis(graph.layout.yaxis2);
+      Object.keys(graph.layout).filter((key) => /^scene\d*$/.test(key)).forEach((key) => {
+        const scene = graph.layout[key] || {};
+        layoutUpdate[key] = {
+          ...scene,
+          bgcolor: palette.background,
+          xaxis: themedAxis(scene.xaxis),
+          yaxis: themedAxis(scene.yaxis),
+          zaxis: themedAxis(scene.zaxis),
+        };
+      });
       const update = window.Plotly.relayout(graph, layoutUpdate);
       update?.catch?.(() => {});
     });

@@ -27,7 +27,7 @@ from .s01_common import (
     metric_title,
 )
 from .s06_explorertables import build_small_table
-from .s15_workspacetables import build_new_trade_detail_table
+from .s13_workspacetables import build_new_trade_detail_table
 
 
 _DETAIL_LOGGER = logging.getLogger(__name__)

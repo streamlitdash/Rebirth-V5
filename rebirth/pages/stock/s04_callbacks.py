@@ -14,13 +14,26 @@ from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from rebirth.app.s02_contracts import RefreshManagerProtocol
 from rebirth.services.s04_savedviews import SavedFilterViewRepository
+from rebirth.ui.s03_filters import (
+    BASE_SAVED_VIEW_ID,
+    register_saved_filter_view_callbacks,
+    saved_view_request_id,
+    saved_view_request_matches_base,
+    saved_view_request_values,
+)
 
 from .s01_data import (
+    STOCK_DISPLAY_COLUMNS,
+    STOCK_FILTER_FIELDS,
+    STOCK_FILTER_IDS,
+    STOCK_SAVED_VIEW_CONTROLS,
     StockPageData,
-    default_stock_activities,
+    default_stock_filter_values,
     load_stock_page_data,
-    stock_activity_options,
     stock_display_rows,
+    stock_exclude_selected,
+    stock_filter_map,
+    stock_filter_options,
     stock_history_identities,
 )
 from .s02_history import (
@@ -31,7 +44,12 @@ from .s02_history import (
     normalize_stock_history_frame,
     stock_history_date_range,
 )
-from .s03_view import STOCK_PERIODS, stock_table_records
+from .s03_view import STOCK_PERIODS, stock_pivot_columns, stock_table_records
+from .s05_pivot import (
+    build_stock_pivot,
+    stock_pivot_row_payload,
+    toggle_stock_pivot_path,
+)
 
 
 def _stock_snapshot_key(token: object) -> tuple[int, str, str] | None:
@@ -57,9 +75,15 @@ def _selected_stock_row(active_cell: object) -> tuple[str, str]:
         values = json.loads(row_id)
     except json.JSONDecodeError as error:
         raise ValueError("The selected Stock row is invalid") from error
-    if not isinstance(values, list) or len(values) != 2:
+    if isinstance(values, Mapping):
+        if values.get("kind") != "history":
+            raise ValueError("Expand the branch and click a history-ready leaf")
+        crds = str(values.get("crds") or "").strip()
+        activity = str(values.get("activity") or "").strip()
+    elif isinstance(values, list) and len(values) == 2:
+        crds, activity = (str(value).strip() for value in values)
+    else:
         raise ValueError("The selected Stock row is invalid")
-    crds, activity = (str(value).strip() for value in values)
     if not crds or not activity:
         raise ValueError("The selected Stock row is invalid")
     return crds, activity
@@ -85,11 +109,16 @@ def register_callbacks(
     saved_view_repository: SavedFilterViewRepository,
     stock_history_source: Any | None = None,
 ) -> None:
-    """Register a small current-table flow and an isolated lazy history flow."""
+    """Register Stock-local filters, pivot state, and inline lazy history."""
 
-    del saved_view_repository
     if stock_source is None or stock_portfolio_source is None:
         return
+
+    register_saved_filter_view_callbacks(
+        app,
+        saved_view_repository,
+        STOCK_SAVED_VIEW_CONTROLS,
+    )
 
     cache_lock = Lock()
     cached_pages: dict[tuple[int, str, str], StockPageData] = {}
@@ -106,17 +135,11 @@ def register_callbacks(
 
     @app.callback(
         Output("stock-loaded-snapshot", "data"),
-        Output("stock-current-activity", "options"),
-        Output("stock-current-activity", "value"),
-        Output("stock-history-activity", "options"),
         Output("stock-load-status", "children"),
         Input("stock-load-trigger", "n_intervals"),
         Input("refresh-commit-revision", "children"),
         Input("clear-cache-complete-store", "data"),
         State("stock-date-store", "data"),
-        State("stock-current-activity", "value"),
-        State("stock-loaded-snapshot", "data"),
-        State("stock-request-scope", "data"),
         prevent_initial_call=True,
     )
     def load_current_stock(
@@ -124,9 +147,6 @@ def register_callbacks(
         _refresh_revision,
         _cache_generation,
         date_state,
-        selected_activities,
-        loaded_snapshot,
-        request_scope,
     ):
         """Load only the latest two Stock leaves and one mapping authority."""
 
@@ -141,13 +161,7 @@ def register_callbacks(
                 stock_history_source.clear()
 
         if not isinstance(date_state, Mapping):
-            return (
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-                "Stock dates are unavailable.",
-            )
+            return no_update, "Stock dates are unavailable."
         current_date = date_state.get("current_date")
         prior_date = date_state.get("prior_date")
         revision = committed_revision()
@@ -155,17 +169,10 @@ def register_callbacks(
             "revision": revision,
             "current_date": str(current_date),
             "prior_date": str(prior_date),
-            "request_scope": str(request_scope or "stock-unscoped"),
         }
         key = _stock_snapshot_key(token)
         if key is None:
-            return (
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-                "Stock dates are invalid.",
-            )
+            return no_update, "Stock dates are invalid."
 
         started = perf_counter()
         try:
@@ -184,24 +191,8 @@ def register_callbacks(
                         cached_pages.pop(next(iter(cached_pages)))
         except Exception as error:
             app.logger.exception("Could not load current Stock")
-            return (
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-                f"Stock could not be loaded: {error}",
-            )
+            return no_update, f"Stock could not be loaded: {error}"
 
-        options = stock_activity_options(page_data.mapped_stock)
-        available = {str(option["value"]) for option in options}
-        if _stock_snapshot_key(loaded_snapshot) is None:
-            selected = default_stock_activities(page_data.mapped_stock)
-        else:
-            selected = [
-                str(value)
-                for value in (selected_activities or ())
-                if str(value) in available
-            ]
         elapsed_ms = (perf_counter() - started) * 1_000
         current_rows = len(stock_display_rows(page_data.mapped_stock))
         app.logger.info(
@@ -210,46 +201,221 @@ def register_callbacks(
             elapsed_ms,
             revision,
         )
-        return (
-            token,
-            options,
-            selected,
-            options,
-            (
-                f"As of {page_data.current_date.date().isoformat()} · "
-                f"{current_rows:,} positions · {elapsed_ms:.0f} ms"
-            ),
+        return token, (
+            f"As of {page_data.current_date.date().isoformat()} · "
+            f"{current_rows:,} positions · {elapsed_ms:.0f} ms"
         )
+
+    filter_outputs = [
+        output
+        for field in STOCK_FILTER_FIELDS
+        for output in (
+            Output(STOCK_FILTER_IDS[field.key], "options"),
+            Output(STOCK_FILTER_IDS[field.key], "value"),
+        )
+    ]
+
+    @app.callback(
+        *filter_outputs,
+        Output(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
+        Output("stock-filter-ready", "data"),
+        Input("stock-loaded-snapshot", "data"),
+        Input(STOCK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
+        Input("clear-cache-complete-store", "data"),
+        *[State(STOCK_FILTER_IDS[field.key], "value") for field in STOCK_FILTER_FIELDS],
+        State(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
+        State(STOCK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
+        State("stock-filter-ready", "data"),
+        prevent_initial_call=True,
+    )
+    def update_stock_filters(
+        loaded_snapshot,
+        saved_view_request,
+        _cache_generation,
+        *state,
+    ):
+        """Own all five filter values and apply Base Review exactly once."""
+
+        page_data = cached_page(loaded_snapshot)
+        selected_values = list(state[: len(STOCK_FILTER_FIELDS)])
+        exclude_value = list(state[len(STOCK_FILTER_FIELDS)] or [])
+        applied_request = state[len(STOCK_FILTER_FIELDS) + 1]
+        ready = bool(state[len(STOCK_FILTER_FIELDS) + 2])
+        if page_data is None:
+            result: list[object] = []
+            for selected in selected_values:
+                result.extend(([], list(selected or [])))
+            return (*result, exclude_value, ready)
+
+        try:
+            trigger = ctx.triggered_id
+        except MissingCallbackContextException:
+            trigger = None
+        request_id = saved_view_request_id(saved_view_request)
+        pending = bool(request_id and request_id != applied_request)
+        matches_base = False
+        if pending:
+            try:
+                matches_base = saved_view_request_matches_base(
+                    saved_view_request,
+                    STOCK_SAVED_VIEW_CONTROLS,
+                    selected_values,
+                    exclude_value,
+                )
+            except ValueError:
+                matches_base = False
+        apply_pending = pending and (
+            trigger == STOCK_SAVED_VIEW_CONTROLS.apply_request_id or matches_base
+        )
+        if apply_pending:
+            try:
+                requested = saved_view_request_values(
+                    saved_view_request,
+                    STOCK_SAVED_VIEW_CONTROLS,
+                )
+            except ValueError:
+                requested = None
+            if requested is not None:
+                requested_values, exclude_value = requested
+                selected_values = [list(values) for values in requested_values]
+
+        use_base = (
+            not ready
+            or trigger == "clear-cache-complete-store"
+            or (
+                apply_pending
+                and isinstance(saved_view_request, Mapping)
+                and saved_view_request.get("view_id") == BASE_SAVED_VIEW_ID
+            )
+        )
+        if use_base:
+            defaults = default_stock_filter_values(page_data.mapped_stock)
+            selected_values = [defaults[field.key] for field in STOCK_FILTER_FIELDS]
+            exclude_value = []
+
+        selected_map = stock_filter_map(selected_values)
+        options, valid = stock_filter_options(page_data.mapped_stock, selected_map)
+        result = []
+        for field in STOCK_FILTER_FIELDS:
+            result.extend((options[field.key], valid[field.key]))
+        return (*result, exclude_value, True)
 
     @app.callback(
         Output("stock-current-table", "data"),
+        Output("stock-current-table", "columns"),
+        Output("stock-position-detail-table", "data"),
         Output("stock-row-count", "children"),
         Output("stock-mapped-count", "children"),
         Output("stock-unmapped-count", "children"),
         Output("stock-history-crds", "options"),
+        Output("stock-history-activity", "options"),
         Input("stock-loaded-snapshot", "data"),
-        Input("stock-current-activity", "value"),
+        *[Input(STOCK_FILTER_IDS[field.key], "value") for field in STOCK_FILTER_FIELDS],
+        Input(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
+        Input("stock-pivot-rows", "value"),
+        Input("stock-pivot-column", "value"),
+        Input("stock-pivot-values", "value"),
+        Input("stock-pivot-open-paths", "data"),
         prevent_initial_call=True,
     )
-    def render_current_stock(loaded_snapshot, selected_activities):
-        """Filter the cached row-level projection without another source read."""
+    def render_current_stock(loaded_snapshot, *values):
+        """Rebuild the pivot and exact row detail from one cached comparison."""
 
         page_data = cached_page(loaded_snapshot)
+        filter_values = values[: len(STOCK_FILTER_FIELDS)]
+        offset = len(STOCK_FILTER_FIELDS)
+        exclude_value, pivot_rows, pivot_column, pivot_values, open_paths = values[
+            offset:
+        ]
         if page_data is None:
-            return [], "Rows: 0", "Mapped: 0", "Unmapped: 0", []
-        display = stock_display_rows(page_data.mapped_stock, selected_activities)
+            empty = pd.DataFrame(columns=list(STOCK_DISPLAY_COLUMNS))
+            pivot = build_stock_pivot(
+                empty,
+                row_fields=pivot_rows,
+                column_field=pivot_column,
+                value_fields=pivot_values,
+                open_paths=open_paths,
+            )
+            return (
+                [],
+                stock_pivot_columns(pivot.columns),
+                [],
+                "Rows: 0",
+                "Mapped: 0",
+                "Unmapped: 0",
+                [],
+                [],
+            )
+        display = stock_display_rows(
+            page_data.mapped_stock,
+            dimension_filters=stock_filter_map(filter_values),
+            exclude_selected=stock_exclude_selected(exclude_value),
+        )
+        pivot = build_stock_pivot(
+            display,
+            row_fields=pivot_rows,
+            column_field=pivot_column,
+            value_fields=pivot_values,
+            open_paths=open_paths,
+        )
+        try:
+            trigger = ctx.triggered_id
+        except MissingCallbackContextException:
+            trigger = None
+        if trigger in {
+            "stock-pivot-open-paths",
+            "stock-pivot-rows",
+            "stock-pivot-column",
+            "stock-pivot-values",
+        }:
+            return (
+                pivot.records,
+                stock_pivot_columns(pivot.columns),
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
         all_rows = stock_display_rows(page_data.mapped_stock)
         crds_values = sorted(
             all_rows["CRDS"].astype(str).unique().tolist(), key=str.casefold
         )
+        activity_values = sorted(
+            all_rows["Activity"].astype(str).unique().tolist(), key=str.casefold
+        )
         mapped = int(display["Portfolio Mapped"].eq(True).sum())
         return (
+            pivot.records,
+            stock_pivot_columns(pivot.columns),
             stock_table_records(display),
             f"Rows: {len(display):,} of {len(all_rows):,}",
             f"Mapped: {mapped:,}",
             f"Unmapped: {len(display) - mapped:,}",
             [{"label": value, "value": value} for value in crds_values],
+            [{"label": value, "value": value} for value in activity_values],
         )
+
+    @app.callback(
+        Output("stock-pivot-open-paths", "data"),
+        Output("stock-current-table", "active_cell"),
+        Input("stock-current-table", "active_cell"),
+        State("stock-pivot-open-paths", "data"),
+        prevent_initial_call=True,
+    )
+    def toggle_stock_branch(active_cell, open_paths):
+        if not isinstance(active_cell, Mapping):
+            raise PreventUpdate
+        if active_cell.get("column_id") != "Hierarchy":
+            raise PreventUpdate
+        try:
+            payload = stock_pivot_row_payload(active_cell.get("row_id"))
+        except ValueError as error:
+            raise PreventUpdate from error
+        if payload.get("kind") != "branch":
+            raise PreventUpdate
+        return toggle_stock_pivot_path(open_paths, payload["path"]), None
 
     @app.callback(
         Output("stock-history-crds", "value"),
@@ -262,7 +428,10 @@ def register_callbacks(
     def select_stock_row(active_cell, loaded_snapshot):
         """Prefill the inline controls and request history for one clicked row."""
 
-        crds, activity = _selected_stock_row(active_cell)
+        try:
+            crds, activity = _selected_stock_row(active_cell)
+        except ValueError as error:
+            raise PreventUpdate from error
         page_data = cached_page(loaded_snapshot)
         if page_data is None or not stock_history_identities(
             page_data.mapped_stock,
@@ -317,11 +486,11 @@ def register_callbacks(
         Input("stock-history-autoload", "data"),
         Input("stock-history-load-button", "n_clicks"),
         Input("clear-cache-complete-store", "data"),
+        Input("stock-history-period", "data"),
+        Input("stock-history-date-range", "start_date"),
+        Input("stock-history-date-range", "end_date"),
         State("stock-history-crds", "value"),
         State("stock-history-activity", "value"),
-        State("stock-history-period", "data"),
-        State("stock-history-date-range", "start_date"),
-        State("stock-history-date-range", "end_date"),
         State("stock-loaded-snapshot", "data"),
         prevent_initial_call=True,
         running=[(Output("stock-history-load-button", "disabled"), True, False)],
@@ -330,11 +499,11 @@ def register_callbacks(
         autoload,
         load_clicks,
         _cache_generation,
-        crds,
-        activity,
         period,
         custom_start,
         custom_end,
+        crds,
+        activity,
         loaded_snapshot,
     ):
         """Read archive rows only after a row click or explicit Load."""
@@ -353,6 +522,14 @@ def register_callbacks(
             activity = autoload.get("activity")
         elif trigger == "stock-history-load-button" and int(load_clicks or 0) <= 0:
             raise PreventUpdate
+        elif trigger in {
+            "stock-history-period",
+            "stock-history-date-range",
+        }:
+            if not crds or not activity:
+                raise PreventUpdate
+            if trigger == "stock-history-date-range" and str(period) != "custom":
+                raise PreventUpdate
 
         page_data = cached_page(loaded_snapshot)
         if page_data is None:

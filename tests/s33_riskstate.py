@@ -1,4 +1,4 @@
-"""Rebirth V4.1 Risk defaults, promotions, and Custom View contracts."""
+"""Rebirth V4.1 Risk defaults and explicit-promotion contracts."""
 
 from __future__ import annotations
 
@@ -7,12 +7,6 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from rebirth.domain.s11_riskviews import (
-    CROSS_PIVOT_SPEC,
-    SPLITVA_PIVOT_SPEC,
-    PivotSpec,
-    RiskViewRepository,
-)
 from rebirth.pages.risk.s03_defaults import (
     DEFAULT_RISK_FILTER_LABEL,
     default_risk_filter_values,
@@ -21,7 +15,6 @@ from rebirth.pages.risk.s03_defaults import (
 from rebirth.pages.risk.s11_promotion import (
     PromotionBasis,
     PromotionGeneration,
-    apply_promotion_local_filters,
     apply_promotion_generation,
     baseline_promotion_generation,
     calculate_current_view_promotion,
@@ -126,54 +119,4 @@ def test_manual_promotion_is_immutable_and_revision_bound() -> None:
         filters=_filters(portfolio=["BOOK-A"]),
     )
     assert promotion_basis_is_stale(generation, changed_basis)
-
-
-def test_promotion_basis_includes_the_applied_custom_local_filter() -> None:
-    basis = PromotionBasis.build(
-        9,
-        risk_type="IR",
-        ir_family="delta",
-        splits=["Risk"],
-        filters=_filters(),
-        local_filters={"reported underlying": ["USD-SOFR"]},
-    )
-    restored = PromotionBasis.from_dict(basis.to_dict())
-    frame = pd.DataFrame(
-        {
-            "reported underlying": ["USD-SOFR", "EUR-ESTR"],
-            "risk": [10.0, 20.0],
-        }
-    )
-
-    assert restored == basis
-    assert apply_promotion_local_filters(frame, dict(basis.local_filters))[
-        "risk"
-    ].tolist() == [10.0]
-    assert "Reported Underlying: USD-SOFR" in promotion_basis_summary(basis)
-
-
-def test_custom_risk_view_repository_is_separate_and_validated(tmp_path) -> None:
-    repository = RiskViewRepository(tmp_path / "risk_views")
-    cross = repository.clone_builtin("cross", "Morning Cross")
-    split = repository.clone_builtin("splitva", "Desk SplitVA")
-
-    assert cross.pivot == CROSS_PIVOT_SPEC
-    assert split.pivot == SPLITVA_PIVOT_SPEC
-    assert [view.name for view in repository.list()] == [
-        "Desk SplitVA",
-        "Morning Cross",
-    ]
-
-    edited_payload = CROSS_PIVOT_SPEC.to_dict()
-    edited_payload["display"]["row_limit"] = 100
-    edited = repository.update(cross.identifier, edited_payload)
-    assert edited.pivot.row_limit == 100
-    renamed = repository.rename(edited.identifier, "Afternoon Cross")
-    assert renamed.name == "Afternoon Cross"
-    assert repository.delete(split.identifier) == split
-    assert [view.name for view in repository.list()] == ["Afternoon Cross"]
-
-    invalid = CROSS_PIVOT_SPEC.to_dict()
-    invalid["rows"] = ["financial frame"]
-    with pytest.raises(ValueError, match="unsupported fields"):
-        PivotSpec.from_dict(invalid)
+    assert "Portfolio: BOOK-A" in promotion_basis_summary(changed_basis)

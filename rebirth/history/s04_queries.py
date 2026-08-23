@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
@@ -906,27 +905,8 @@ def clear_archive_caches() -> None:
     _load_stock_leaf_cached.cache_clear()
 
 
-def build_market_history_loader(
-    root: str | Path,
-) -> Callable[[str, str, str], pd.DataFrame]:
-    """Bind a shared history root for dependency injection into Quick Market."""
-
-    resolved_root = Path(root).expanduser().resolve()
-
-    def load(risk_type: str, risk_greek: str, underlying: str) -> pd.DataFrame:
-        return load_market_history_for_identity(
-            resolved_root,
-            risk_type,
-            risk_greek,
-            underlying,
-        )
-
-    return load
-
-
 __all__ = [
     "build_history_portfolio_authority",
-    "build_market_history_loader",
     "clear_archive_caches",
     "load_full_market_history_for_identity",
     "load_market_history_for_identity",

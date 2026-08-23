@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from numbers import Integral
+from uuid import uuid4
 
 from dash import Dash, Input, Output, State, ctx, no_update
 
@@ -91,6 +92,15 @@ def build_history_handoff(
     )
 
 
+def _handoff_payload(handoff: HistoryHandoff, kind: str) -> dict[str, object]:
+    """Give every navigation a fresh identity, even after a page remount."""
+
+    return {
+        "handoff": handoff.to_mapping(),
+        "nonce": f"{kind}-{handoff.source_revision}-{uuid4().hex}",
+    }
+
+
 def register_callbacks(
     app: Dash,
     refresh_manager: RefreshManagerProtocol | None,
@@ -121,9 +131,9 @@ def register_callbacks(
         Output("quick-market-data-status", "children"),
         Input("quick-search-open-data", "n_clicks"),
         Input("quick-market-open-data", "n_clicks"),
-        State("quick-search-combine-udl", "value"),
+        Input("quick-search-combine-udl", "value"),
+        Input("quick-market-combine-udl", "value"),
         State("quick-search-identity-mode", "value"),
-        State("quick-market-combine-udl", "value"),
         State("split-filter", "value"),
         State("risk-filter-exclude-selected", "value"),
         *dimension_states,
@@ -134,14 +144,18 @@ def register_callbacks(
         _risk_clicks,
         _market_clicks,
         risk_identity,
-        risk_identity_mode,
         market_identity,
+        risk_identity_mode,
         selected_splits,
         exclude_value,
         *state_values,
     ):
         if refresh_manager is None:
             return no_update, no_update, "Data history is unavailable.", no_update
+        if ctx.triggered_id == "quick-search-combine-udl":
+            return no_update, no_update, "", no_update
+        if ctx.triggered_id == "quick-market-combine-udl":
+            return no_update, no_update, no_update, ""
         reset_generation = state_values[-1]
         dimension_values = state_values[:-1]
         kind = "market" if ctx.triggered_id == "quick-market-open-data" else "risk"
@@ -172,9 +186,10 @@ def register_callbacks(
                 return no_update, no_update, no_update, message
             return no_update, no_update, message, no_update
         message = "Opening exact history…"
+        payload = _handoff_payload(handoff, kind)
         if kind == "market":
-            return handoff.to_mapping(), data_href, no_update, message
-        return handoff.to_mapping(), data_href, message, no_update
+            return payload, data_href, no_update, message
+        return payload, data_href, message, no_update
 
 
 __all__ = [

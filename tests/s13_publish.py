@@ -67,7 +67,9 @@ def test_project_release_boundary_is_conventional_and_v41_owned() -> None:
     for relative_path in (*publishing.RUNTIME_FILES, *publishing.RUNTIME_DIRECTORIES):
         assert (publishing.PROJECT / relative_path).exists()
     assert tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8")) == {
-        "name": "rebirth-v4-1"
+        "name": "rebirth-v4-1",
+        "app_id": "bd0ffe87-8003-4157-a54f-3d69fd601891",
+        "app_url": "8d1e8451-d8ed-4e0b-ba89-bdaef442d5a1",
     }
 
 

@@ -7,12 +7,12 @@ from typing import Any
 from dash import Input, Output, State, ctx, html
 
 from .s01_store import STATIC_FILE_LABELS, StaticDataStore
-from .s02_view import build_static_data_table
+from .s02_view import _editable_columns, build_static_data_table
 
 
 def _editable_payload(store: StaticDataStore, file_key: object):
     frame = store.read(file_key)
-    columns = [{"name": column, "id": column} for column in frame.columns]
+    columns = _editable_columns(list(frame.columns))
     return columns, frame.to_dict("records")
 
 
@@ -27,9 +27,9 @@ def register_callbacks(app: Any, *, store: StaticDataStore | None = None) -> Non
         Input("static-data-mode", "value"),
     )
     def switch_static_mode(mode):
-        return (
-            ({"display": "none"}, {}) if mode == "write" else ({}, {"display": "none"})
-        )
+        visible = {"display": "block"}
+        hidden = {"display": "none"}
+        return (hidden, visible) if mode == "write" else (visible, hidden)
 
     @app.callback(
         Output("static-data-table-container", "children"),
@@ -78,7 +78,7 @@ def register_callbacks(app: Any, *, store: StaticDataStore | None = None) -> Non
                 saved = static_store.write(selected_file, rows or [], names)
                 label = STATIC_FILE_LABELS.get(str(selected_file), str(selected_file))
                 return (
-                    [{"name": name, "id": name} for name in saved.columns],
+                    _editable_columns(list(saved.columns)),
                     saved.to_dict("records"),
                     f"Saved {label} atomically ({len(saved):,} rows). Refresh the "
                     "affected data source when you are ready to commit it to the app.",

@@ -63,6 +63,7 @@ from rebirth.domain.s02_products import (
     SOURCE_TYPE,
     SPLIT,
     UNDERLYING,
+    VOL_SCORE,
     DataFrameSource,
     GovernanceSource,
     PortfolioConfigSource,
@@ -402,6 +403,14 @@ def merge_config(
 
 
 def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    # Ordinary product rows already passed the strict connector boundary.
+    # Supplemental New Trades/XGAMMA rows have no connector-owned Vol Score,
+    # so they remain neutral rather than inheriting a position's score.
+    if VOL_SCORE not in frame:
+        frame[VOL_SCORE] = 0.0
+    else:
+        frame[VOL_SCORE] = pd.to_numeric(frame[VOL_SCORE], errors="coerce").fillna(0.0)
     _require_columns(
         frame,
         [
@@ -428,6 +437,7 @@ def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
             MARKET_DATA_STATUS,
             PROMOTION_REASON,
             PROMOTION_SCORE,
+            VOL_SCORE,
             RISK_THRESHOLD,
             DRISK_THRESHOLD,
             PL_THRESHOLD,
@@ -452,6 +462,7 @@ def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
         PORTFOLIO_MAPPED,
         PROMOTION_REASON,
         PROMOTION_SCORE,
+        VOL_SCORE,
         RISK_THRESHOLD,
         DRISK_THRESHOLD,
         PL_THRESHOLD,
@@ -504,6 +515,7 @@ def _validate_dashboard_release(frame: pd.DataFrame) -> None:
         PL,
         MARKET_MOVE,
         PROMOTION_SCORE,
+        VOL_SCORE,
         *threshold_columns,
     ]
     required_columns = [

@@ -29,9 +29,11 @@ def _imports(path: Path) -> set[str]:
 def test_pnl_shell_and_send_editor_layout_have_distinct_owners() -> None:
     pnl = PAGES / "pnl"
     shell = (pnl / "s07_view.py").read_text(encoding="utf-8")
+    summary = (pnl / "s10_summary.py").read_text(encoding="utf-8")
     send = (pnl / "s04_sender.py").read_text(encoding="utf-8")
     assert "def build_pl_page" in shell
-    assert "def build_pl_aggregate_table" in shell
+    assert "def _pl_aggregate_section" in shell
+    assert "def build_pl_summary_table" in summary
     assert "def build_pl_send_sections" not in shell
     assert "def build_pl_send_sections" in send
     assert "def _editor_table" in send
@@ -64,6 +66,10 @@ def test_stock_projection_history_view_and_callbacks_have_page_owners() -> None:
             "def load_current_stock",
             "def render_current_stock",
             "def load_stock_history",
+        ),
+        "s05_pivot.py": (
+            "class StockPivotResult",
+            "def build_stock_pivot",
         ),
     }
     for filename, symbols in expected_symbols.items():

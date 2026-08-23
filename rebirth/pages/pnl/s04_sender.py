@@ -212,7 +212,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details | html.Section]:
                             "Send All P&L",
                             id="send-all-pl-button",
                             n_clicks=0,
-                            className="pl-action-send",
+                            className="action-button pl-action-send",
                             type="button",
                         ),
                         html.Div(
@@ -311,19 +311,19 @@ def build_pl_send_sections() -> list[html.Div | html.Details | html.Section]:
                                 "Add row",
                                 id="add-sog-pl-row",
                                 n_clicks=0,
-                                className="pl-action-secondary",
+                                className="action-button action-secondary",
                             ),
                             html.Button(
                                 "Save Adjustments",
                                 id="save-sog-adjustments-button",
                                 n_clicks=0,
-                                className="pl-action-primary",
+                                className="action-button action-primary",
                             ),
                             html.Button(
                                 "Send SOG PL",
                                 id="send-sog-pl-button",
                                 n_clicks=0,
-                                className="pl-action-send",
+                                className="action-button pl-action-send",
                             ),
                         ],
                         className="pl-send-actions",
@@ -426,19 +426,19 @@ def build_pl_send_sections() -> list[html.Div | html.Details | html.Section]:
                                 "Add row",
                                 id="add-portfolio-pl-row",
                                 n_clicks=0,
-                                className="pl-action-secondary",
+                                className="action-button action-secondary",
                             ),
                             html.Button(
                                 "Save Adjustments",
                                 id="save-portfolio-adjustments-button",
                                 n_clicks=0,
-                                className="pl-action-primary",
+                                className="action-button action-primary",
                             ),
                             html.Button(
                                 "Send Portfolio PL",
                                 id="send-portfolio-pl-button",
                                 n_clicks=0,
-                                className="pl-action-send",
+                                className="action-button pl-action-send",
                             ),
                         ],
                         className="pl-send-actions",
@@ -462,11 +462,11 @@ def build_pl_send_sections() -> list[html.Div | html.Details | html.Section]:
     validate_pl = build_validate_pl_section()
     explorer = html.Section(
         [
-            html.H2("P&L Explorer", className="static-data-page-title"),
+            html.H2("P&L Explorer", className="page-title"),
             html.P(
                 "The page filter also governs Validate P&L and History. Missing "
                 "Predict or Colossus values remain unavailable rather than zero.",
-                className="static-data-page-note",
+                className="page-note",
             ),
             validate_pl,
         ],
@@ -475,8 +475,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details | html.Section]:
     )
     state = html.Div(
         [
-            dcc.Store(id="pl-send-sog-effective-store", data={}),
-            dcc.Store(id="pl-send-portfolio-effective-store", data={}),
+            dcc.Store(id="pl-send-effective-query-store", data={}),
             dcc.Store(id="pl-send-sog-drafts-store", data={}),
             dcc.Store(id="pl-send-portfolio-drafts-store", data={}),
             dcc.Store(id="pl-send-sog-active-scope-store", data={}),

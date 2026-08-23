@@ -43,6 +43,7 @@ def register_callbacks(
     register_pl_aggregate_callbacks(
         app,
         refresh_manager,
+        history_source=config.history_source if config is not None else None,
         prepared_frame_loader=prepared_frame_loader,
         saved_view_controls=saved_view_controls,
     )

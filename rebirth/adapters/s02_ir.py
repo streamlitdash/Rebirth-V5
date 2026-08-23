@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from rebirth.domain.s02_products import ProductConnectorAdapter
+from rebirth.domain.s02_products import VOL_SCORE, ProductConnectorAdapter
 from rebirth.domain.s01_schema import (
     TENOR_OPTION,
     TENOR_OPTION_ORDER,
@@ -22,6 +22,7 @@ IR_DELTA_RISK = (
     "Group",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 IR_DELTA_OPEN = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Open")
 IR_DELTA_CURRENT = ("Underlying", TENOR_SWAP, TENOR_SWAP_ORDER, "Current")
@@ -34,6 +35,7 @@ IR_DELTAVEGA_RISK = (
     "Group",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 IR_DELTAVEGA_OPEN = (
     "Underlying",

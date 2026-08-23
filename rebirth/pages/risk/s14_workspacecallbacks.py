@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any, Sequence
 
-import pandas as pd
 from dash import ALL, Dash, Input, Output, State, ctx, html, no_update
 from dash.exceptions import PreventUpdate
 
@@ -14,19 +13,13 @@ from rebirth.ui.s04_components import build_aggregate_pl_table
 from rebirth.ui.s01_constants import (
     RISK_TYPE_ORDER,
 )
-from rebirth.app.s02_contracts import (
-    MarketHistoryLoaderProtocol,
-    RefreshManagerProtocol,
-)
+from rebirth.app.s02_contracts import RefreshManagerProtocol
 
 from .s01_common import quick_risk_filter_map, reporting_filter_map
 from .s11_promotion import PROMOTION_GENERATION_STORE_ID, apply_promotion_generation
 from .s09_quickmarket import (
     QUICK_MARKET_DEFAULT_INDEX,
-    build_quick_market_history_result,
     build_quick_market_result,
-    quick_market_history_cell_state,
-    quick_market_history_identity,
 )
 from .s10_search import (
     _combine_udl_dropdown_options,
@@ -36,7 +29,7 @@ from .s02_state import (
     _RiskDataCache,
     risk_exclude_selected,
 )
-from .s15_workspacetables import build_top_promotions_table
+from .s13_workspacetables import build_top_promotions_table
 
 
 def register_workspace_callbacks(
@@ -45,8 +38,6 @@ def register_workspace_callbacks(
     cache: _RiskDataCache,
     dimension_filter_ids: Sequence[str],
     dimension_filter_inputs: Sequence[Any],
-    *,
-    market_history_loader: MarketHistoryLoaderProtocol | None = None,
 ) -> None:
     """Register the four Risk workspace tabs and their lazy searches."""
 
@@ -55,7 +46,6 @@ def register_workspace_callbacks(
         Output("aggregate-pl-grid", "children"),
         Input("aggregate-pl-dimension", "value"),
         Input("data-revision-store", "data"),
-        Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
         Input({"type": "aggregate-row-toggle", "risk_type": ALL}, "n_clicks"),
         Input("split-filter", "value"),
         *dimension_filter_inputs,
@@ -65,7 +55,6 @@ def register_workspace_callbacks(
     def reduce_and_render_aggregate_pl(
         dimension,
         _data_revision,
-        promotion_generation,
         row_clicks,
         selected_splits,
         *values,
@@ -109,7 +98,6 @@ def register_workspace_callbacks(
             selected_splits,
             reporting_filter_map(dimension_values),
             exclude_selected=risk_exclude_selected(exclude_value),
-            promotion_generation=promotion_generation,
         )
 
         return (
@@ -125,7 +113,6 @@ def register_workspace_callbacks(
         Output("top-promotions-grid", "children"),
         Output("top-promotions-status", "children"),
         Input("risk-workspace-tabs", "value"),
-        Input("top-promotions-rank-by", "value"),
         Input("data-revision-store", "data"),
         Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
         Input("split-filter", "value"),
@@ -134,7 +121,6 @@ def register_workspace_callbacks(
     )
     def render_top_promotions(
         active_workspace,
-        rank_by,
         data_revision,
         promotion_generation,
         selected_splits,
@@ -165,7 +151,6 @@ def register_workspace_callbacks(
             active_generation,
             revision=revision,
         )
-        selected_rank = str(rank_by or "score")
         cache_key = json.dumps(
             {
                 "revision": revision,
@@ -175,7 +160,6 @@ def register_workspace_callbacks(
                     and active_generation.kind == "current-view"
                     else None
                 ),
-                "rank_by": selected_rank,
                 "splits": sorted(selected_splits or []),
                 "filters": {
                     key: sorted(selected or [])
@@ -189,7 +173,7 @@ def register_workspace_callbacks(
         )
         table = cache.rendered(
             cache_key,
-            lambda: build_top_promotions_table(filtered, rank_by=selected_rank),
+            lambda: build_top_promotions_table(filtered),
         )
         generation_label = (
             "Current-view promotion generation"
@@ -211,15 +195,26 @@ def register_workspace_callbacks(
             Input("data-revision-store", "data"),
             Input("quick-search-identity-mode", "value"),
             Input("quick-search-combine-udl", "search_value"),
+            Input("split-filter", "value"),
+            Input("risk-filter-exclude-selected", "value"),
+            *dimension_filter_inputs,
             State("quick-search-combine-udl", "value"),
             prevent_initial_call=False,
         )
         def load_combine_udl_options(
-            active_workspace, _revision, identity_mode, search_value, current_value
+            active_workspace,
+            _revision,
+            identity_mode,
+            search_value,
+            selected_splits,
+            exclude_value,
+            *values,
         ):
             if active_workspace != "quick-risk":
                 return no_update, no_update
             selected_mode = str(identity_mode or "reported").strip().casefold()
+            dimension_values = values[: len(dimension_filter_ids)]
+            current_value = values[len(dimension_filter_ids)]
 
             try:
                 options = _combine_udl_dropdown_options(
@@ -228,6 +223,11 @@ def register_workspace_callbacks(
                         identity_mode=selected_mode,
                         limit=100,
                         include=(str(current_value) if current_value else None),
+                        risk_filters=quick_risk_filter_map(
+                            selected_splits,
+                            dimension_values,
+                        ),
+                        exclude_selected=risk_exclude_selected(exclude_value),
                     )
                 )
             except (
@@ -330,15 +330,11 @@ def register_workspace_callbacks(
             Output("quick-market-view", "value"),
             Output("quick-market-view", "options"),
             Output("quick-market-surface-metric", "options"),
-            Output("quick-market-history-cell", "options"),
-            Output("quick-market-history-cell", "value"),
-            Output("quick-market-history-cell", "disabled"),
             Input("quick-market-combine-udl", "value"),
             Input("quick-market-view", "value"),
             Input("quick-market-surface-metric", "value"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
-            State("quick-market-history-cell", "value"),
             prevent_initial_call=True,
         )
         def render_market_search(
@@ -347,14 +343,10 @@ def register_workspace_callbacks(
             surface_metric,
             active_workspace,
             _revision,
-            requested_history_cell,
         ):
             if active_workspace != "quick-market":
                 return (
                     None,
-                    no_update,
-                    no_update,
-                    no_update,
                     no_update,
                     no_update,
                     no_update,
@@ -369,9 +361,6 @@ def register_workspace_callbacks(
                     no_update,
                     no_update,
                     no_update,
-                    [],
-                    None,
-                    True,
                 )
             try:
                 result = refresh_manager.pivot_market_exact(
@@ -397,20 +386,11 @@ def register_workspace_callbacks(
                         revision=int(result.revision),
                     )
                 )
-                history_options, history_cell, history_disabled = (
-                    quick_market_history_cell_state(
-                        result.frame,
-                        str(requested_history_cell or "") or None,
-                    )
-                )
                 return (
                     rendered,
                     resolved,
                     options,
                     surface_options,
-                    history_options,
-                    history_cell,
-                    history_disabled,
                 )
             except (
                 AttributeError,
@@ -433,141 +413,6 @@ def register_workspace_callbacks(
                     no_update,
                     no_update,
                     no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
-
-        @app.callback(
-            Output("quick-market-history-chart", "children"),
-            Output("quick-market-history-status", "children"),
-            Input("quick-market-combine-udl", "value"),
-            Input("quick-market-history-cell", "value"),
-            Input("quick-market-history-summary", "n_clicks"),
-            Input("quick-market-history-period", "value"),
-            Input("quick-market-history-date-range", "start_date"),
-            Input("quick-market-history-date-range", "end_date"),
-            Input("risk-workspace-tabs", "value"),
-            Input("data-revision-store", "data"),
-            prevent_initial_call=True,
-        )
-        def render_market_history(
-            combine_udl,
-            requested_history_cell,
-            history_summary_clicks,
-            history_period,
-            history_start_date,
-            history_end_date,
-            active_workspace,
-            _revision,
-        ):
-            if (
-                active_workspace != "quick-market"
-                or not int(history_summary_clicks or 0) % 2
-            ):
-                return no_update, no_update
-            selected = str(combine_udl or "").strip()
-            if not selected:
-                return (
-                    html.Div(
-                        "Select a Market identity to show its daily history.",
-                        className="quick-search-hint",
-                    ),
-                    "Historical values use one exact raw MarketBook quote cell.",
-                )
-            try:
-                result = refresh_manager.pivot_market_exact(
-                    selected,
-                    index_columns=QUICK_MARKET_DEFAULT_INDEX,
-                )
-                if result.frame.empty:
-                    return (
-                        html.Div(
-                            f"No MarketBook rows match '{selected}'.",
-                            className="quick-search-empty",
-                        ),
-                        "No current quote is available to match against history.",
-                    )
-                statuses = result.frame["Market Status"].dropna().unique()
-                if len(statuses) != 1:
-                    raise ValueError(
-                        "exact MarketBook result has an ambiguous Market Status"
-                    )
-                history_options, history_cell, _disabled = (
-                    quick_market_history_cell_state(
-                        result.frame,
-                        str(requested_history_cell or "") or None,
-                    )
-                )
-                if not history_options or history_cell is None:
-                    raise ValueError("exact MarketBook result has no quote cell")
-                risk_type, risk_greek, underlying = quick_market_history_identity(
-                    result.frame
-                )
-                history_error = ""
-                if market_history_loader is None:
-                    history = pd.DataFrame()
-                    history_error = "Historical archive is not configured; showing today's point only."
-                else:
-                    try:
-                        history = market_history_loader(
-                            risk_type,
-                            risk_greek,
-                            underlying,
-                        )
-                        if not isinstance(history, pd.DataFrame):
-                            raise TypeError(
-                                "market history loader must return a pandas DataFrame"
-                            )
-                    except (
-                        KeyError,
-                        LookupError,
-                        OSError,
-                        TypeError,
-                        ValueError,
-                        RuntimeError,
-                    ) as error:
-                        app.logger.exception("Quick Market history load failed")
-                        history = pd.DataFrame()
-                        detail = (
-                            " ".join(str(error).splitlines()).strip()
-                            or type(error).__name__
-                        )
-                        history_error = (
-                            "Historical archive unavailable: "
-                            f"{type(error).__name__}: {detail[:280]}. "
-                            "Showing today's point only."
-                        )
-                chart, status = build_quick_market_history_result(
-                    history,
-                    result.frame,
-                    selected_cell=history_cell,
-                    market_date=result.market_date,
-                    market_status=str(statuses[0]),
-                    period=str(history_period or "all"),
-                    start_date=history_start_date,
-                    end_date=history_end_date,
-                )
-                return chart, (history_error or status)
-            except (
-                AttributeError,
-                KeyError,
-                LookupError,
-                TypeError,
-                ValueError,
-                RuntimeError,
-            ) as error:
-                app.logger.exception("Quick Market history render failed")
-                detail = (
-                    " ".join(str(error).splitlines()).strip() or type(error).__name__
-                )
-                return (
-                    html.Div(
-                        f"Historical market failed: {type(error).__name__}: {detail[:400]}",
-                        className="quick-search-error",
-                        role="alert",
-                    ),
-                    "Historical market could not be rendered.",
                 )
 
 

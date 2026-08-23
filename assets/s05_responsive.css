@@ -33,7 +33,6 @@
 .cube-initial-load-shell .initial-load-message { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; font-weight: 650; }
 .cube-initial-load-shell .initial-load-retry { min-height: 36px; padding: 8px 14px; border: 1px solid #111111; border-radius: 8px; background: #111111; color: #FFFFFF; font-size: 12px; font-weight: 800; cursor: pointer; }
 
-.static-data-page { width: min(100%, 1680px); margin: 16px auto 40px; padding: 24px; }
 /* 14. Dark-mode component exceptions ----------------------------------- */
 :root[data-theme="dark"] .reload-risk-button,
 :root[data-theme="dark"] .force-risk-apply-button,
@@ -112,7 +111,6 @@
 @media (max-width: 920px) {
   .quick-search-heading { grid-template-columns: 1fr; }
   .top-promotions-header { grid-template-columns: 1fr; }
-  .quick-market-history-controls { grid-template-columns: 1fr; }
   .date-control-grid { grid-template-columns: 1fr; }
   .refresh-control-topline { grid-template-columns: 1fr; }
   .operating-date-banner { justify-content: flex-start; }

@@ -6,6 +6,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from dash import dcc, html
 
 from rebirth.domain.s01_schema import PORTFOLIO_FIELDS
@@ -146,7 +147,7 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                     html.Div(
                         [
                             html.Label(
-                                "Hierarchy levels",
+                                "View hierarchy",
                                 htmlFor="quick-search-dimensions",
                             ),
                             dcc.Dropdown(
@@ -160,7 +161,8 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                                 className="quick-search-dimensions",
                             ),
                             html.Span(
-                                "Choose the parent-to-child field order; roots open one useful level by default.",
+                                "Underlying and the product's tenor axes fill automatically. "
+                                "Add reporting fields only when you need another split.",
                                 className="quick-search-dimension-help",
                             ),
                         ],
@@ -217,6 +219,87 @@ def _quick_search_number(value: object, *, column: str) -> tuple[str, str]:
     if not np.isfinite(numeric):
         return "—", ""
     return format_number(numeric, column=column.casefold()), number_sign_class(numeric)
+
+
+def build_quick_risk_figure(
+    leaves: pd.DataFrame,
+    index_columns: list[str] | tuple[str, ...],
+) -> go.Figure:
+    """Plot the current exact Risk identity using its ProductSpec-shaped axes."""
+
+    axes = [
+        column
+        for column in ("Tenor Swap", "Tenor Option")
+        if column in index_columns and column in leaves
+    ]
+    figure = go.Figure()
+    if not axes:
+        values = [
+            pd.to_numeric(leaves.get(metric), errors="coerce").sum(min_count=1)
+            for metric in ("Risk", "dRisk")
+        ]
+        figure.add_trace(
+            go.Bar(
+                x=["Risk", "dRisk"],
+                y=values,
+                marker_color=["#79BE89", "#78A9D1"],
+                hovertemplate="<b>%{x}</b><br>%{y:,.6g}<extra></extra>",
+            )
+        )
+    elif len(axes) == 1:
+        axis = axes[0]
+        curve = leaves.groupby(axis, as_index=False, sort=False)[["Risk", "dRisk"]].sum(
+            min_count=1
+        )
+        for metric, color in (("Risk", "#79BE89"), ("dRisk", "#78A9D1")):
+            figure.add_trace(
+                go.Scatter(
+                    x=curve[axis],
+                    y=curve[metric],
+                    name=metric,
+                    mode="lines+markers",
+                    line={"color": color, "width": 3},
+                    connectgaps=False,
+                )
+            )
+        figure.update_xaxes(title=axis, type="category")
+    else:
+        first, second = axes
+        surface = leaves.pivot_table(
+            index=second,
+            columns=first,
+            values="Risk",
+            aggfunc="sum",
+            sort=False,
+            dropna=False,
+        )
+        figure.add_trace(
+            go.Surface(
+                x=list(surface.columns.astype(str)),
+                y=list(surface.index.astype(str)),
+                z=surface.to_numpy(dtype=float),
+                colorbar={"title": "Risk"},
+                connectgaps=False,
+            )
+        )
+        figure.update_layout(
+            scene={
+                "xaxis": {"title": first, "type": "category"},
+                "yaxis": {"title": second, "type": "category"},
+                "zaxis": {"title": "Risk"},
+            }
+        )
+    figure.update_layout(
+        template="plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=340,
+        margin={"l": 48, "r": 24, "t": 42, "b": 48},
+        title={"text": "Current risk shape", "x": 0.01},
+        legend={"orientation": "h", "y": 1.08},
+        uirevision="quick-risk-current",
+    )
+    return figure
 
 
 def build_quick_search_pivot(
@@ -415,12 +498,13 @@ def build_quick_search_pivot(
             )
         )
 
-    # Compute totals from leaf rows only
+    # Compute totals and the current chart from leaf rows only.
     leaf_rows = [
         r
         for r in frame.to_dict("records")
         if r[QUICK_SEARCH_HIERARCHY_DEPTH] == len(selected_indexes)
     ]
+    leaf_frame = pd.DataFrame(leaf_rows)
     metric_summaries = {}
     for metric_column, label in metric_columns:
         values = []
@@ -509,6 +593,11 @@ def build_quick_search_pivot(
                 role="status",
                 **{"aria-live": "polite", "aria-atomic": "true"},
             ),
+            dcc.Graph(
+                figure=build_quick_risk_figure(leaf_frame, selected_indexes),
+                config={"displaylogo": False, "responsive": True},
+                className="quick-risk-current-chart",
+            ),
             html.Div(
                 [
                     html.Div(
@@ -550,5 +639,6 @@ __all__ = [
     "QUICK_SEARCH_HIERARCHY_DEPTH",
     "QUICK_SEARCH_INDEX_OPTIONS",
     "build_quick_search",
+    "build_quick_risk_figure",
     "build_quick_search_pivot",
 ]

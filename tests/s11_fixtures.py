@@ -11,7 +11,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from rebirth.domain.s01_schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
-from rebirth.domain.s02_products import CURRENT, PL, PRODUCT_SPECS_BY_SOURCE_TYPE
+from rebirth.domain.s02_products import (
+    CURRENT,
+    PL,
+    VOL_SCORE,
+    PRODUCT_SPECS_BY_SOURCE_TYPE,
+)
 from rebirth.domain.s10_search import SearchCatalog
 from rebirth.history import (
     ArchiveHistoryRepository,
@@ -35,6 +40,8 @@ from rebirth.pages.pnl.s06_validation import build_validate_pl_comparison
 from tools import s01_fixtures as fixtures
 from tools.s01_fixtures import (
     FAKE_NOTICE,
+    CURRENT_PORTFOLIO_COUNT,
+    CURRENT_RISK_ROWS,
     FIXTURE_TAG,
     HISTORICAL_MARKET_DATES,
     HISTORY_COLOSSUS_ROWS,
@@ -127,6 +134,19 @@ def test_risk_fixture_supplies_connector_owned_groups() -> None:
         "Precious",
         "Gas",
     }
+
+
+def test_live_risk_fixture_has_realistic_scale_and_stable_vol_scores() -> None:
+    risk = build_datasets()["s03_risk.csv"]
+    repeated = build_datasets()["s03_risk.csv"]
+
+    assert len(risk) == CURRENT_RISK_ROWS == 10_000
+    assert len({row["Portfolio"] for row in risk}) == CURRENT_PORTFOLIO_COUNT == 500
+    assert [row[VOL_SCORE] for row in repeated] == [row[VOL_SCORE] for row in risk]
+    scores = [float(row[VOL_SCORE]) for row in risk]
+    assert min(scores) >= 0.0
+    assert max(scores) <= 100.0
+    assert len(set(scores)) > 1_000
 
 
 def test_full_market_keeps_ordered_tenors_not_present_in_risk() -> None:

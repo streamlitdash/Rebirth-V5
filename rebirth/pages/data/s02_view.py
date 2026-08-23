@@ -32,12 +32,6 @@ def build_data_page(
     return html.Main(
         [
             dcc.Store(id="data-history-catalog-store", storage_type="memory"),
-            dcc.Store(id="data-history-request-store", storage_type="memory"),
-            dcc.Store(
-                id="data-history-query-state-store",
-                data={"status": "idle"},
-                storage_type="memory",
-            ),
             dcc.Store(id="data-history-bundle-store", storage_type="memory"),
             dcc.Store(
                 id="data-history-cache-state-store",
@@ -64,16 +58,15 @@ def build_data_page(
             ),
             html.Header(
                 [
-                    html.P("Rebirth V4.1 history", className="data-page-eyebrow"),
-                    html.H1("Data", className="static-data-page-title"),
+                    html.P("Historical explorer", className="page-eyebrow"),
+                    html.H1("Data", className="page-title"),
                     html.P(
-                        "Choose Risk or Market, select an identity, then load its "
-                        "history. Quick Risk and Quick Market simply prefill the same "
-                        "editable controls.",
-                        className="data-page-intro",
+                        "Explore Risk and Market history with the same identity "
+                        "controls. Quick Risk and Quick Market only prefill them.",
+                        className="page-intro",
                     ),
                 ],
-                className="data-page-header",
+                className="page-header",
             ),
             html.Section(
                 [
@@ -228,7 +221,7 @@ def build_data_page(
                             html.Div(
                                 [
                                     html.Label(
-                                        "Projection",
+                                        "View",
                                         htmlFor="data-history-projection",
                                     ),
                                     dcc.Dropdown(
@@ -320,18 +313,25 @@ def build_data_page(
                         **{"aria-live": "polite"},
                     ),
                 ],
-                className="data-request-panel",
+                className="page-card data-request-panel",
             ),
             html.Section(
                 [
                     html.Div(
                         [
+                            html.Span(
+                                "Static view",
+                                id="data-player-mode-pill",
+                                className="data-player-mode-pill",
+                            ),
                             html.Button(
-                                "Play",
+                                "▶  Play",
                                 id="data-player-button",
                                 n_clicks=0,
                                 disabled=True,
                                 className="data-player-button",
+                                title="Play through archive dates",
+                                **{"aria-label": "Play through archive dates"},
                             ),
                             dcc.Slider(
                                 id="data-player-slider",
@@ -341,6 +341,11 @@ def build_data_page(
                                 value=0,
                                 marks={},
                                 disabled=True,
+                                updatemode="drag",
+                                tooltip={
+                                    "placement": "bottom",
+                                    "always_visible": False,
+                                },
                                 className="data-player-slider",
                             ),
                             html.Span(
@@ -365,7 +370,7 @@ def build_data_page(
                         delay_show=160,
                     ),
                 ],
-                className="data-chart-panel",
+                className="page-card data-chart-panel",
             ),
             html.Section(
                 [
@@ -383,14 +388,14 @@ def build_data_page(
                                 style_table={"overflowX": "auto"},
                             ),
                         ],
-                        className="data-table-panel",
+                        className="page-card data-table-panel",
                     ),
                 ],
                 className="data-tables",
             ),
         ],
         id="data-page",
-        className="data-page",
+        className="page-frame data-page",
     )
 
 

@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 import pandas as pd
 from dash import dcc, html
 
-from rebirth.ui.s04_components import build_aggregate_pl_table, build_cube_loader
-from rebirth.ui.s01_constants import DEFAULT_VIEW_DIMENSION, VIEW_DIMENSION_FIELDS
+from rebirth.ui.s04_components import build_cube_loader
 from rebirth.ui.s03_filters import build_saved_filter_view_bar
 
 from .s01_common import (
     DISPLAY_COLUMNS,
     GRID_ROW_ID,
-    PL_AGGREGATE_HISTORY_CELL_TYPE,
-    PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
@@ -25,45 +20,6 @@ from .s01_common import (
     pl_filter_options,
 )
 from .s04_sender import build_pl_send_sections
-
-
-def _walk_components(component: object) -> Iterable[object]:
-    """Yield a Dash component tree without relying on private Dash helpers."""
-    yield component
-    children = getattr(component, "children", None)
-    if children is None:
-        return
-    if isinstance(children, (list, tuple)):
-        for child in children:
-            yield from _walk_components(child)
-    else:
-        yield from _walk_components(children)
-
-
-def build_pl_aggregate_table(
-    frame: pd.DataFrame,
-    dimension: str,
-    open_risk_types: list[str] | None,
-) -> html.Div:
-    """Render Aggregate P&L with page-owned, collision-free chevron IDs."""
-    table = build_aggregate_pl_table(
-        frame,
-        dimension,
-        open_risk_types,
-        metric_cell_type=PL_AGGREGATE_HISTORY_CELL_TYPE,
-    )
-    for component in _walk_components(table):
-        component_id = getattr(component, "id", None)
-        if not isinstance(component_id, dict):
-            continue
-        if component_id.get("type") != "aggregate-row-toggle":
-            continue
-        risk_type = component_id.get("risk_type", component_id.get("risk type"))
-        component.id = {
-            "type": PL_AGGREGATE_TOGGLE_TYPE,
-            "risk_type": str(risk_type),
-        }
-    return table
 
 
 def build_pl_inline_history_section(*, available: bool) -> html.Section:
@@ -97,11 +53,11 @@ def build_pl_inline_history_section(*, available: bool) -> html.Section:
             dcc.Store(id="pl-history-selection-store", data={}),
             html.Div(
                 [
-                    html.H2("P&L history", className="static-data-page-title"),
+                    html.H2("P&L history", className="page-title"),
                     html.P(
                         "Select any Aggregate P&L value above to plot its daily "
                         "Colossus and Predict history here.",
-                        className="static-data-page-note",
+                        className="page-note",
                     ),
                 ]
             ),
@@ -170,62 +126,53 @@ def build_pl_inline_history_section(*, available: bool) -> html.Section:
         ],
         id="pnl-history-workspace",
         className="pnl-history-workspace pnl-inline-history",
+        style={"display": "none"},
     )
 
 
 def _pl_aggregate_section(
     initial_frame: pd.DataFrame | None = None,
 ) -> html.Section:
-    """Build an always-visible, P&L-local mapped Aggregate P&L section."""
-    view_dimension_options = [
-        {"label": field.label, "value": field.key} for field in VIEW_DIMENSION_FIELDS
-    ]
+    """Build the page-owned live, MTD and YTD P&L hierarchy."""
+    del initial_frame
     return html.Section(
         [
-            html.H2(
-                "Aggregate P&L",
-                className="aux-summary aggregate-pl-summary pnl-static-heading",
-            ),
             html.Div(
                 [
-                    html.Div("View by", className="aggregate-pl-title"),
-                    dcc.RadioItems(
-                        id="pnl-aggregate-pl-dimension",
-                        options=view_dimension_options,
-                        value=DEFAULT_VIEW_DIMENSION,
-                        inline=True,
-                        className="aggregate-pl-selector",
+                    html.Div(
+                        [
+                            html.P("P&L OVERVIEW", className="section-eyebrow"),
+                            html.H2("Current and historical P&L"),
+                            html.P(
+                                "Expand Risk Type, Greek and Underlying. Today uses "
+                                "the latest Predict value; month-to-date and "
+                                "year-to-date use official Colossus history.",
+                                className="section-note",
+                            ),
+                        ],
+                        className="section-heading",
                     ),
                 ],
-                className="aggregate-pl-header",
+                className="section-header",
             ),
             html.Div(
                 dcc.Loading(
                     html.Div(
-                        (
-                            build_pl_aggregate_table(
-                                initial_frame,
-                                DEFAULT_VIEW_DIMENSION,
-                                [],
-                            )
-                            if initial_frame is not None
-                            else html.Div(
-                                "P&L data is still loading. Aggregate P&L will "
-                                "update after the first committed refresh.",
-                                className="empty-state",
-                                role="status",
-                            )
+                        html.Div(
+                            "Loading current, month-to-date and year-to-date P&L…",
+                            className="empty-state",
+                            role="status",
                         ),
                         id="pnl-aggregate-pl-grid",
                     ),
-                    custom_spinner=build_cube_loader("Loading aggregate P&L"),
+                    custom_spinner=build_cube_loader("Loading P&L overview"),
                     delay_show=120,
                     className="cube-loading-boundary",
                 ),
-                className="aggregate-pl-panel",
+                className="pnl-summary-panel",
             ),
         ],
-        className="aux-details aggregate-pl-details pnl-always-open-section",
+        className="page-card pnl-summary-section",
     )
 
 
@@ -313,18 +260,24 @@ def build_pl_page(
                     if send_workflow_available
                     else None
                 ),
-                dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
-                html.H1("P&L Sender", className="static-data-page-title"),
+                dcc.Store(id="pnl-summary-open-paths", data=[]),
+                html.Header(
+                    [
+                        html.P("CONTROLLED P&L", className="page-eyebrow"),
+                        html.H1("P&L", className="page-title"),
+                    ],
+                    className="page-header",
+                ),
                 html.P(
                     (
-                        "Review mapped Aggregate P&L, edit and send it by SOG or "
-                        "Portfolio, and explore official Predict versus Colossus "
-                        "P&L. The one saved-view filter governs every section."
+                        "Review current, month-to-date and year-to-date P&L, then "
+                        "drill into daily history or use the governed send tools. "
+                        "One saved-view filter governs the whole page."
                         if send_workflow_available
                         else "Review mapped Aggregate P&L from the latest committed "
                         "risk refresh."
                     ),
-                    className="static-data-page-note",
+                    className="page-intro",
                 ),
                 (
                     saved_view_bar
@@ -348,7 +301,7 @@ def build_pl_page(
                 ),
             ],
             id="pnl-page",
-            className="static-data-page",
+            className="page-frame",
         ),
         id="pnl-page-container",
     )
@@ -357,13 +310,11 @@ def build_pl_page(
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
-    "PL_AGGREGATE_TOGGLE_TYPE",
     "PL_FILTER_FIELDS",
     "PL_FILTER_EXCLUDE_ID",
     "PL_FILTER_IDS",
     "PL_FILTER_NOTE",
     "PL_SAVED_VIEW_CONTROLS",
-    "build_pl_aggregate_table",
     "build_pl_filter_bar",
     "build_pl_inline_history_section",
     "build_pl_page",

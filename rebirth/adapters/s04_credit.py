@@ -7,6 +7,7 @@ import pandas as pd
 from rebirth.domain.s02_products import (
     CREDIT_MEASURE_COLUMNS,
     CREDIT_MEASURES,
+    VOL_SCORE,
     ProductConnectorAdapter,
 )
 from rebirth.domain.s01_schema import TENOR_SWAP, TENOR_SWAP_ORDER
@@ -21,6 +22,7 @@ CREDIT_DELTA_RISK_BASE = (
     "Group",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 CREDIT_DELTA_RISK_REGION_BASE = (
     "Underlying",
@@ -30,6 +32,7 @@ CREDIT_DELTA_RISK_REGION_BASE = (
     "Region",
     "Risk",
     "dRisk",
+    VOL_SCORE,
 )
 CREDIT_DELTA_RISK = (
     *CREDIT_DELTA_RISK_BASE,

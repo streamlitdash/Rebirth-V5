@@ -29,6 +29,7 @@ from rebirth.domain.s02_products import (
     PORTFOLIO,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
     REGION,
+    VOL_SCORE,
     ProductConnectorAdapter,
 )
 from rebirth.domain.s01_schema import (
@@ -66,6 +67,7 @@ _FAKE_CSV_SCHEMAS = {
         "Group",
         "Risk",
         "dRisk",
+        VOL_SCORE,
         *CREDIT_MEASURE_COLUMNS,
     ),
     "market_open": (
@@ -321,7 +323,7 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
     """Return fake Risk/dRisk rows for one source and requested risk date.
 
     Real replacement contract: use both parameters and return ``Underlying``,
-    ``Portfolio``, ``Group``, ``Risk``, ``dRisk``, plus the source's required
+    ``Portfolio``, ``Group``, ``Risk``, ``dRisk``, ``Vol Score``, plus the source's required
     tenor fields. Credit may additionally return connector-owned ``Region``.
     Connector Group, Region, Risk, and dRisk remain authoritative.
     """
@@ -334,6 +336,7 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
         "Group",
         "Risk",
         "dRisk",
+        VOL_SCORE,
     ]
     if spec.risk_type == "Credit":
         output_columns.extend(CREDIT_MEASURE_COLUMNS)

@@ -23,7 +23,7 @@ from rebirth.app.s02_contracts import (
     RefreshSnapshotProtocol,
 )
 
-from .s15_workspacetables import NEW_TRADE_SPLIT
+from .s13_workspacetables import NEW_TRADE_SPLIT
 from .s11_promotion import PromotionGeneration, apply_promotion_generation
 
 

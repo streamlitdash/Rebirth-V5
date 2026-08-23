@@ -61,7 +61,7 @@ from .s02_state import (
     snapshot_forced_dates,
     snapshot_forced_view_date,
 )
-from .s18_view import (
+from .s16_view import (
     build_layout,
     build_risk_checker_inventory,
     build_risk_date_editor,
@@ -1086,8 +1086,40 @@ def register_refresh_callbacks(
                     "force-risk-edit-status is-error",
                 )
 
+            # A successful Apply advances the manager before the draft callback
+            # can rebase its browser Store.  During that short hand-off the old
+            # draft is neither a new edit nor a conflict, so keep both actions
+            # inert and describe the reconciliation instead of flashing the
+            # stale "Apply to refresh" message.  A draft already marked as a
+            # conflict remains actionable through Cancel below.
+            try:
+                draft_revision = int(
+                    draft_state.get("base_revision", manager_snapshot.revision)
+                    if isinstance(draft_state, Mapping)
+                    else manager_snapshot.revision
+                )
+            except (TypeError, ValueError):
+                draft_revision = manager_snapshot.revision
+            draft_has_conflict = bool(
+                draft_state.get("conflict", False)
+                if isinstance(draft_state, Mapping)
+                else False
+            )
+            if (
+                draft_revision != int(manager_snapshot.revision)
+                and not draft_has_conflict
+            ):
+                return (
+                    True,
+                    True,
+                    "Reconciling applied date settings…",
+                    "force-risk-edit-status",
+                )
+
             dirty = proposal != applied or proposal_view != applied_view
-            conflict = dirty and (base != applied or base_view != applied_view)
+            conflict = draft_has_conflict or (
+                dirty and (base != applied or base_view != applied_view)
+            )
             if conflict:
                 return (
                     True,

@@ -36,10 +36,18 @@ SPEC = PRODUCT_SPECS["irdelta"]
 def _risk() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            ["USD-SOFR", "2Y", "BOOK_A", "Connector Rates", 20.0, 2.0],
-            ["USD-SOFR", "10Y", "BOOK_A", "Connector Rates", 10.0, 1.0],
+            ["USD-SOFR", "2Y", "BOOK_A", "Connector Rates", 20.0, 2.0, 40.0],
+            ["USD-SOFR", "10Y", "BOOK_A", "Connector Rates", 10.0, 1.0, 65.0],
         ],
-        columns=["Underlying", TENOR_SWAP, "Portfolio", "Group", "Risk", "dRisk"],
+        columns=[
+            "Underlying",
+            TENOR_SWAP,
+            "Portfolio",
+            "Group",
+            "Risk",
+            "dRisk",
+            "Vol Score",
+        ],
     )
 
 
@@ -78,6 +86,15 @@ def test_risk_group_is_required_but_its_value_is_connector_owned() -> None:
 
     with pytest.raises(ValueError, match="missing required columns: \\['Group'\\]"):
         get_product_risk(SPEC, "2026-07-17", raw.drop(columns="Group"))
+
+
+@pytest.mark.parametrize("value", [-0.001, 100.001])
+def test_risk_vol_score_is_connector_owned_and_bounded(value: float) -> None:
+    raw = _risk()
+    raw.loc[0, "Vol Score"] = value
+
+    with pytest.raises(ValueError, match="Vol Score.*between 0 and 100"):
+        get_product_risk(SPEC, "2026-07-17", raw)
 
 
 def test_market_book_keeps_market_only_tenors_and_dynamic_status() -> None:
@@ -318,6 +335,46 @@ def test_search_catalog_keeps_exact_indexes_without_row_level_postings() -> None
     assert not hasattr(catalog, "_risk_pivot_postings")
     assert not hasattr(catalog, "search_risk")
     assert not hasattr(catalog, "search_market")
+
+
+def test_quick_risk_identity_options_follow_the_active_governed_filters() -> None:
+    market = get_product_market(
+        SPEC,
+        "2026-07-20",
+        _open(),
+        _current(),
+        market_status=OFFICIAL,
+    )
+    risk = get_product_risk(SPEC, "2026-07-17", _risk())
+    catalog = build_search_catalog(
+        revision=1,
+        risk_frames={SPEC.source_type: risk},
+        market_frames={SPEC.source_type: market},
+        risk_dates={SPEC.source_type: pd.Timestamp("2026-07-17")},
+        market_date=pd.Timestamp("2026-07-20"),
+    )
+    identity = "IR | Delta | USD-SOFR"
+
+    assert catalog.search_combine_udl_options(
+        None,
+        risk_filters={"Portfolio": ["Unspecified"]},
+    ) == (identity,)
+    assert (
+        catalog.search_combine_udl_options(
+            None,
+            risk_filters={"Portfolio": ["BOOK_MISSING"]},
+        )
+        == ()
+    )
+    assert (
+        catalog.search_combine_udl_options(
+            None,
+            include=identity,
+            risk_filters={"Portfolio": ["Unspecified"]},
+            exclude_selected=True,
+        )
+        == ()
+    )
 
 
 def test_market_rollup_uses_only_complete_quote_pairs() -> None:

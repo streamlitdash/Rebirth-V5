@@ -118,8 +118,6 @@
       action.source = node.dataset.riskSource
         || (isTopBookRow
           ? "top-book-row-toggle"
-          : node.closest("#risk-custom-grid")
-            ? "custom-row-toggle"
           : node.closest("#alt-risk-grid")
             ? "alt-row-toggle"
             : "main-row-toggle");
@@ -323,7 +321,6 @@
       + "#risk-grid .metric-header-button[data-risk-metric], "
       + "#alt-risk-grid .row-toggle, "
       + "#alt-risk-grid .metric-cell-button[data-risk-metric], "
-      + "#risk-custom-grid .row-toggle, "
       + "#top-book-grid .row-toggle, "
       + "#top-book-grid .top-book-metric-cell-button[data-risk-metric]"
     );

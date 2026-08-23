@@ -12,7 +12,6 @@ from uuid import uuid4
 import pandas as pd
 from dash import dcc, html
 
-from rebirth.domain.s11_riskviews import RISK_VIEW_DIMENSIONS
 from rebirth.ui.s02_aggregation import recompute_filtered_promotion
 from rebirth.ui.s01_constants import FILTER_COLUMNS
 
@@ -21,7 +20,7 @@ PROMOTION_GENERATION_STORE_ID: Final = "promotion-generation-store"
 PROMOTION_RECALCULATE_ID: Final = "promotion-recalculate-current-view"
 PROMOTION_RESET_ID: Final = "promotion-reset-baseline"
 PROMOTION_STATUS_ID: Final = "promotion-generation-status"
-PROMOTION_SCHEMA_VERSION: Final = 2
+PROMOTION_SCHEMA_VERSION: Final = 3
 PROMOTION_KEYS: Final = ("risk type", "risk greek", "reported underlying")
 PROMOTION_CLASSIFICATION_COLUMNS: Final = (
     "display bucket",
@@ -78,7 +77,6 @@ class PromotionBasis:
     ir_family: str | None
     splits: tuple[str, ...]
     filters: tuple[tuple[str, tuple[str, ...]], ...]
-    local_filters: tuple[tuple[str, tuple[str, ...]], ...]
     exclude_selected: bool
 
     @classmethod
@@ -90,7 +88,6 @@ class PromotionBasis:
         ir_family: object = None,
         splits: Sequence[str] | None = None,
         filters: Mapping[str, Sequence[str] | None],
-        local_filters: Mapping[str, Sequence[str] | None] | None = None,
         exclude_selected: object = False,
     ) -> PromotionBasis:
         if isinstance(revision, bool) or int(revision) < 0:
@@ -103,13 +100,6 @@ class PromotionBasis:
             normalized_family = None
         if not isinstance(exclude_selected, bool):
             raise ValueError("Promotion include/exclude mode must be boolean")
-        custom_filters = dict(local_filters or {})
-        unknown_local = sorted(set(custom_filters) - set(RISK_VIEW_DIMENSIONS))
-        if unknown_local:
-            raise ValueError(
-                "Promotion local filters contain unsupported fields: "
-                + ", ".join(unknown_local)
-            )
         return cls(
             revision=int(revision),
             risk_type=normalized_risk_type,
@@ -122,16 +112,6 @@ class PromotionBasis:
                 )
                 for key in FILTER_COLUMNS
             ),
-            local_filters=tuple(
-                (
-                    key,
-                    _selection(
-                        custom_filters[key], label=f"Promotion local filter {key!r}"
-                    ),
-                )
-                for key in RISK_VIEW_DIMENSIONS
-                if key in custom_filters and custom_filters[key]
-            ),
             exclude_selected=exclude_selected,
         )
 
@@ -143,7 +123,6 @@ class PromotionBasis:
             "ir_family",
             "splits",
             "filters",
-            "local_filters",
             "exclude_selected",
         }:
             raise ValueError("Promotion basis has unexpected fields")
@@ -153,7 +132,6 @@ class PromotionBasis:
             ir_family=value["ir_family"],
             splits=value["splits"],
             filters=value["filters"],
-            local_filters=value["local_filters"],
             exclude_selected=value["exclude_selected"],
         )
 
@@ -164,7 +142,6 @@ class PromotionBasis:
             "ir_family": self.ir_family,
             "splits": list(self.splits),
             "filters": {key: list(values) for key, values in self.filters},
-            "local_filters": {key: list(values) for key, values in self.local_filters},
             "exclude_selected": self.exclude_selected,
         }
 
@@ -424,25 +401,6 @@ def promotion_basis_is_stale(
     return generation.kind == "current-view" and generation.basis != current_basis
 
 
-def apply_promotion_local_filters(
-    frame: pd.DataFrame,
-    filters: Mapping[str, Sequence[str] | None] | None,
-) -> pd.DataFrame:
-    """Apply validated Custom-view filters before an explicit recalculation."""
-
-    result = frame
-    for field, selected in (filters or {}).items():
-        values = tuple(selected or ())
-        if not values:
-            continue
-        if field not in result:
-            raise ValueError(f"Promotion source is missing local filter {field!r}")
-        wanted = {str(value).strip().casefold() for value in values}
-        normalized = result[field].astype("string").str.strip().str.casefold()
-        result = result.loc[normalized.isin(wanted).fillna(False)]
-    return result
-
-
 def promotion_basis_summary(basis: PromotionBasis) -> str:
     """Describe the immutable calculation scope in business language."""
 
@@ -451,7 +409,7 @@ def promotion_basis_summary(basis: PromotionBasis) -> str:
         parts.append(str(basis.ir_family).upper())
     if basis.splits:
         parts.append("Split: " + ", ".join(basis.splits))
-    for field, selected in (*basis.filters, *basis.local_filters):
+    for field, selected in basis.filters:
         if not selected:
             continue
         label = field.replace("signoffgroup", "sign-off group").title()
@@ -544,18 +502,18 @@ def promotion_table(
 
 
 def build_promotion_generation_controls(revision: int) -> html.Div:
-    """Build the small explicit recalculation control owned by Risk Explorer."""
+    """Build compact promotion actions beside the Explorer display toggles."""
 
     baseline = baseline_promotion_generation(revision)
     return html.Div(
         [
             dcc.Store(id=PROMOTION_GENERATION_STORE_ID, data=baseline.to_store()),
             html.Button(
-                "Recalculate visible view",
+                "Recalculate promotions",
                 id=PROMOTION_RECALCULATE_ID,
                 n_clicks=0,
                 type="button",
-                className="refresh-button",
+                className="promotion-action-button promotion-recalculate-button",
                 title="Recalculate promotion from the currently visible Risk rows",
                 **{"aria-busy": "false"},
             ),
@@ -565,19 +523,24 @@ def build_promotion_generation_controls(revision: int) -> html.Div:
                 n_clicks=0,
                 type="button",
                 disabled=True,
-                className="refresh-button",
+                className="promotion-action-button promotion-reset-button",
             ),
             html.Div(
-                "Baseline promotion from the committed refresh is active.",
-                id=PROMOTION_STATUS_ID,
-                className="filter-note",
-                role="status",
-                **{"aria-live": "polite"},
-            ),
-            html.Div(
-                "Scope: committed Activities 1–3 policy",
-                id="promotion-generation-scope",
-                className="promotion-generation-scope",
+                [
+                    html.Div(
+                        "Baseline promotion from the committed refresh is active.",
+                        id=PROMOTION_STATUS_ID,
+                        className="filter-note",
+                        role="status",
+                        **{"aria-live": "polite"},
+                    ),
+                    html.Div(
+                        "Scope: committed Activities 1–3 policy",
+                        id="promotion-generation-scope",
+                        className="promotion-generation-scope",
+                    ),
+                ],
+                className="promotion-generation-copy",
             ),
         ],
         className="promotion-generation-controls",
@@ -592,7 +555,6 @@ __all__ = [
     "PromotionBasis",
     "PromotionGeneration",
     "PromotionRow",
-    "apply_promotion_local_filters",
     "apply_promotion_generation",
     "baseline_promotion_generation",
     "build_promotion_generation_controls",

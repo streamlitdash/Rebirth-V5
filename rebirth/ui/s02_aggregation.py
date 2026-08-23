@@ -324,6 +324,12 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
         frame["promotion reason"] = ""
     if "promotion score" not in frame:
         frame["promotion score"] = 0.0
+    if "vol score" not in frame:
+        frame["vol score"] = 0.0
+    else:
+        # Rows synthesized after the governed Risk connectors (for example,
+        # new-trade and cash-flow overlays) do not own a volatility signal.
+        frame["vol score"] = frame["vol score"].fillna(0.0)
 
     missing = [column for column in REQUIRED_INPUT_COLUMNS if column not in frame]
     if missing:

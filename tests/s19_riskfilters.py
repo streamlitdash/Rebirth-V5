@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 
 import pandas as pd
-from dash import dcc, html
+from dash import dcc, html, no_update
 
 from rebirth.services.s04_savedviews import SavedFilterView
 from rebirth.domain.s10_search import MARKET_RESULT_COLUMNS, SearchCatalog
@@ -29,7 +29,7 @@ from rebirth.pages.risk.s11_promotion import (
     PromotionBasis,
     calculate_current_view_promotion,
 )
-from rebirth.pages.risk.s18_view import build_layout
+from rebirth.pages.risk.s16_view import build_layout
 from rebirth.ui.s04_components import build_aggregate_pl_table
 from rebirth.app.s07_factory import build_app
 from rebirth.pages.risk.s10_search import _render_quick_search_pivot
@@ -480,28 +480,24 @@ def test_risk_filter_values_and_mode_have_one_callback_owner() -> None:
     assert set(owners.values()) == {1}
 
 
-def test_quick_market_history_targets_are_mounted_and_have_single_owners() -> None:
-    app = build_app(
-        refresh_manager=_warm_manager(),
-        market_history_loader=lambda _risk_type, _risk_greek, _underlying: (
-            pd.DataFrame()
-        ),
+def test_split_selection_only_publishes_when_context_prunes_it() -> None:
+    effective, value_update = events_module._pruned_split_selection(
+        ["Risk", "New Trades"],
+        ["Risk", "New Trades"],
     )
-    governed = {
-        ("quick-market-history-cell", "options"),
-        ("quick-market-history-cell", "value"),
-        ("quick-market-history-cell", "disabled"),
-        ("quick-market-history-chart", "children"),
-        ("quick-market-history-status", "children"),
-    }
-    owners = {identity: 0 for identity in governed}
-    for metadata in app.callback_map.values():
-        for output in _callback_outputs(metadata):
-            identity = (str(output.component_id), output.component_property)
-            if identity in owners:
-                owners[identity] += 1
+    assert effective == ["Risk", "New Trades"]
+    assert value_update is no_update
 
-    assert set(owners.values()) == {1}
+    effective, value_update = events_module._pruned_split_selection(
+        ["Risk", "Unavailable"],
+        ["Risk", "New Trades"],
+    )
+    assert effective == ["Risk"]
+    assert value_update == ["Risk"]
+
+
+def test_quick_market_uses_data_as_its_only_history_workspace() -> None:
+    app = build_app(refresh_manager=_warm_manager())
     layout_ids = {
         str(getattr(component, "id", ""))
         for component in _walk(
@@ -512,23 +508,31 @@ def test_quick_market_history_targets_are_mounted_and_have_single_owners() -> No
             )
         )
     }
-    assert {component_id for component_id, _property in governed} <= layout_ids
-
-    history_inputs = _callback_inputs_for_output(
-        app,
-        "quick-market-history-chart",
-        "children",
-    )
-    assert history_inputs == {
-        ("quick-market-combine-udl", "value"),
-        ("quick-market-history-cell", "value"),
-        ("quick-market-history-summary", "n_clicks"),
-        ("quick-market-history-period", "value"),
-        ("quick-market-history-date-range", "start_date"),
-        ("quick-market-history-date-range", "end_date"),
-        ("risk-workspace-tabs", "value"),
-        ("data-revision-store", "data"),
+    assert "quick-market-open-data" in layout_ids
+    assert not any(value.startswith("quick-market-history-") for value in layout_ids)
+    callback_outputs = {
+        (str(output.component_id), output.component_property)
+        for metadata in app.callback_map.values()
+        for output in _callback_outputs(metadata)
     }
+    assert not any(
+        component_id.startswith("quick-market-history-")
+        for component_id, _property in callback_outputs
+    )
+
+
+def test_quick_risk_identity_choices_follow_the_governed_filter_view() -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    inputs = _callback_inputs_for_output(
+        app,
+        "quick-search-combine-udl",
+        "options",
+    )
+    assert {
+        ("split-filter", "value"),
+        ("risk-filter-exclude-selected", "value"),
+        *((component_id, "value") for component_id in DIMENSION_FILTER_IDS.values()),
+    } <= inputs
 
 
 def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
@@ -650,7 +654,6 @@ def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> N
         "quick-search-details",
         "quick-market-details",
         "top-promotions-grid",
-        "top-promotions-rank-by",
     } <= ids
     assert "top-book-details" not in ids
     assert "top-book-grid" not in ids
@@ -673,7 +676,6 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
 
     closed_grid, closed_status = callback(
         "aggregate-pl",
-        "score",
         1,
         None,
         [],
@@ -684,11 +686,29 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
     assert closed_grid is None
     assert "Select Top Promotions" in closed_status
     assert ("risk-workspace-tabs", "value") in inputs
-    assert ("top-promotions-rank-by", "value") in inputs
+    assert ("top-promotions-rank-by", "value") not in inputs
     assert ("promotion-generation-store", "data") in inputs
     assert not any(
         str(component_id).startswith("top-book") for component_id, _ in inputs
     )
+
+
+def test_promotion_recalculation_captures_split_without_callback_cycle() -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == "promotion-generation-store"
+            and output.component_property == "data"
+            for output in _callback_outputs(item)
+        )
+    )
+    inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    states = {(item["id"], item["property"]) for item in metadata["state"]}
+
+    assert ("split-filter", "value") not in inputs
+    assert ("split-filter", "value") in states
 
 
 def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
@@ -766,6 +786,7 @@ def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
         "aggregate-pl-grid",
         "children",
     )
+    assert ("promotion-generation-store", "data") not in aggregate_inputs
     assert (
         '{"risk_type":["ALL"],"type":"aggregate-row-toggle"}',
         "n_clicks",

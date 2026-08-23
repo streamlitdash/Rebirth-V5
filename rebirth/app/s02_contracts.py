@@ -141,18 +141,6 @@ class SearchResultProtocol(Protocol):
 
 
 @runtime_checkable
-class MarketHistoryLoaderProtocol(Protocol):
-    """Load quote-grain history for one exact raw MarketBook identity."""
-
-    def __call__(
-        self,
-        risk_type: str,
-        risk_greek: str,
-        underlying: str,
-    ) -> pd.DataFrame: ...
-
-
-@runtime_checkable
 class RefreshSnapshotProtocol(Protocol):
     """Read-only snapshot shape consumed by the dashboard."""
 
@@ -362,6 +350,8 @@ class RefreshManagerProtocol(Protocol):
         identity_mode: str = "reported",
         limit: int = 100,
         include: str | None = None,
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]: ...
 
     def pivot_market_exact(
@@ -440,7 +430,6 @@ __all__ = [
     "DateLike",
     "FrameName",
     "FrameReadProtocol",
-    "MarketHistoryLoaderProtocol",
     "PLSnapshotProtocol",
     "RefreshHealthProtocol",
     "RefreshManagerProtocol",

@@ -12,7 +12,13 @@ from rebirth.pages.static_data.s01_store import (
     WRITABLE_STATIC_FILES,
     StaticDataStore,
 )
-from rebirth.pages.static_data.s02_view import build_static_data_page
+from rebirth.pages.static_data.s02_view import (
+    _editable_columns,
+    _table_style,
+    build_static_data_page,
+)
+from rebirth.services.s05_sources import build_production_refresh_manager
+from rebirth.app.s07_factory import build_app
 
 
 def _walk(component: object):
@@ -52,6 +58,50 @@ def test_statics_page_has_plain_read_and_write_workspaces() -> None:
         "static-data-cancel",
         "static-data-write-status",
     } <= ids
+    write_table = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "static-data-write-table"
+    )
+    assert write_table.editable is True
+    assert write_table.row_deletable is True
+
+
+def test_statics_tabs_explicitly_show_one_workspace() -> None:
+    app = build_app(refresh_manager=build_production_refresh_manager())
+    callback = next(
+        metadata["callback"].__wrapped__
+        for metadata in app.callback_map.values()
+        if "static-data-read-panel.style" in str(metadata["output"])
+    )
+
+    assert callback("read") == ({"display": "block"}, {"display": "none"})
+    assert callback("write") == ({"display": "none"}, {"display": "block"})
+
+
+def test_statics_editor_hides_columns_without_breaking_governed_schema() -> None:
+    columns = _editable_columns(["Risk Type", "Risk Greek"])
+
+    assert columns == [
+        {
+            "name": "Risk Type",
+            "id": "Risk Type",
+            "hideable": True,
+            "renamable": False,
+            "deletable": False,
+        },
+        {
+            "name": "Risk Greek",
+            "id": "Risk Greek",
+            "hideable": True,
+            "renamable": False,
+            "deletable": False,
+        },
+    ]
+
+
+def test_statics_empty_editor_mounts_without_fixed_header_crash() -> None:
+    assert "fixed_rows" not in _table_style()
 
 
 def test_static_store_writes_validated_csv_atomically(tmp_path: Path) -> None:

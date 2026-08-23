@@ -51,7 +51,7 @@ from rebirth.services.s05_sources import (
     get_new_trades,
     get_product_connector_adapters,
 )
-from rebirth.pages.risk.s15_workspacetables import new_trade_detail_frame
+from rebirth.pages.risk.s13_workspacetables import new_trade_detail_frame
 from rebirth.ui.s02_aggregation import (
     apply_credit_measure,
     credit_measure_available,

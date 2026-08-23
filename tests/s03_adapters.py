@@ -91,6 +91,7 @@ def test_ir_delta_adapter_passes_dates_underlying_and_dynamic_status() -> None:
                 "FAKE_REPLACE_ME - Custom Desk Group",
                 12.0,
                 2.0,
+                42.5,
             ]
         ],
     )
@@ -140,7 +141,7 @@ def test_ir_deltavega_adapter_accepts_an_arbitrary_two_by_three_surface() -> Non
     swaps = ("1Y", "5Y")
     options = ("1M", "6M", "2Y")
     risk_rows = [
-        ["USD-SWAPTION", swap, option, "BOOK_A", "Any Group", 10.0, 1.0]
+        ["USD-SWAPTION", swap, option, "BOOK_A", "Any Group", 10.0, 1.0, 55.0]
         for swap in swaps
         for option in options
     ]
@@ -180,7 +181,7 @@ def test_commo_delta_example_has_one_curve_axis_and_no_batching() -> None:
     adapter = build_commo_adapter(
         risk=lambda _date: _frame(
             COMMO_DELTA_RISK,
-            [["BRENT", "DEC26", "BOOK_C", "Energy Custom", 100.0, -4.0]],
+            [["BRENT", "DEC26", "BOOK_C", "Energy Custom", 100.0, -4.0, 38.0]],
         ),
         open_market=_market_source(
             _frame(COMMO_DELTA_OPEN, [["BRENT", "DEC26", 0, 73.0]]),
@@ -201,8 +202,8 @@ def test_commo_delta_example_has_one_curve_axis_and_no_batching() -> None:
 
 
 def test_credit_delta_example_preserves_every_credit_measure_dimension() -> None:
-    risk_row = ["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0] + [
-        float(index) for index in range(len(CREDIT_DELTA_RISK) - 6)
+    risk_row = ["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0, 71.0] + [
+        float(index) for index in range(len(CREDIT_DELTA_RISK) - 7)
     ]
     adapter = build_credit_adapter(
         risk=lambda _date: _frame(CREDIT_DELTA_RISK, [risk_row]),
@@ -228,7 +229,7 @@ def test_credit_delta_example_accepts_optional_complete_measure_pairs() -> None:
     adapter = build_credit_adapter(
         risk=lambda _date: _frame(
             columns,
-            [["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0, 4.0, 0.5]],
+            [["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0, 71.0, 4.0, 0.5]],
         ),
         open_market=_market_source(_frame(CREDIT_DELTA_OPEN, []), []),
         current_market=_market_source(_frame(CREDIT_DELTA_CURRENT, []), []),
@@ -259,6 +260,7 @@ def test_credit_delta_preserves_optional_connector_owned_region() -> None:
                     "North America",
                     20.0,
                     3.0,
+                    71.0,
                     4.0,
                     0.5,
                 ]
@@ -283,7 +285,7 @@ def test_credit_delta_preserves_optional_connector_owned_region() -> None:
 def test_credit_measure_risk_and_drisk_must_be_supplied_as_a_pair() -> None:
     orphan = _frame(
         (*CREDIT_DELTA_RISK_BASE, "Risk SP01"),
-        [["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0, 4.0]],
+        [["CDX-IG", "5Y", "BOOK_CR", "Index", 20.0, 3.0, 71.0, 4.0]],
     )
 
     with pytest.raises(

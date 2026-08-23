@@ -36,6 +36,40 @@ from .s01_selection import (
 QUICK_HANDOFF_ENTRY_KEY = "__quick_handoff__"
 
 
+def _stored_history_handoff(raw_handoff: object) -> HistoryHandoff:
+    payload = (
+        raw_handoff.get("handoff")
+        if isinstance(raw_handoff, Mapping) and "handoff" in raw_handoff
+        else raw_handoff
+    )
+    return HistoryHandoff.from_mapping(payload)
+
+
+def _stored_handoff_nonce(raw_handoff: object) -> str:
+    if isinstance(raw_handoff, Mapping):
+        nonce = str(raw_handoff.get("nonce") or "").strip()
+        if nonce:
+            return nonce
+    handoff = _stored_history_handoff(raw_handoff)
+    return f"legacy-{handoff.kind}-{handoff.source_revision}"
+
+
+def _pending_history_handoff(
+    raw_handoff: object,
+    consumed_nonce: object,
+) -> HistoryHandoff:
+    nonce = _stored_handoff_nonce(raw_handoff)
+    if nonce == str(consumed_nonce or ""):
+        raise HistoryValidationError("history handoff was already consumed")
+    return _stored_history_handoff(raw_handoff)
+
+
+def _requested_history_handoff(raw_request: object) -> HistoryHandoff:
+    if not isinstance(raw_request, Mapping) or "handoff" not in raw_request:
+        raise HistoryValidationError("history request has no identity")
+    return HistoryHandoff.from_mapping(raw_request["handoff"])
+
+
 def _json_value(value: object) -> object:
     if value is None or value is pd.NA:
         return None
@@ -169,6 +203,9 @@ def metric_controls(
 def _request_query(raw_request: object) -> HistoryQuery:
     if not isinstance(raw_request, Mapping):
         raise HistoryValidationError("history request must be a mapping")
+    request_error = str(raw_request.get("error") or "").strip()
+    if request_error:
+        raise HistoryValidationError(request_error)
     handoff = HistoryHandoff.from_mapping(raw_request.get("handoff"))
     period = str(raw_request.get("period") or "all").strip().casefold()
     return HistoryQuery(
@@ -307,12 +344,17 @@ def register_callbacks(
         Output("data-history-kind-tabs", "value"),
         Output("data-identity-mode", "value"),
         Input("data-history-handoff-store", "data"),
+        Input("data-history-request-store", "data"),
+        State("data-history-handoff-consumed-store", "data"),
     )
-    def sync_quick_handoff(raw_handoff):
+    def sync_quick_handoff(raw_handoff, raw_request, consumed_nonce):
         try:
-            handoff = HistoryHandoff.from_mapping(raw_handoff)
+            handoff = _requested_history_handoff(raw_request)
         except (HistoryValidationError, TypeError, ValueError):
-            return no_update, no_update
+            try:
+                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
+            except (HistoryValidationError, TypeError, ValueError):
+                return no_update, no_update
         return handoff.kind, handoff.identity.identity_mode
 
     @app.callback(
@@ -347,25 +389,11 @@ def register_callbacks(
         Output("data-history-catalog-store", "data"),
         Output("data-catalog-status", "children"),
         Input("data-history-cache-state-store", "data"),
-        Input("data-history-query-state-store", "data"),
-        State("data-history-handoff-store", "data"),
         State("data-history-catalog-store", "data"),
     )
-    def refresh_archive_catalog(cache_state, query_state, raw_handoff, current):
+    def refresh_archive_catalog(cache_state, current):
         if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
             return None, "Preparing archive choices…"
-        try:
-            HistoryHandoff.from_mapping(raw_handoff)
-            has_quick_handoff = True
-        except (HistoryValidationError, TypeError, ValueError):
-            has_quick_handoff = False
-        query_status = (
-            str(query_state.get("status") or "idle")
-            if isinstance(query_state, Mapping)
-            else "idle"
-        )
-        if has_quick_handoff and query_status not in {"complete", "error"}:
-            return no_update, "Loading selected history before archive choices…"
         if (
             isinstance(current, Mapping)
             and current.get("generation") == cache_state.get("generation")
@@ -383,19 +411,23 @@ def register_callbacks(
         Input("data-history-catalog-store", "data"),
         Input("data-history-kind-tabs", "value"),
         Input("data-identity-mode", "value"),
+        Input("data-history-request-store", "data"),
         State("data-risk-type", "value"),
         State("data-history-handoff-store", "data"),
+        State("data-history-handoff-consumed-store", "data"),
     )
     def choose_risk_type(
         raw_catalog,
         kind,
         identity_mode,
+        raw_request,
         current,
         raw_handoff,
+        consumed_nonce,
     ):
         if raw_catalog is None:
             try:
-                handoff = HistoryHandoff.from_mapping(raw_handoff)
+                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
                 if (
                     handoff.kind == str(kind or "risk").casefold()
                     and handoff.identity.identity_mode
@@ -409,10 +441,20 @@ def register_callbacks(
         try:
             options = risk_type_options(raw_catalog, kind, identity_mode)
             preferred = None
-            if current is None:
-                handoff = HistoryHandoff.from_mapping(raw_handoff)
-                if handoff.kind == str(kind or "risk").casefold():
-                    preferred = handoff.identity.risk_type
+            try:
+                handoff = _requested_history_handoff(raw_request)
+            except (HistoryValidationError, TypeError, ValueError):
+                try:
+                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
+                except (HistoryValidationError, TypeError, ValueError):
+                    handoff = None
+            if (
+                handoff is not None
+                and handoff.kind == str(kind or "risk").casefold()
+                and handoff.identity.identity_mode
+                == str(identity_mode or "reported").casefold()
+            ):
+                preferred = handoff.identity.risk_type
             return options, selected_value(options, current, preferred)
         except (HistoryValidationError, TypeError, ValueError):
             return [], None
@@ -424,22 +466,26 @@ def register_callbacks(
         Input("data-history-kind-tabs", "value"),
         Input("data-identity-mode", "value"),
         Input("data-risk-type", "value"),
+        Input("data-history-request-store", "data"),
         State("data-risk-greek", "value"),
         State("data-history-handoff-store", "data"),
+        State("data-history-handoff-consumed-store", "data"),
     )
     def choose_risk_greek(
         raw_catalog,
         kind,
         identity_mode,
         risk_type,
+        raw_request,
         current,
         raw_handoff,
+        consumed_nonce,
     ):
         if risk_type is None:
             return [], None
         if raw_catalog is None:
             try:
-                handoff = HistoryHandoff.from_mapping(raw_handoff)
+                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
                 if handoff.kind == str(
                     kind or "risk"
                 ).casefold() and handoff.identity.risk_type == str(risk_type):
@@ -456,12 +502,21 @@ def register_callbacks(
                 risk_type,
             )
             preferred = None
-            if current is None:
-                handoff = HistoryHandoff.from_mapping(raw_handoff)
-                if handoff.kind == str(
-                    kind or "risk"
-                ).casefold() and handoff.identity.risk_type == str(risk_type):
-                    preferred = handoff.identity.risk_greek
+            try:
+                handoff = _requested_history_handoff(raw_request)
+            except (HistoryValidationError, TypeError, ValueError):
+                try:
+                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
+                except (HistoryValidationError, TypeError, ValueError):
+                    handoff = None
+            if (
+                handoff is not None
+                and handoff.kind == str(kind or "risk").casefold()
+                and handoff.identity.identity_mode
+                == str(identity_mode or "reported").casefold()
+                and handoff.identity.risk_type == str(risk_type)
+            ):
+                preferred = handoff.identity.risk_greek
             return options, selected_value(options, current, preferred)
         except (HistoryValidationError, TypeError, ValueError):
             return [], None
@@ -474,8 +529,10 @@ def register_callbacks(
         Input("data-identity-mode", "value"),
         Input("data-risk-type", "value"),
         Input("data-risk-greek", "value"),
+        Input("data-history-request-store", "data"),
         State("data-underlying", "value"),
         State("data-history-handoff-store", "data"),
+        State("data-history-handoff-consumed-store", "data"),
     )
     def choose_underlying(
         raw_catalog,
@@ -483,14 +540,16 @@ def register_callbacks(
         identity_mode,
         risk_type,
         risk_greek,
+        raw_request,
         current,
         raw_handoff,
+        consumed_nonce,
     ):
         if risk_type is None or risk_greek is None:
             return [], None
         if raw_catalog is None:
             try:
-                handoff = HistoryHandoff.from_mapping(raw_handoff)
+                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
                 if (
                     handoff.kind == str(kind or "risk").casefold()
                     and handoff.identity.risk_type == str(risk_type)
@@ -514,25 +573,47 @@ def register_callbacks(
                 risk_greek,
             )
             preferred = None
-            if current in {None, QUICK_HANDOFF_ENTRY_KEY}:
-                preferred = catalog_key_for_handoff(raw_catalog, raw_handoff)
+            try:
+                selected_handoff = _requested_history_handoff(raw_request)
+            except (HistoryValidationError, TypeError, ValueError):
+                try:
+                    selected_handoff = _pending_history_handoff(
+                        raw_handoff,
+                        consumed_nonce,
+                    )
+                except (HistoryValidationError, TypeError, ValueError):
+                    selected_handoff = None
+            if (
+                selected_handoff is not None
+                and selected_handoff.kind == str(kind or "risk").casefold()
+                and selected_handoff.identity.identity_mode
+                == str(identity_mode or "reported").casefold()
+                and selected_handoff.identity.risk_type == str(risk_type)
+                and selected_handoff.identity.risk_greek == str(risk_greek)
+            ):
+                preferred = catalog_key_for_handoff(
+                    raw_catalog,
+                    selected_handoff.to_mapping(),
+                )
             return options, selected_value(options, current, preferred)
         except (HistoryValidationError, TypeError, ValueError):
             return [], None
 
     @app.callback(
         Output("data-history-request-store", "data"),
+        Output("data-history-handoff-consumed-store", "data"),
         Input("data-history-handoff-store", "data"),
-        Input("data-load-history-button", "n_clicks"),
+        Input("data-load-history-button", "n_clicks", allow_optional=True),
         Input("reset-generation-store", "data"),
-        State("data-history-kind-tabs", "value"),
-        State("data-history-catalog-store", "data"),
-        State("data-underlying", "value"),
-        State("data-metric", "value"),
-        State("data-period", "value"),
-        State("data-custom-range", "start_date"),
-        State("data-custom-range", "end_date"),
-        State("data-history-request-store", "data"),
+        State("data-history-kind-tabs", "value", allow_optional=True),
+        State("data-history-catalog-store", "data", allow_optional=True),
+        State("data-underlying", "value", allow_optional=True),
+        State("data-metric", "value", allow_optional=True),
+        State("data-period", "value", allow_optional=True),
+        State("data-custom-range", "start_date", allow_optional=True),
+        State("data-custom-range", "end_date", allow_optional=True),
+        State("data-history-request-store", "data", allow_optional=True),
+        State("data-history-handoff-consumed-store", "data"),
     )
     def choose_history_request(
         raw_handoff,
@@ -546,16 +627,34 @@ def register_callbacks(
         start_date,
         end_date,
         current_request,
+        consumed_nonce,
     ):
         triggered = ctx.triggered_id
+        if triggered is None and raw_handoff is None:
+            return no_update, no_update
+        if (
+            triggered == "data-load-history-button"
+            and int(load_clicks or 0) <= 0
+            and raw_handoff is None
+        ):
+            return no_update, no_update
+        if triggered == "data-history-handoff-store":
+            if raw_handoff is None:
+                return no_update, no_update
+            try:
+                handoff_nonce = _stored_handoff_nonce(raw_handoff)
+            except (HistoryValidationError, TypeError, ValueError):
+                handoff_nonce = ""
+            if handoff_nonce and handoff_nonce == str(consumed_nonce or ""):
+                return no_update, no_update
         try:
             reset = int(reset_generation or 0)
         except (TypeError, ValueError):
             reset = 0
         try:
-            if triggered == "data-load-history-button":
+            if triggered == "data-load-history-button" and int(load_clicks or 0) > 0:
                 if entry_key == QUICK_HANDOFF_ENTRY_KEY:
-                    handoff = HistoryHandoff.from_mapping(raw_handoff)
+                    handoff = _stored_history_handoff(raw_handoff)
                     if handoff.kind != str(kind or "risk").strip().casefold():
                         raise HistoryValidationError(
                             "Quick history identity belongs to another tab"
@@ -575,8 +674,10 @@ def register_callbacks(
                     start_date=start_date,
                     end_date=end_date,
                     request_id=f"load-{int(load_clicks or 0)}-{reset}",
-                )
-            if triggered == "reset-generation-store" and current_request is not None:
+                ), no_update
+            if triggered == "reset-generation-store":
+                if current_request is None:
+                    return no_update, no_update
                 query = _request_query(current_request)
                 return history_request_payload(
                     replace(query.handoff, reset_generation=reset),
@@ -584,17 +685,22 @@ def register_callbacks(
                     start_date=query.start_date,
                     end_date=query.end_date,
                     request_id=f"reset-{reset}",
-                )
-            handoff = HistoryHandoff.from_mapping(raw_handoff)
+                ), no_update
+            handoff = _stored_history_handoff(raw_handoff)
+            nonce = _stored_handoff_nonce(raw_handoff)
             return history_request_payload(
                 replace(handoff, reset_generation=reset),
                 period=period,
                 start_date=start_date,
                 end_date=end_date,
-                request_id=f"quick-{handoff.source_revision}-{reset}",
-            )
-        except (HistoryValidationError, TypeError, ValueError):
-            return None
+                request_id=f"quick-{nonce}-{reset}",
+            ), nonce
+        except (HistoryValidationError, TypeError, ValueError) as error:
+            detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
+            return {
+                "error": detail,
+                "request_id": f"invalid-{triggered}-{int(load_clicks or 0)}-{reset}",
+            }, no_update
 
     @app.callback(
         Output("data-custom-range-control", "hidden"),
@@ -627,7 +733,6 @@ def register_callbacks(
     @app.callback(
         Output("data-history-bundle-store", "data"),
         Output("data-history-status", "children"),
-        Output("data-history-query-state-store", "data"),
         Input("data-history-request-store", "data"),
         Input("data-history-cache-state-store", "data"),
         Input("reset-generation-store", "data"),
@@ -646,11 +751,7 @@ def register_callbacks(
         reset_generation,
     ):
         if raw_request is None:
-            return (
-                None,
-                "Choose an exact identity, then load its history.",
-                {"status": "idle"},
-            )
+            return None, "Choose an exact identity, then load its history."
         try:
             payload, status = query_history_bundle(
                 repository,
@@ -658,17 +759,9 @@ def register_callbacks(
                 cache_state,
                 reset_generation,
             )
-            return (
-                payload,
-                status,
-                {"status": "waiting" if payload is None else "complete"},
-            )
+            return payload, status
         except (OSError, HistoryValidationError, TypeError, ValueError) as error:
-            return (
-                None,
-                f"History request failed: {error}",
-                {"status": "error"},
-            )
+            return None, f"History request failed: {error}"
 
     app.clientside_callback(
         ClientsideFunction(namespace="cube", function_name="dataProjectionBase"),
@@ -711,6 +804,7 @@ def register_callbacks(
         Output("data-player-date-pill", "children"),
         Output("data-player-button", "children"),
         Output("data-player-button", "disabled"),
+        Output("data-player-mode-pill", "children"),
         Output("data-player-interval", "disabled"),
         Output("data-player-state-store", "data"),
         Output("data-player-controls", "style"),

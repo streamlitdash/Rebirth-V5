@@ -25,7 +25,6 @@ from rebirth.domain.s01_schema import (  # noqa: E402
     PORTFOLIO_COLUMN,
     PORTFOLIO_METADATA_COLUMNS,
 )
-from rebirth.domain.s11_riskviews import PivotSpec  # noqa: E402
 from rebirth.domain.s09_stock import STOCK_IDENTITY_COLUMNS  # noqa: E402
 from rebirth.history import (  # noqa: E402
     HISTORY_HANDOFF_SCHEMA_VERSION,
@@ -41,7 +40,6 @@ from rebirth.pages.risk.s06_explorertables import build_risk_table  # noqa: E402
 from rebirth.pages.risk.s03_defaults import (  # noqa: E402
     default_risk_filter_payload,
 )
-from rebirth.pages.risk.s13_pivot import compute_native_pivot  # noqa: E402
 from rebirth.ui.s02_aggregation import (  # noqa: E402
     apply_filters,
     default_open_rows,
@@ -230,17 +228,6 @@ def run_benchmarks() -> list[BenchmarkResult]:
 
     prepared = prepare_scaled()
     default_filters = default_risk_filter_payload(prepared)
-    custom_pivot = PivotSpec(
-        rows=("portfolio", "risk type", "risk greek"),
-        columns=("activity",),
-        measures=("risk", "drisk", "pl"),
-        sort=(("risk", "desc"),),
-        row_totals=True,
-        column_totals=True,
-        grand_total=True,
-        row_limit=200,
-        column_limit=10,
-    )
 
     def filter_scaled() -> pd.DataFrame:
         return apply_filters(
@@ -287,16 +274,6 @@ def run_benchmarks() -> list[BenchmarkResult]:
                     len(table_frame),
                     None,
                     table_frame["portfolio"].nunique(),
-                ),
-            ),
-            _measure(
-                "interaction.custom_pivot_100k",
-                1_000,
-                lambda: compute_native_pivot(prepared, custom_pivot),
-                lambda _value: (
-                    len(prepared),
-                    None,
-                    prepared["portfolio"].nunique(),
                 ),
             ),
         ]

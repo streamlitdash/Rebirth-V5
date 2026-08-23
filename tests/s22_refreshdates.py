@@ -17,7 +17,7 @@ from rebirth.domain.s03_calculations import (
 from rebirth.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
 from rebirth.services.s06_refresh import RiskRefreshManager
 from tools.s01_fixtures import build_datasets, validate_datasets
-from rebirth.pages.risk.s18_view import build_risk_date_editor
+from rebirth.pages.risk.s16_view import build_risk_date_editor
 
 
 def _walk(component: object) -> Iterable[object]:

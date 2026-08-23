@@ -22,7 +22,6 @@ def _table_style() -> dict[str, object]:
         "sort_mode": "multi",
         "page_action": "native",
         "page_size": 50,
-        "fixed_rows": {"headers": True},
         "style_table": {"overflowX": "auto", "maxHeight": "68vh"},
         "style_header": {
             "backgroundColor": "var(--surface-muted)",
@@ -44,6 +43,21 @@ def _table_style() -> dict[str, object]:
             "width": "150px",
         },
     }
+
+
+def _editable_columns(columns: list[str]) -> list[dict[str, object]]:
+    """Keep governed schema names fixed while allowing columns to be hidden."""
+
+    return [
+        {
+            "name": column,
+            "id": column,
+            "hideable": True,
+            "renamable": False,
+            "deletable": False,
+        }
+        for column in columns
+    ]
 
 
 def build_static_data_table(
@@ -81,7 +95,7 @@ def build_static_data_table(
                 **_table_style(),
             ),
         ],
-        className="static-data-panel",
+        className="page-card static-data-panel",
     )
 
 
@@ -92,20 +106,21 @@ def build_static_data_page() -> html.Div:
         return html.Div(
             "No approved static data files are available.",
             id="static-data-page",
-            className="static-data-page static-data-empty",
+            className="page-frame static-data-empty",
         )
     write_value = STATIC_WRITE_OPTIONS[0]["value"] if STATIC_WRITE_OPTIONS else None
     return html.Div(
         [
-            html.Div(
+            html.Header(
                 [
-                    html.H2("Statics", className="static-data-page-title"),
+                    html.P("REFERENCE DATA", className="page-eyebrow"),
+                    html.H1("Statics", className="page-title"),
                     html.P(
                         "Read reference data, or edit the small governed mapping files.",
-                        className="static-data-page-note",
+                        className="page-intro",
                     ),
                 ],
-                className="static-data-header",
+                className="page-header",
             ),
             dcc.Tabs(
                 id="static-data-mode",
@@ -114,7 +129,7 @@ def build_static_data_page() -> html.Div:
                     dcc.Tab(label="Read", value="read"),
                     dcc.Tab(label="Write", value="write"),
                 ],
-                className="v4-workspace-tabs",
+                className="workspace-tabs static-data-tabs",
             ),
             html.Section(
                 [
@@ -148,38 +163,39 @@ def build_static_data_page() -> html.Div:
                                 "Add row",
                                 id="static-data-add-row",
                                 n_clicks=0,
-                                className="pl-action-secondary",
+                                className="action-button action-secondary",
                                 type="button",
                             ),
                             html.Button(
                                 "Save",
                                 id="static-data-save",
                                 n_clicks=0,
-                                className="pl-action-primary",
+                                className="action-button action-primary",
                                 type="button",
                             ),
                             html.Button(
                                 "Cancel",
                                 id="static-data-cancel",
                                 n_clicks=0,
-                                className="pl-action-secondary",
+                                className="action-button action-secondary",
                                 type="button",
                             ),
                         ],
                         className="static-data-write-actions",
                     ),
                     html.P(
-                        "Save validates the complete table and replaces the CSV "
-                        "atomically. A deployed app keeps runtime edits only while its "
-                        "filesystem persists; commit approved changes to Git for the "
-                        "next deployment.",
-                        className="static-data-page-note",
+                        "Edit cells directly, remove rows with the row action, and hide "
+                        "columns from the header menu. Governed connector columns stay "
+                        "locked so a saved edit cannot break the application. Save "
+                        "validates the complete table and replaces the CSV atomically.",
+                        className="page-note",
                     ),
                     dash_table.DataTable(
                         id="static-data-write-table",
                         columns=[],
                         data=[],
                         editable=True,
+                        row_deletable=True,
                         **_table_style(),
                     ),
                     html.Div(
@@ -195,7 +211,7 @@ def build_static_data_page() -> html.Div:
             ),
         ],
         id="static-data-page",
-        className="static-data-page",
+        className="page-frame",
     )
 
 
@@ -206,6 +222,7 @@ def layout(**_kwargs: Any) -> html.Div:
 __all__ = [
     "STATIC_FILE_OPTIONS",
     "STATIC_WRITE_OPTIONS",
+    "_editable_columns",
     "build_static_data_page",
     "build_static_data_table",
     "layout",

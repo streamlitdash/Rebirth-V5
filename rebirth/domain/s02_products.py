@@ -56,6 +56,7 @@ REGION = "Region"
 DISPLAY_BUCKET = "Display Bucket"
 PROMOTION_REASON = "Promotion Reason"
 PROMOTION_SCORE = "Promotion Score"
+VOL_SCORE = "Vol Score"
 RISK_THRESHOLD = "Risk Threshold"
 DRISK_THRESHOLD = "dRisk Threshold"
 PL_THRESHOLD = "PL Threshold"
@@ -372,7 +373,9 @@ class ProductConnectorAdapter:
         ``risk_date`` is a normalized, timezone-naive ``pandas.Timestamp``.
         Return one authoritative position row per product key with columns
         ``Underlying``, the source's required tenor columns, ``Portfolio``,
-        connector-owned ``Group``, ``Risk``, and ``dRisk``. ``Group`` passes
+        connector-owned ``Group``, ``Risk``, ``dRisk``, and ``Vol Score``.
+        ``Vol Score`` is a finite score in the inclusive range 0 to 100 and is
+        retained as connector data; the UI never recalculates it. ``Group`` passes
         through unchanged: the framework does not classify, normalize, or
         restrict its values. ``Risk Type`` and ``Risk Greek`` may be supplied
         and are checked when present. Credit sources may also return the

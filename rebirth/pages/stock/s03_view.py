@@ -13,17 +13,30 @@ from dash.dash_table.Format import Format, Scheme
 from rebirth.adapters.s08_stock import StockConnectorAdapter, StockSource
 from rebirth.domain.s01_schema import PORTFOLIO_MAPPED_COLUMN
 from rebirth.domain.s09_stock import map_stock_comparison_portfolios
+from rebirth.ui.s03_filters import build_saved_filter_view_bar
 
 from .s01_data import (
     STOCK_DISPLAY_COLUMNS,
+    STOCK_FILTER_FIELDS,
+    STOCK_FILTER_IDS,
+    STOCK_FILTER_NOTE,
+    STOCK_SAVED_VIEW_CONTROLS,
     StockPageData,
-    default_stock_activities,
+    default_stock_filter_values,
     load_stock_page_data,
     normalize_stock_date_pair,
-    stock_activity_options,
     stock_display_rows,
+    stock_filter_options,
 )
 from .s02_history import build_stock_history_empty_figure
+from .s05_pivot import (
+    STOCK_PIVOT_COLUMN_FIELDS,
+    STOCK_PIVOT_DEFAULT_ROWS,
+    STOCK_PIVOT_DEFAULT_VALUES,
+    STOCK_PIVOT_ROW_FIELDS,
+    STOCK_PIVOT_VALUES,
+    build_stock_pivot,
+)
 
 
 STOCK_PERIODS = (
@@ -70,27 +83,92 @@ def stock_table_records(display: pd.DataFrame) -> list[dict[str, object]]:
     return records
 
 
+def stock_pivot_columns(
+    columns: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Attach compact number formats to page-owned dynamic pivot columns."""
+
+    result: list[dict[str, object]] = []
+    for source in columns:
+        column = dict(source)
+        if column.get("type") == "numeric":
+            column["format"] = Format(
+                precision=0 if column.get("id") == "Positions" else 2,
+                scheme=Scheme.fixed,
+                group=",",
+            )
+        result.append(column)
+    return result
+
+
 def build_stock_table(display: pd.DataFrame) -> dash_table.DataTable:
-    """Build the latest row-level Stock table; metadata is never aggregated."""
+    """Build the compact expandable Stock pivot."""
+
+    pivot = build_stock_pivot(display)
 
     return dash_table.DataTable(
         id="stock-current-table",
-        columns=_stock_table_columns(),
-        data=stock_table_records(display),
+        columns=stock_pivot_columns(pivot.columns),
+        data=pivot.records,
         active_cell=None,
         cell_selectable=True,
+        sort_action="none",
+        page_action="none",
+        fixed_rows={"headers": True},
+        merge_duplicate_headers=True,
+        style_table={"overflowX": "auto", "maxHeight": "62vh"},
+        style_cell={
+            "padding": "8px 10px",
+            "textAlign": "left",
+            "minWidth": "120px",
+            "whiteSpace": "nowrap",
+        },
+        style_cell_conditional=[
+            {
+                "if": {"column_id": "Hierarchy"},
+                "minWidth": "280px",
+                "width": "45%",
+                "cursor": "pointer",
+            },
+            {
+                "if": {"column_type": "numeric"},
+                "textAlign": "right",
+                "fontVariantNumeric": "tabular-nums",
+            },
+        ],
+        style_data_conditional=[
+            {
+                "if": {"filter_query": '{Hierarchy} contains "▸"'},
+                "fontWeight": 700,
+            },
+            {
+                "if": {"filter_query": '{Hierarchy} contains "−"'},
+                "fontWeight": 700,
+                "backgroundColor": "var(--surface-soft)",
+            },
+        ],
+    )
+
+
+def build_stock_position_detail(display: pd.DataFrame) -> html.Details:
+    """Keep connector and mapped metadata at its unaggregated row grain."""
+
+    table = dash_table.DataTable(
+        id="stock-position-detail-table",
+        columns=_stock_table_columns(),
+        data=stock_table_records(display),
         filter_action="native",
         filter_options={"case": "insensitive"},
         sort_action="native",
         sort_mode="multi",
         page_action="native",
-        page_size=25,
+        page_size=15,
         fixed_rows={"headers": True},
-        style_table={"overflowX": "auto", "maxHeight": "62vh"},
+        style_table={"overflowX": "auto", "maxHeight": "52vh"},
         style_cell={
-            "padding": "8px 10px",
+            "padding": "7px 9px",
             "textAlign": "left",
-            "minWidth": "105px",
+            "minWidth": "100px",
             "whiteSpace": "nowrap",
         },
         style_cell_conditional=[
@@ -100,6 +178,68 @@ def build_stock_table(display: pd.DataFrame) -> dash_table.DataTable:
                 "fontVariantNumeric": "tabular-nums",
             }
         ],
+    )
+    return html.Details(
+        [
+            html.Summary("Position detail · unaggregated connector rows"),
+            html.P(
+                "Static identifiers and Portfolio mappings are shown exactly as received.",
+                className="page-note",
+            ),
+            table,
+        ],
+        className="stock-position-detail",
+    )
+
+
+def build_stock_filter_bar(
+    *,
+    options: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
+    selected: Mapping[str, Sequence[str]] | None = None,
+    exclude_selected: bool = False,
+) -> html.Div:
+    """Build the five Stock-local governed reporting filters."""
+
+    available = dict(options or {})
+    values = dict(selected or {})
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Label(
+                                field.label, htmlFor=STOCK_FILTER_IDS[field.key]
+                            ),
+                            dcc.Dropdown(
+                                id=STOCK_FILTER_IDS[field.key],
+                                options=list(available.get(field.key, ())),
+                                value=list(values.get(field.key, ())),
+                                multi=True,
+                                clearable=True,
+                                placeholder=f"All {field.label.casefold()} values",
+                            ),
+                        ],
+                        className="control-field",
+                    )
+                    for field in STOCK_FILTER_FIELDS
+                ],
+                className="stock-filter-grid",
+            ),
+            dcc.Checklist(
+                id=STOCK_SAVED_VIEW_CONTROLS.exclude_id,
+                options=[
+                    {
+                        "label": "Exclude rows matching any selected value",
+                        "value": "exclude",
+                    }
+                ],
+                value=["exclude"] if exclude_selected else [],
+                className="risk-filter-mode filter-mode-control",
+            ),
+        ],
+        id="stock-filter-bar",
+        className="stock-filter-bar",
     )
 
 
@@ -128,10 +268,17 @@ def build_stock_history_section(*, available: bool) -> html.Div:
     ]
     return html.Section(
         [
-            html.H2("Stock history", className="static-data-page-title"),
-            html.P(
-                "Stock is market value; dStock is the business-day change. History is read only on request.",
-                className="static-data-page-note",
+            html.Div(
+                [
+                    html.H2("Stock history"),
+                    html.P(
+                        "Stock is market value and dStock is its business-day "
+                        "change. A leaf click loads the chart; period changes then "
+                        "update it immediately.",
+                        className="page-note",
+                    ),
+                ],
+                className="stock-section-heading",
             ),
             html.Div(
                 [
@@ -206,12 +353,12 @@ def build_stock_history_section(*, available: bool) -> html.Div:
                         className="control-field stock-compare-action",
                     ),
                 ],
-                className="controls top-controls",
+                className="stock-history-controls",
             ),
             html.P(
                 status,
                 id="stock-history-status",
-                className="static-data-page-note",
+                className="page-note",
                 role="status",
             ),
             dcc.Loading(
@@ -224,7 +371,7 @@ def build_stock_history_section(*, available: bool) -> html.Div:
             ),
         ],
         id="stock-history-panel",
-        className="static-data-panel",
+        className="page-card stock-section-card stock-history-section",
     )
 
 
@@ -267,8 +414,9 @@ def _stock_page_layout(
     prior_date: pd.Timestamp,
     history_available: bool,
     display: pd.DataFrame,
-    activity_options: list[dict[str, str]],
-    selected_activities: Sequence[str],
+    filter_options: Mapping[str, Sequence[Mapping[str, str]]],
+    selected_filters: Mapping[str, Sequence[str]],
+    exclude_selected: bool,
 ) -> html.Main:
     current_end = current_date.date().isoformat()
     current_start = (
@@ -288,74 +436,169 @@ def _stock_page_layout(
             ),
             dcc.Store(id="stock-history-period", data="1y"),
             dcc.Store(id="stock-history-autoload", data=None),
+            dcc.Store(id="stock-pivot-open-paths", data=[]),
+            dcc.Store(id="stock-filter-ready", data=False),
             dcc.Interval(
                 id="stock-load-trigger", interval=100, n_intervals=0, max_intervals=1
             ),
-            html.H1("Stock", className="static-data-page-title"),
-            html.P(
-                "Latest mapped positions. Use the Activity control or the table filters, then click any row for inline history.",
-                className="static-data-page-note",
+            html.Header(
+                [
+                    html.P("CURRENT POSITIONS", className="page-eyebrow"),
+                    html.H1("Stock", className="page-title"),
+                    html.P(
+                        "Review current Stock and dStock through one configurable "
+                        "hierarchy. Expand a branch, then click a leaf to see its "
+                        "history on this page.",
+                        className="page-intro",
+                    ),
+                ],
+                className="page-header",
             ),
-            html.Div(
+            build_saved_filter_view_bar(STOCK_SAVED_VIEW_CONTROLS),
+            html.Section(
                 [
                     html.Div(
                         [
-                            html.Label("Activity", htmlFor="stock-current-activity"),
-                            dcc.Dropdown(
-                                id="stock-current-activity",
-                                options=activity_options,
-                                value=list(selected_activities),
-                                multi=True,
-                                clearable=True,
-                                placeholder="All activities",
+                            html.H2("Reporting filters"),
+                            html.P(
+                                "Base Review starts with Activity 1, 2 and 3. "
+                                "Selections affect only this Stock page.",
+                                className="page-note",
                             ),
                         ],
-                        className="control-field",
-                    )
+                        className="stock-section-heading",
+                    ),
+                    build_stock_filter_bar(
+                        options=filter_options,
+                        selected=selected_filters,
+                        exclude_selected=exclude_selected,
+                    ),
+                    html.P(STOCK_FILTER_NOTE, className="stock-filter-note"),
                 ],
-                className="controls top-controls",
+                className="page-card stock-section-card stock-filter-section",
             ),
-            html.Div(
+            html.Section(
                 [
-                    html.Span(
-                        f"Rows: {total_rows:,}",
-                        id="stock-row-count",
-                        className="static-data-row-count",
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.H2("Current Stock"),
+                                    html.P(
+                                        "Choose the hierarchy, optional column split "
+                                        "and values. Category is labelled Bucket.",
+                                        className="page-note",
+                                    ),
+                                ],
+                                className="stock-section-heading",
+                            ),
+                            html.Div(
+                                [
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Rows", htmlFor="stock-pivot-rows"
+                                            ),
+                                            dcc.Dropdown(
+                                                id="stock-pivot-rows",
+                                                options=[
+                                                    {"label": label, "value": value}
+                                                    for value, label in STOCK_PIVOT_ROW_FIELDS
+                                                ],
+                                                value=list(STOCK_PIVOT_DEFAULT_ROWS),
+                                                multi=True,
+                                                clearable=False,
+                                            ),
+                                        ],
+                                        className="control-field stock-pivot-rows",
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Columns", htmlFor="stock-pivot-column"
+                                            ),
+                                            dcc.Dropdown(
+                                                id="stock-pivot-column",
+                                                options=[
+                                                    {"label": label, "value": value}
+                                                    for value, label in STOCK_PIVOT_COLUMN_FIELDS
+                                                ],
+                                                value="",
+                                                clearable=False,
+                                            ),
+                                        ],
+                                        className="control-field",
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Values", htmlFor="stock-pivot-values"
+                                            ),
+                                            dcc.Dropdown(
+                                                id="stock-pivot-values",
+                                                options=[
+                                                    {"label": label, "value": value}
+                                                    for value, label in STOCK_PIVOT_VALUES
+                                                ],
+                                                value=list(STOCK_PIVOT_DEFAULT_VALUES),
+                                                multi=True,
+                                                clearable=False,
+                                            ),
+                                        ],
+                                        className="control-field",
+                                    ),
+                                ],
+                                className="stock-pivot-controls",
+                            ),
+                        ],
+                        className="stock-current-header",
                     ),
-                    html.Span(
-                        f"Mapped: {mapped:,}",
-                        id="stock-mapped-count",
-                        className="static-data-col-count",
+                    html.Div(
+                        [
+                            html.Span(
+                                f"Rows: {total_rows:,}",
+                                id="stock-row-count",
+                                className="static-data-row-count",
+                            ),
+                            html.Span(
+                                f"Mapped: {mapped:,}",
+                                id="stock-mapped-count",
+                                className="static-data-col-count",
+                            ),
+                            html.Span(
+                                f"Unmapped: {total_rows - mapped:,}",
+                                id="stock-unmapped-count",
+                                className="static-data-col-count",
+                            ),
+                            html.Span(
+                                "Loading latest Stock…"
+                                if display.empty
+                                else f"As of {current_end}",
+                                id="stock-load-status",
+                                className="static-data-col-count",
+                                role="status",
+                            ),
+                        ],
+                        className="static-data-meta",
                     ),
-                    html.Span(
-                        f"Unmapped: {total_rows - mapped:,}",
-                        id="stock-unmapped-count",
-                        className="static-data-col-count",
-                    ),
-                    html.Span(
-                        "Loading latest Stock…"
-                        if display.empty
-                        else f"As of {current_end}",
-                        id="stock-load-status",
-                        className="static-data-col-count",
-                        role="status",
+                    dcc.Loading(
+                        html.Div(
+                            [
+                                build_stock_table(display),
+                                build_stock_position_detail(display),
+                            ],
+                            id="stock-current-panel",
+                            className="page-card static-data-panel stock-current-panel",
+                        ),
+                        delay_show=120,
                     ),
                 ],
-                className="static-data-meta",
+                className="page-card stock-section-card stock-current-section",
             ),
-            dcc.Loading(
-                html.Div(
-                    build_stock_table(display),
-                    id="stock-current-panel",
-                    className="static-data-panel",
-                ),
-                delay_show=120,
-            ),
-            html.Hr(className="static-data-divider"),
             build_stock_history_section(available=history_available),
         ],
         id="stock-page",
-        className="static-data-page",
+        className="page-frame stock-page",
     )
     date_range = next(
         component
@@ -382,8 +625,9 @@ def build_stock_page_shell(
         prior_date=prior,
         history_available=history_available,
         display=empty,
-        activity_options=[],
-        selected_activities=[],
+        filter_options={field.key: [] for field in STOCK_FILTER_FIELDS},
+        selected_filters={field.key: [] for field in STOCK_FILTER_FIELDS},
+        exclude_selected=False,
     )
 
 
@@ -396,18 +640,27 @@ def build_stock_page_from_data(
 ) -> html.Main:
     """Build the pure V4.1 page from one mapped server snapshot."""
 
-    del exclude_selected, promotion_threshold
-    selected = list((selected_filters or {}).get("activity") or ())
-    if not selected:
-        selected = default_stock_activities(page_data.mapped_stock)
-    display = stock_display_rows(page_data.mapped_stock, selected)
+    del promotion_threshold
+    selected = {
+        field.key: list((selected_filters or {}).get(field.key) or ())
+        for field in STOCK_FILTER_FIELDS
+    }
+    if not any(selected.values()):
+        selected = default_stock_filter_values(page_data.mapped_stock)
+    options, selected = stock_filter_options(page_data.mapped_stock, selected)
+    display = stock_display_rows(
+        page_data.mapped_stock,
+        dimension_filters=selected,
+        exclude_selected=exclude_selected,
+    )
     return _stock_page_layout(
         current_date=page_data.current_date,
         prior_date=page_data.prior_date,
         history_available=False,
         display=display,
-        activity_options=stock_activity_options(page_data.mapped_stock),
-        selected_activities=selected,
+        filter_options=options,
+        selected_filters=selected,
+        exclude_selected=exclude_selected,
     )
 
 
@@ -494,6 +747,7 @@ __all__ = [
     "build_stock_page_placeholder",
     "build_stock_page_shell",
     "build_stock_table",
+    "stock_pivot_columns",
     "stock_summary_text",
     "stock_table_records",
 ]

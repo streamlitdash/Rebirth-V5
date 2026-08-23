@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
-from dash import dcc, html
+from dash import html
 
 from .. import page_services
 from .s04_callbacks import register_callbacks
@@ -24,7 +23,7 @@ def build_stock_page_route(
     if not available:
         return html.Main(
             [
-                html.H1("Stock", className="static-data-page-title"),
+                html.H1("Stock", className="page-title"),
                 html.P(
                     "GetStock and its Portfolio mapping are not configured.",
                     id="stock-unavailable",
@@ -32,22 +31,17 @@ def build_stock_page_route(
                 ),
             ],
             id="stock-page",
-            className="static-data-page",
+            className="page-frame",
         )
     if reference_date is None:
         raise ValueError("An available Stock page requires a reference date")
 
     current_date, prior_date = default_stock_dates(reference_date)
-    page = build_stock_page_shell(
+    return build_stock_page_shell(
         current_date=current_date,
         prior_date=prior_date,
         history_available=history_available,
     )
-    page.children = [
-        dcc.Store(id="stock-request-scope", data=uuid4().hex),
-        *page.children,
-    ]
-    return page
 
 
 def layout(**_kwargs: Any):

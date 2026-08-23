@@ -85,6 +85,22 @@ PL_HISTORY_MAX_VISIBLE_NODES = 5_000
 PL_HISTORY_MAX_OPEN_PARENTS = 128
 PL_HISTORY_MAX_SERIES_ROWS = 524
 PL_HISTORY_MAX_RAW_ROWS = 500
+PL_RISK_SUMMARY_DEPTH = "Hierarchy Depth"
+PL_RISK_SUMMARY_LABEL = "Hierarchy Label"
+PL_RISK_SUMMARY_PATH = "Hierarchy Path"
+PL_RISK_SUMMARY_LEAF = "Hierarchy Leaf"
+PL_RISK_SUMMARY_CURRENT = "Current P&L"
+PL_RISK_SUMMARY_MTD = "Month to Date"
+PL_RISK_SUMMARY_YTD = "Year to Date"
+PL_RISK_SUMMARY_COLUMNS = (
+    PL_RISK_SUMMARY_DEPTH,
+    PL_RISK_SUMMARY_LABEL,
+    PL_RISK_SUMMARY_PATH,
+    PL_RISK_SUMMARY_LEAF,
+    PL_RISK_SUMMARY_CURRENT,
+    PL_RISK_SUMMARY_MTD,
+    PL_RISK_SUMMARY_YTD,
+)
 _PL_FILTER_COLUMNS = HISTORY_DIMENSION_COLUMNS
 _PL_TYPES = (COLOSSUS_TYPE, PREDICT_TYPE)
 _SERIES_PRESETS = frozenset(("wtd", "mtd", "ytd", "1y", "all", "custom"))
@@ -125,6 +141,15 @@ class PLHistoryRowsResult:
     pl_total: float | None
     resolved_start: str | None
     resolved_end: str | None
+
+
+@dataclass(frozen=True)
+class PLRiskSummaryResult:
+    """Risk Type → Greek → Underlying P&L totals for the dedicated page."""
+
+    summary: pd.DataFrame
+    as_of_date: str | None
+    row_count: int
 
 
 def _empty_series() -> pd.DataFrame:
@@ -944,6 +969,9 @@ class SQLPLHistoryRepository:
             tuple[str, tuple[object, ...]],
             tuple[int, int, str | None, str | None, int, tuple[float | None, ...]],
         ] = {}
+        self._risk_summary_cache: dict[
+            tuple[str, tuple[object, ...]], PLRiskSummaryResult
+        ] = {}
 
     @property
     def root(self) -> Path:
@@ -958,6 +986,7 @@ class SQLPLHistoryRepository:
 
     def _close_connection(self) -> None:
         self._stats_cache.clear()
+        self._risk_summary_cache.clear()
         try:
             if self._connection is not None:
                 self._connection.close()
@@ -1290,6 +1319,137 @@ class SQLPLHistoryRepository:
             unmapped,
         )
 
+    def risk_summary(
+        self,
+        *,
+        filters: Mapping[str, Sequence[object] | None] | None = None,
+        exclude_selected: bool = False,
+    ) -> PLRiskSummaryResult:
+        """Return one cached Risk Type → Greek → Underlying historical summary.
+
+        Current P&L is the latest Predict value. MTD and YTD are official
+        Colossus sums through the same archive date. The query is independent
+        from the Risk-page Aggregate P&L callback and scans history once per
+        filter selection and archive generation.
+        """
+
+        if not isinstance(exclude_selected, bool):
+            raise TypeError("exclude_selected must be boolean")
+        clause, parameters = _filter_clause(
+            filters,
+            exclude_selected=exclude_selected,
+        )
+        cache_key = (clause, tuple(parameters))
+        with self._lock:
+            connection = self._current_connection()
+            cached = self._risk_summary_cache.get(cache_key)
+            if cached is not None:
+                return PLRiskSummaryResult(
+                    cached.summary.copy(deep=True),
+                    cached.as_of_date,
+                    cached.row_count,
+                )
+            days = self._days or ()
+            if not days:
+                return PLRiskSummaryResult(
+                    pd.DataFrame(columns=list(PL_RISK_SUMMARY_COLUMNS)),
+                    None,
+                    0,
+                )
+            as_of = days[-1].snapshot_date
+            as_of_date = str(as_of)
+            month_start = pd.Timestamp(as_of).replace(day=1).date().isoformat()
+            year_start = pd.Timestamp(as_of).replace(month=1, day=1).date().isoformat()
+            try:
+                with perf_span(
+                    LOGGER,
+                    "pnl.history.risk_summary",
+                    budget_ms=3_000,
+                    kind="initial",
+                ) as timing:
+                    rows = connection.execute(
+                        f'''
+                        WITH filtered AS MATERIALIZED (
+                            SELECT h."{MARKET_DATE}", h."{HISTORY_TYPE}",
+                                   h."{RISK_TYPE}", h."{RISK_GREEK}",
+                                   h."{UNDERLYING}", h."{PL}"
+                            FROM _pl_history h
+                            WHERE {clause}
+                        )
+                        SELECT "{RISK_TYPE}", "{RISK_GREEK}", "{UNDERLYING}",
+                               CASE
+                                   WHEN grouping("{RISK_TYPE}") = 1 THEN 0
+                                   WHEN grouping("{RISK_GREEK}") = 1 THEN 1
+                                   WHEN grouping("{UNDERLYING}") = 1 THEN 2
+                                   ELSE 3
+                               END AS depth,
+                               sum("{PL}") FILTER (
+                                   WHERE "{MARKET_DATE}" = ?
+                                     AND "{HISTORY_TYPE}" = '{PREDICT_TYPE}'
+                               ) AS current_pl,
+                               sum("{PL}") FILTER (
+                                   WHERE "{MARKET_DATE}" BETWEEN ? AND ?
+                                     AND "{HISTORY_TYPE}" = '{COLOSSUS_TYPE}'
+                               ) AS mtd_pl,
+                               sum("{PL}") FILTER (
+                                   WHERE "{MARKET_DATE}" BETWEEN ? AND ?
+                                     AND "{HISTORY_TYPE}" = '{COLOSSUS_TYPE}'
+                               ) AS ytd_pl
+                        FROM filtered
+                        GROUP BY GROUPING SETS (
+                            (),
+                            ("{RISK_TYPE}"),
+                            ("{RISK_TYPE}", "{RISK_GREEK}"),
+                            ("{RISK_TYPE}", "{RISK_GREEK}", "{UNDERLYING}")
+                        )
+                        ''',
+                        [
+                            *parameters,
+                            as_of_date,
+                            month_start,
+                            as_of_date,
+                            year_start,
+                            as_of_date,
+                        ],
+                    ).fetchall()
+                    timing["cells"] = len(rows)
+            except (duckdb.Error, RiskArchiveValidationError, OSError) as exc:
+                raise PLSendValidationError(
+                    f"Could not query the P&L summary: {exc}"
+                ) from exc
+
+            records: list[dict[str, object]] = []
+            for risk_type, risk_greek, underlying, depth, current, mtd, ytd in rows:
+                selected = tuple(
+                    str(value)
+                    for value in (risk_type, risk_greek, underlying)[: int(depth)]
+                )
+                label = selected[-1] if selected else "TOTAL"
+                records.append(
+                    {
+                        PL_RISK_SUMMARY_DEPTH: int(depth),
+                        PL_RISK_SUMMARY_LABEL: label,
+                        PL_RISK_SUMMARY_PATH: selected,
+                        PL_RISK_SUMMARY_LEAF: int(depth) == 3,
+                        PL_RISK_SUMMARY_CURRENT: (
+                            None if current is None else float(current)
+                        ),
+                        PL_RISK_SUMMARY_MTD: None if mtd is None else float(mtd),
+                        PL_RISK_SUMMARY_YTD: None if ytd is None else float(ytd),
+                    }
+                )
+            summary = pd.DataFrame.from_records(
+                records,
+                columns=list(PL_RISK_SUMMARY_COLUMNS),
+            )
+            result = PLRiskSummaryResult(summary, as_of_date, len(summary))
+            self._risk_summary_cache[cache_key] = result
+            return PLRiskSummaryResult(
+                summary.copy(deep=True),
+                as_of_date,
+                len(summary),
+            )
+
     def series(
         self,
         *,
@@ -1533,9 +1693,18 @@ __all__ = [
     "PL_HISTORY_SUMMARY_COLUMNS",
     "PL_HISTORY_YTD_COLOSSUS",
     "PL_HISTORY_YTD_PREDICT",
+    "PL_RISK_SUMMARY_COLUMNS",
+    "PL_RISK_SUMMARY_CURRENT",
+    "PL_RISK_SUMMARY_DEPTH",
+    "PL_RISK_SUMMARY_LABEL",
+    "PL_RISK_SUMMARY_LEAF",
+    "PL_RISK_SUMMARY_MTD",
+    "PL_RISK_SUMMARY_PATH",
+    "PL_RISK_SUMMARY_YTD",
     "PLHistoryHierarchyResult",
     "PLHistoryRowsResult",
     "PLHistorySeriesResult",
+    "PLRiskSummaryResult",
     "SQLPLHistoryRepository",
     "open_history_database",
     "open_history_query_database",

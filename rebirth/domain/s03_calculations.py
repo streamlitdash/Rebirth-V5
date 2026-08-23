@@ -36,6 +36,7 @@ from rebirth.domain.s02_products import (
     SOURCE_TYPE,
     SPLIT,
     UNDERLYING,
+    VOL_SCORE,
     ProductSources,
     ProductSpec,
     ProductionIntegrationError,
@@ -381,10 +382,16 @@ def get_product_risk(
         f"{spec.key} risk",
     )
     key_columns = [RISK_TYPE, RISK_GREEK, UNDERLYING, *spec.tenor_columns, PORTFOLIO]
-    required = [*key_columns, GROUP, RISK, DRISK]
+    required = [*key_columns, GROUP, RISK, DRISK, VOL_SCORE]
     _require_columns(frame, required, f"{spec.key} risk")
     frame = _require_nonblank(frame, key_columns, f"{spec.key} risk")
-    frame = _coerce_numeric(frame, [RISK, DRISK], f"{spec.key} risk")
+    frame = _coerce_numeric(frame, [RISK, DRISK, VOL_SCORE], f"{spec.key} risk")
+    invalid_vol_score = ~frame[VOL_SCORE].between(0.0, 100.0, inclusive="both")
+    if invalid_vol_score.any():
+        rows = frame.index[invalid_vol_score].tolist()[:5]
+        raise ValueError(
+            f"{spec.key} risk {VOL_SCORE!r} must be between 0 and 100 at rows {rows}"
+        )
     credit_measure_columns = [
         column for column in CREDIT_MEASURE_COLUMNS if column in frame
     ]
@@ -427,6 +434,7 @@ def get_product_risk(
         *([REGION] if REGION in frame else []),
         RISK,
         DRISK,
+        VOL_SCORE,
         *credit_measure_columns,
     ]
     return frame[columns].copy()

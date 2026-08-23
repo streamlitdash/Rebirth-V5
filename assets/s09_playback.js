@@ -11,17 +11,17 @@
     }
     if (axisCount === 1) {
       return [
-        { label: "Tenor × date", value: "one_surface" },
-        { label: "Specific tenor", value: "one_tenor" },
-        { label: "Date A / B / Δ", value: "one_compare" },
+        { label: "3D history", value: "one_surface" },
+        { label: "One tenor over time", value: "one_tenor" },
+        { label: "Compare two dates", value: "one_compare" },
       ];
     }
     if (axisCount === 2) {
       return [
-        { label: "Selected-date surface", value: "two_surface" },
-        { label: "Swap history", value: "two_swap" },
-        { label: "Option history", value: "two_option" },
-        { label: "Date A / B / Δ", value: "two_compare" },
+        { label: "Surface on selected date", value: "two_surface" },
+        { label: "Swap tenors over time", value: "two_swap" },
+        { label: "Option tenors over time", value: "two_option" },
+        { label: "Compare two surfaces", value: "two_compare" },
       ];
     }
     return [];
@@ -192,15 +192,27 @@
     const labels = dataLabels(axis);
     if (projection === "one_tenor") {
       const selected = retainedValue(labels, slice, labels[0] ?? null);
+      const selectedValue = dataHistoryPoint(points, [selectedDate, selected]);
       return {
-        data: [{
-          type: "scatter",
-          x: dates,
-          y: dates.map((value) => dataHistoryPoint(points, [value, selected])),
-          mode: "lines+markers",
-          name: selected,
-          connectgaps: false,
-        }],
+        data: [
+          {
+            type: "scatter",
+            x: dates,
+            y: dates.map((value) => dataHistoryPoint(points, [value, selected])),
+            mode: "lines+markers",
+            name: selected,
+            connectgaps: false,
+          },
+          {
+            type: "scatter",
+            x: [selectedDate],
+            y: [selectedValue],
+            mode: "markers",
+            name: `Selected · ${selectedDate}`,
+            marker: { size: 12, color: "#111111", line: { color: "#79BE89", width: 3 } },
+            hovertemplate: `<b>${selectedDate}</b><br>${metric}: %{y:,.6g}<extra></extra>`,
+          },
+        ],
         layout: {
           xaxis: categoricalAxis("Date", dates),
           yaxis: { title: { text: metric }, range: bounds || undefined },
@@ -352,17 +364,32 @@
     if (projection === "two_compare") return twoAxisComparison(shared);
     if (projection === "two_swap") {
       const selected = retainedValue(secondLabels, slice, secondLabels[0] ?? null);
+      const selectedValues = firstLabels.map(
+        (label) => dataHistoryPoint(points, [selectedDate, label, selected]),
+      );
       return {
-        data: [dataSurface(
-          firstLabels,
-          dates,
-          dates.map((value) => firstLabels.map(
-            (label) => dataHistoryPoint(points, [value, label, selected]),
-          )),
-          `Fixed ${secondColumn} · ${selected}`,
-          bounds,
-          { colorbar: { title: { text: metric } } },
-        )],
+        data: [
+          dataSurface(
+            firstLabels,
+            dates,
+            dates.map((value) => firstLabels.map(
+              (label) => dataHistoryPoint(points, [value, label, selected]),
+            )),
+            `Fixed ${secondColumn} · ${selected}`,
+            bounds,
+            { colorbar: { title: { text: metric } } },
+          ),
+          {
+            type: "scatter3d",
+            x: firstLabels,
+            y: firstLabels.map(() => selectedDate),
+            z: selectedValues,
+            mode: "lines+markers",
+            name: selectedDate,
+            connectgaps: false,
+            line: { color: "#101828", width: 6 },
+          },
+        ],
         layout: {
           scene: dataScene(firstColumn, firstLabels, "Date", dates, metric, bounds),
         },
@@ -371,17 +398,32 @@
     }
     if (projection === "two_option") {
       const selected = retainedValue(firstLabels, slice, firstLabels[0] ?? null);
+      const selectedValues = secondLabels.map(
+        (label) => dataHistoryPoint(points, [selectedDate, selected, label]),
+      );
       return {
-        data: [dataSurface(
-          secondLabels,
-          dates,
-          dates.map((value) => secondLabels.map(
-            (label) => dataHistoryPoint(points, [value, selected, label]),
-          )),
-          `Fixed ${firstColumn} · ${selected}`,
-          bounds,
-          { colorbar: { title: { text: metric } } },
-        )],
+        data: [
+          dataSurface(
+            secondLabels,
+            dates,
+            dates.map((value) => secondLabels.map(
+              (label) => dataHistoryPoint(points, [value, selected, label]),
+            )),
+            `Fixed ${firstColumn} · ${selected}`,
+            bounds,
+            { colorbar: { title: { text: metric } } },
+          ),
+          {
+            type: "scatter3d",
+            x: secondLabels,
+            y: secondLabels.map(() => selectedDate),
+            z: selectedValues,
+            mode: "lines+markers",
+            name: selectedDate,
+            connectgaps: false,
+            line: { color: "#101828", width: 6 },
+          },
+        ],
         layout: {
           scene: dataScene(secondColumn, secondLabels, "Date", dates, metric, bounds),
         },
@@ -436,15 +478,27 @@
     const points = dataHistoryPointMap(records, keys, metric);
     let result;
     if (!axes.length) {
+      const selectedValue = dataHistoryPoint(points, [selectedDate]);
       result = {
-        data: [{
-          type: "scatter",
-          x: dates,
-          y: dates.map((value) => dataHistoryPoint(points, [value])),
-          mode: "lines+markers",
-          name: metric,
-          connectgaps: false,
-        }],
+        data: [
+          {
+            type: "scatter",
+            x: dates,
+            y: dates.map((value) => dataHistoryPoint(points, [value])),
+            mode: "lines+markers",
+            name: metric,
+            connectgaps: false,
+          },
+          {
+            type: "scatter",
+            x: [selectedDate],
+            y: [selectedValue],
+            mode: "markers",
+            name: `Selected · ${selectedDate}`,
+            marker: { size: 12, color: "#111111", line: { color: "#79BE89", width: 3 } },
+            hovertemplate: `<b>${selectedDate}</b><br>${metric}: %{y:,.6g}<extra></extra>`,
+          },
+        ],
         layout: {
           xaxis: categoricalAxis("Date", dates),
           yaxis: { title: { text: metric }, range: bounds || undefined },
@@ -500,8 +554,9 @@
     0,
     true,
     pill,
-    "Play",
+    "▶  Play",
     true,
+    "Static view",
     true,
     { playing: false, index: 0, key: null },
     { display: "none" },
@@ -532,7 +587,7 @@
     const dates = dataDates(bundle);
     if (!dates.length) {
       const empty = emptyDataPlayback("No archived rows match this request.");
-      empty[12] = { playing: false, index: 0, key: String(bundle.key || "") };
+      empty[13] = { playing: false, index: 0, key: String(bundle.key || "") };
       return empty;
     }
     const axes = dataAxes(bundle);
@@ -576,13 +631,10 @@
       }
     }
 
-    const hasPlayer = dates.length > 1 && (
-      (axes.length === 1 && selectedProjection === "one_surface")
-      || (axes.length === 2 && selectedProjection === "two_surface")
-    );
-    if (!hasPlayer) playing = false;
     const compare = selectedProjection === "one_compare"
       || selectedProjection === "two_compare";
+    const hasPlayer = dates.length > 1 && !compare;
+    if (!hasPlayer) playing = false;
     const selectedDate = compare ? selectedB : dates[index];
     const dateColumn = String(bundle.date_column || "");
     const records = Array.isArray(bundle.values) ? bundle.values : [];
@@ -616,8 +668,9 @@
       index,
       !hasPlayer,
       selectedDate,
-      playing ? "Pause" : "Play",
+      playing ? "Ⅱ  Pause" : "▶  Play",
       !hasPlayer,
+      playing ? "Playing" : "Static view",
       !playing,
       state,
       hasPlayer ? {} : { display: "none" },
@@ -631,5 +684,29 @@
       dataProjectionSlice,
     }),
   });
+
+  // Keep wheel scrubbing on Dash's public property boundary. Synthetic
+  // keyboard events are ignored by some rc-slider/browser combinations.
+  document.addEventListener("wheel", (event) => {
+    const controls = event.target?.closest?.("#data-player-controls");
+    if (!controls) return;
+    const handle = controls.querySelector('.data-player-slider [role="slider"]');
+    if (
+      !handle
+      || handle.getAttribute("aria-disabled") === "true"
+      || handle.closest(".rc-slider-disabled")
+    ) return;
+    event.preventDefault();
+    handle.focus({ preventScroll: true });
+    const current = Number(handle.getAttribute("aria-valuenow"));
+    const minimum = Number(handle.getAttribute("aria-valuemin"));
+    const maximum = Number(handle.getAttribute("aria-valuemax"));
+    const direction = event.deltaY > 0 ? 1 : event.deltaY < 0 ? -1 : 0;
+    const next = Math.max(minimum, Math.min(maximum, current + direction));
+    const setProps = window.dash_clientside?.set_props;
+    if (direction && Number.isFinite(next) && typeof setProps === "function") {
+      setProps("data-player-slider", { value: next });
+    }
+  }, { passive: false });
 
 })();

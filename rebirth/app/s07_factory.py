@@ -34,12 +34,12 @@ from rebirth.pages.pnl import (
     build_pl_page,
     register_callbacks as register_pnl_callbacks,
 )
-from rebirth.pages.risk.s19_callbacks import register_callbacks
+from rebirth.pages.risk.s17_callbacks import register_callbacks
 from rebirth.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
 from rebirth.pages.risk.s04_handoff import (
     register_callbacks as register_history_handoff_callbacks,
 )
-from rebirth.pages.risk.s18_view import build_layout
+from rebirth.pages.risk.s16_view import build_layout
 from rebirth.pages.static_data import (
     register_callbacks as register_static_data_callbacks,
 )
@@ -53,10 +53,7 @@ from rebirth.app.s06_routing import register_native_pages
 
 from rebirth.ui.s02_aggregation import prepare_risk_data
 from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
-from rebirth.app.s02_contracts import (
-    MarketHistoryLoaderProtocol,
-    RefreshManagerProtocol,
-)
+from rebirth.app.s02_contracts import RefreshManagerProtocol
 from rebirth.ui.s03_filters import (
     build_saved_filter_view_bar,
     register_saved_filter_view_callbacks,
@@ -85,7 +82,6 @@ def build_app(
     stock_history_source: Any | None = None,
     saved_view_root: str | Path | None = None,
     pl_history_root: str | Path | None = None,
-    market_history_loader: MarketHistoryLoaderProtocol | None = None,
     dash_kwargs: Mapping[str, Any] | None = None,
 ) -> Dash:
     """Create the Dash app from static data or a server-side refresh manager."""
@@ -407,7 +403,7 @@ def build_app(
             )
         return html.Main(
             [
-                html.H1("P&L Sender", className="static-data-page-title"),
+                html.H1("P&L Sender", className="page-title"),
                 html.P(
                     "P&L sending is not configured for this application.",
                     id="pnl-unavailable",
@@ -415,7 +411,7 @@ def build_app(
                 ),
             ],
             id="pnl-page",
-            className="static-data-page",
+            className="page-frame",
         )
 
     def stock_page_body():
@@ -506,6 +502,7 @@ def build_app(
                                 dcc.Link(
                                     "Statics",
                                     href=static_data_href,
+                                    refresh=True,
                                     id="static-data-nav-link",
                                     className="app-nav-link cube-nav-link",
                                 ),
@@ -539,6 +536,13 @@ def build_app(
                     id="data-history-handoff-store",
                     storage_type="session",
                 ),
+                dcc.Store(
+                    id="data-history-handoff-consumed-store",
+                    storage_type="session",
+                ),
+                # The handoff callback is registered globally, so its request
+                # output must exist before the Data page is mounted.
+                dcc.Store(id="data-history-request-store", storage_type="memory"),
                 page_container,
             ],
             className="app-router-shell",
@@ -577,8 +581,12 @@ def build_app(
                 shared_shell_style = {}
         elif selected_path == "stock":
             stock_class = f"{stock_class} is-active"
+            if refresh_manager is not None:
+                shared_shell_style = {}
         elif selected_path == "static-data":
             static_class = f"{static_class} is-active"
+            if refresh_manager is not None:
+                shared_shell_style = {}
         return (
             cube_class,
             data_class,
@@ -635,7 +643,6 @@ def build_app(
         risk_data,
         route_prefix=request_prefix,
         startup_coordinator=startup_coordinator,
-        market_history_loader=market_history_loader,
     )
     register_history_handoff_callbacks(
         app,

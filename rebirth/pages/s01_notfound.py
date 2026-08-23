@@ -18,7 +18,7 @@ def layout(**_kwargs: Any):
                 html.H1("Page not found"),
                 html.P(
                     "Cube has no page at this address.",
-                    className="static-data-page-note",
+                    className="page-note",
                 ),
                 dcc.Link(
                     "Return to Risk",
@@ -27,7 +27,7 @@ def layout(**_kwargs: Any):
                 ),
             ],
             id="not-found-page",
-            className="static-data-page",
+            className="page-frame",
             role="alert",
         ),
         id="not-found-page-container",

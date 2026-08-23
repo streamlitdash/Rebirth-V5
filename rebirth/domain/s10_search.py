@@ -1058,13 +1058,16 @@ class SearchCatalog:
         identity_mode: str = "reported",
         limit: int = 100,
         include: str | None = None,
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]:
         """Return a bounded, case-insensitive slice of exact dropdown values.
 
         Display-label normalization is precomputed at catalog publication. The
         scan stops as soon as ``limit`` matches are found. A valid current
         selection is retained so Dash never clears it merely because its option
-        was paged.
+        was paged, but an identity with no rows under the governed filter view
+        is removed immediately.
         """
         selected_limit = _validate_limit(limit)
         terms = _dropdown_search_terms(search_value)
@@ -1077,6 +1080,14 @@ class SearchCatalog:
         ):
             if terms and not all(term in search_label for term in terms):
                 continue
+            filtered_positions = _filter_risk_positions(
+                self._risk_pivot_frame,
+                positions[option],
+                risk_filters,
+                exclude_selected=exclude_selected,
+            )
+            if not len(filtered_positions):
+                continue
             matches.append(option)
             if len(matches) >= selected_limit:
                 break
@@ -1084,7 +1095,16 @@ class SearchCatalog:
         if include is not None:
             if not isinstance(include, str):
                 raise TypeError("included Combine Udl selection must be text")
-            if include in positions and include not in matches:
+            include_positions = positions.get(include)
+            include_visible = include_positions is not None and len(
+                _filter_risk_positions(
+                    self._risk_pivot_frame,
+                    include_positions,
+                    risk_filters,
+                    exclude_selected=exclude_selected,
+                )
+            )
+            if include_visible and include not in matches:
                 # At most one current selection may sit alongside ``limit``
                 # search matches, keeping the callback payload strictly bounded.
                 matches.insert(0, include)

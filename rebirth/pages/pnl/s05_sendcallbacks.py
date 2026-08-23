@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from threading import Lock
 
 import pandas as pd
 from dash import Dash, Input, Output, Patch, State, ctx, no_update
@@ -107,49 +108,178 @@ def register_pl_send_callbacks(
                 return None
             raise
 
-    def register_effective_store(
-        *,
-        store_id: str,
-        toggle_id: str,
-        section_revision_id: str,
-        summary_id: str,
-        filter_id: str,
-        scope_column: str,
-    ) -> None:
-        @app.callback(
-            Output(store_id, "data"),
-            Output(filter_id, "options"),
-            Output(filter_id, "value"),
-            Input(summary_id, "n_clicks"),
-            Input("data-revision-store", "data"),
-            Input(toggle_id, "value"),
-            Input(section_revision_id, "data"),
-            *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
-            Input(PL_FILTER_EXCLUDE_ID, "value"),
-            State(filter_id, "value"),
-            prevent_initial_call=True,
+    # The browser owns only this compact, reproducible query. Full effective P&L
+    # remains server-side and can be rebuilt from the committed snapshot on any
+    # worker, so correctness never depends on process-local cache affinity.
+    effective_cache: dict[
+        tuple[object, ...], tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
+    ] = {}
+    effective_cache_lock = Lock()
+
+    def section_query(
+        query: Mapping[str, object] | None,
+        section: str,
+    ) -> Mapping[str, object] | None:
+        sections = query.get("sections") if isinstance(query, Mapping) else None
+        candidate = sections.get(section) if isinstance(sections, Mapping) else None
+        return candidate if isinstance(candidate, Mapping) else None
+
+    def effective_query_rows(
+        query: Mapping[str, object],
+        section: str,
+    ) -> tuple[object, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        section_state = section_query(query, section)
+        if not section_state or not bool(section_state.get("open")):
+            raise ValueError("the PL editor is closed")
+        snapshot = current_pl_snapshot()
+        if snapshot is None:
+            raise ValueError("P&L data is still loading")
+        expected_date = pd.Timestamp(snapshot.market_date).date().isoformat()
+        if int(query.get("revision", -1)) != int(snapshot.revision):
+            raise ValueError("the risk snapshot changed; reload the PL editor")
+        if str(query.get("market_date", "")) != expected_date:
+            raise ValueError("the market date changed; reload the PL editor")
+
+        filter_scope = query.get("filter_scope")
+        if not isinstance(filter_scope, Mapping):
+            raise ValueError("the PL editor filter scope is missing; reload the editor")
+        scoped_filters = filter_scope.get("filters")
+        if not isinstance(scoped_filters, Mapping):
+            raise ValueError("the PL editor filters are invalid; reload the editor")
+        filter_values = [
+            list(scoped_filters.get(field.external_name, []) or [])
+            for field in PL_FILTER_FIELDS
+        ]
+        exclude_value = ["exclude"] if filter_scope.get("exclude_selected") else []
+        include_adjustments = bool(section_state.get("include_adjustments"))
+        filter_key = tuple(
+            (
+                field.external_name,
+                tuple(str(value) for value in filter_values[index]),
+            )
+            for index, field in enumerate(PL_FILTER_FIELDS)
         )
-        def refresh_effective_store(
-            summary_clicks,
-            _revision,
-            include_values,
-            section_revision,
-            *filter_values_mode_and_scope,
-        ):
-            filter_values = filter_values_mode_and_scope[: len(PL_FILTER_FIELDS)]
-            exclude_value = filter_values_mode_and_scope[len(PL_FILTER_FIELDS)]
-            selected_scope = filter_values_mode_and_scope[-1]
-            if not int(summary_clicks or 0) % 2:
-                return {}, no_update, no_update
-            snapshot = current_pl_snapshot()
-            if snapshot is None:
-                return {}, [], None
-            effective, _mapping, filtered_governance = _effective_rows(
-                snapshot,
-                config,
-                include_adjustments="include" in (include_values or []),
-                filter_values=filter_values,
-                exclude_value=exclude_value,
+        cache_key = (
+            int(snapshot.revision),
+            expected_date,
+            int(query.get("adjustment_revision", 0) or 0),
+            include_adjustments,
+            bool(filter_scope.get("exclude_selected")),
+            filter_key,
+        )
+        with effective_cache_lock:
+            cached = effective_cache.get(cache_key)
+            if cached is None:
+                cached = _effective_rows(
+                    snapshot,
+                    config,
+                    include_adjustments=include_adjustments,
+                    filter_values=filter_values,
+                    exclude_value=exclude_value,
+                )
+                effective_cache[cache_key] = cached
+                while len(effective_cache) > 8:
+                    effective_cache.pop(next(iter(effective_cache)))
+        effective, mapping, governance = cached
+        return snapshot, effective, mapping, governance
+
+    def materialized_editor_store(
+        query: Mapping[str, object] | None,
+        section: str,
+    ) -> dict[str, object]:
+        if not isinstance(query, Mapping):
+            raise ValueError("the PL editor has not loaded")
+        section_state = section_query(query, section)
+        if not section_state:
+            raise ValueError("the PL editor has not loaded")
+        snapshot, effective, _mapping, governance = effective_query_rows(query, section)
+        return _effective_store(
+            snapshot,
+            effective,
+            filtered_governance=governance,
+            filter_scope=query["filter_scope"],
+            include_adjustments=bool(section_state.get("include_adjustments")),
+            editor_epoch=int(section_state.get("editor_epoch", 0) or 0),
+        )
+
+    @app.callback(
+        Output("pl-send-effective-query-store", "data"),
+        Output("pl-send-sog-filter", "options"),
+        Output("pl-send-sog-filter", "value"),
+        Output("pl-send-portfolio-filter", "options"),
+        Output("pl-send-portfolio-filter", "value"),
+        Input("pl-sog-summary", "n_clicks"),
+        Input("pl-portfolio-summary", "n_clicks"),
+        Input("data-revision-store", "data"),
+        Input("pl-sog-include-adjustments", "value"),
+        Input("pl-portfolio-include-adjustments", "value"),
+        Input("pl-adjustment-revision-store", "data"),
+        Input("pl-sog-adjustment-revision-store", "data"),
+        Input("pl-portfolio-adjustment-revision-store", "data"),
+        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        Input(PL_FILTER_EXCLUDE_ID, "value"),
+        State("pl-send-sog-filter", "value"),
+        State("pl-send-portfolio-filter", "value"),
+        prevent_initial_call=True,
+    )
+    def refresh_effective_query(
+        sog_summary_clicks,
+        portfolio_summary_clicks,
+        _revision,
+        sog_include_values,
+        portfolio_include_values,
+        adjustment_revision,
+        sog_section_revision,
+        portfolio_section_revision,
+        *filter_values_mode_and_scopes,
+    ):
+        filter_values = filter_values_mode_and_scopes[: len(PL_FILTER_FIELDS)]
+        exclude_value = filter_values_mode_and_scopes[len(PL_FILTER_FIELDS)]
+        selected_sog, selected_portfolio = filter_values_mode_and_scopes[-2:]
+        sog_open = bool(int(sog_summary_clicks or 0) % 2)
+        portfolio_open = bool(int(portfolio_summary_clicks or 0) % 2)
+        if not sog_open and not portfolio_open:
+            return {}, no_update, no_update, no_update, no_update
+
+        snapshot = current_pl_snapshot()
+        if snapshot is None:
+            return (
+                {},
+                ([] if sog_open else no_update),
+                (None if sog_open else no_update),
+                ([] if portfolio_open else no_update),
+                (None if portfolio_open else no_update),
+            )
+        query: dict[str, object] = {
+            "revision": int(snapshot.revision),
+            "market_date": pd.Timestamp(snapshot.market_date).date().isoformat(),
+            "adjustment_revision": int(adjustment_revision or 0),
+            "filter_scope": _pl_filter_scope(filter_values, exclude_value),
+            "sections": {
+                "sog": {
+                    "open": sog_open,
+                    "include_adjustments": "include" in (sog_include_values or []),
+                    "editor_epoch": int(sog_section_revision or 0),
+                },
+                "portfolio": {
+                    "open": portfolio_open,
+                    "include_adjustments": "include"
+                    in (portfolio_include_values or []),
+                    "editor_epoch": int(portfolio_section_revision or 0),
+                },
+            },
+        }
+
+        def filter_result(
+            section: str,
+            scope_column: str,
+            selected_scope: object,
+        ) -> tuple[object, object]:
+            state = section_query(query, section)
+            if not state or not state.get("open"):
+                return no_update, no_update
+            _snapshot, effective, _mapping, _governance_frame = effective_query_rows(
+                query, section
             )
             values = sorted(effective[scope_column].astype(str).unique().tolist())
             selected = (
@@ -157,39 +287,17 @@ def register_pl_send_callbacks(
                 if selected_scope in values
                 else (values[0] if values else None)
             )
-            return (
-                _effective_store(
-                    snapshot,
-                    effective,
-                    filtered_governance=filtered_governance,
-                    filter_scope=_pl_filter_scope(filter_values, exclude_value),
-                    include_adjustments="include" in (include_values or []),
-                    editor_epoch=int(section_revision or 0),
-                ),
-                [{"label": value, "value": value} for value in values],
-                selected,
-            )
+            return ([{"label": value, "value": value} for value in values], selected)
 
-    register_effective_store(
-        store_id="pl-send-sog-effective-store",
-        toggle_id="pl-sog-include-adjustments",
-        section_revision_id="pl-sog-adjustment-revision-store",
-        summary_id="pl-sog-summary",
-        filter_id="pl-send-sog-filter",
-        scope_column=SIGNOFF_GROUP,
-    )
-    register_effective_store(
-        store_id="pl-send-portfolio-effective-store",
-        toggle_id="pl-portfolio-include-adjustments",
-        section_revision_id="pl-portfolio-adjustment-revision-store",
-        summary_id="pl-portfolio-summary",
-        filter_id="pl-send-portfolio-filter",
-        scope_column=PORTFOLIO,
-    )
+        sog_options, final_sog = filter_result("sog", SIGNOFF_GROUP, selected_sog)
+        portfolio_options, final_portfolio = filter_result(
+            "portfolio", PORTFOLIO, selected_portfolio
+        )
+        return query, sog_options, final_sog, portfolio_options, final_portfolio
 
     def register_editor(
         *,
-        store_id: str,
+        section: str,
         table_id: str,
         filter_id: str,
         add_id: str,
@@ -207,7 +315,7 @@ def register_pl_send_callbacks(
             Output(draft_store_id, "data"),
             Output(active_scope_store_id, "data"),
             Output(f"{table_id}-data-status", "children"),
-            Input(store_id, "data"),
+            Input("pl-send-effective-query-store", "data"),
             Input(filter_id, "value"),
             Input(add_id, "n_clicks"),
             Input(table_id, "data_timestamp"),
@@ -222,7 +330,7 @@ def register_pl_send_callbacks(
             ],
         )
         def control_editor(
-            store,
+            query,
             selected_scope,
             _add_clicks,
             _data_timestamp,
@@ -231,7 +339,8 @@ def register_pl_send_callbacks(
             drafts,
             active_scope,
         ):
-            if not store or not selected_scope:
+            state = section_query(query, section)
+            if not state or not state.get("open") or not selected_scope:
                 return (
                     [],
                     {},
@@ -244,6 +353,7 @@ def register_pl_send_callbacks(
             trigger = ctx.triggered_id
             try:
                 snapshot = refresh_manager.pl_snapshot
+                store = materialized_editor_store(query, section)
                 mapping = load_plsend_mapping(config.mapping_source)
                 governance = _filtered_store_governance(
                     _governance(snapshot),
@@ -425,12 +535,12 @@ def register_pl_send_callbacks(
             Output(table_id, "active_cell"),
             Input(f"{table_id}-selection-clear", "n_clicks"),
             Input(filter_id, "value"),
-            Input(store_id, "data"),
+            Input("pl-send-effective-query-store", "data"),
             prevent_initial_call=True,
         )
 
     register_editor(
-        store_id="pl-send-sog-effective-store",
+        section="sog",
         table_id="pl-send-sog-grid",
         filter_id="pl-send-sog-filter",
         add_id="add-sog-pl-row",
@@ -442,7 +552,7 @@ def register_pl_send_callbacks(
         send_id="send-sog-pl-button",
     )
     register_editor(
-        store_id="pl-send-portfolio-effective-store",
+        section="portfolio",
         table_id="pl-send-portfolio-grid",
         filter_id="pl-send-portfolio-filter",
         add_id="add-portfolio-pl-row",
@@ -464,10 +574,9 @@ def register_pl_send_callbacks(
         Input("save-portfolio-adjustments-button", "n_clicks"),
         State("pl-send-sog-grid", "data"),
         State("pl-send-portfolio-grid", "data"),
-        State("pl-send-sog-effective-store", "data"),
-        State("pl-send-portfolio-effective-store", "data"),
-        State("pl-sog-adjustment-revision-store", "data"),
+        State("pl-send-effective-query-store", "data"),
         State("pl-adjustment-revision-store", "data"),
+        State("pl-sog-adjustment-revision-store", "data"),
         State("pl-portfolio-adjustment-revision-store", "data"),
         State("pl-send-sog-filter", "value"),
         State("pl-send-portfolio-filter", "value"),
@@ -480,8 +589,7 @@ def register_pl_send_callbacks(
         _portfolio_clicks,
         sog_records,
         portfolio_records,
-        sog_store,
-        portfolio_store,
+        query,
         adjustment_revision,
         sog_adjustment_revision,
         portfolio_adjustment_revision,
@@ -492,12 +600,10 @@ def register_pl_send_callbacks(
         trigger = ctx.triggered_id
         is_sog = trigger == "save-sog-adjustments-button"
         records = sog_records if is_sog else portfolio_records
-        store = sog_store if is_sog else portfolio_store
         unchanged = no_update
         try:
             snapshot = refresh_manager.pl_snapshot
-            if not store:
-                raise ValueError("the PL editor has not loaded")
+            store = materialized_editor_store(query, "sog" if is_sog else "portfolio")
             filter_values = filter_values_mode[: len(PL_FILTER_FIELDS)]
             exclude_value = filter_values_mode[len(PL_FILTER_FIELDS)]
             _require_current_filter_scope(store, filter_values, exclude_value)
@@ -703,17 +809,18 @@ def register_pl_send_callbacks(
         Output("pl-send-sog-status", "children"),
         Input("send-sog-pl-button", "n_clicks"),
         State("pl-send-sog-grid", "data"),
-        State("pl-send-sog-effective-store", "data"),
+        State("pl-send-effective-query-store", "data"),
         State("pl-send-sog-filter", "value"),
         *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
         State(PL_FILTER_EXCLUDE_ID, "value"),
         prevent_initial_call=True,
     )
-    def send_sog(n_clicks, records, store, selected_scope, *filter_values_mode):
+    def send_sog(n_clicks, records, query, selected_scope, *filter_values_mode):
         if not n_clicks:
             raise PreventUpdate
 
         try:
+            store = materialized_editor_store(query, "sog")
             return send_rows(
                 records,
                 config.send_sog_pl,
@@ -730,7 +837,7 @@ def register_pl_send_callbacks(
         Output("pl-send-portfolio-status", "children"),
         Input("send-portfolio-pl-button", "n_clicks"),
         State("pl-send-portfolio-grid", "data"),
-        State("pl-send-portfolio-effective-store", "data"),
+        State("pl-send-effective-query-store", "data"),
         State("pl-send-portfolio-filter", "value"),
         *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
         State(PL_FILTER_EXCLUDE_ID, "value"),
@@ -739,7 +846,7 @@ def register_pl_send_callbacks(
     def send_portfolio(
         n_clicks,
         records,
-        store,
+        query,
         selected_scope,
         *filter_values_mode,
     ):
@@ -747,6 +854,7 @@ def register_pl_send_callbacks(
             raise PreventUpdate
 
         try:
+            store = materialized_editor_store(query, "portfolio")
             return send_rows(
                 records,
                 config.send_portfolio_pl,

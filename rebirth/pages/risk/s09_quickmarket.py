@@ -20,16 +20,16 @@ from .s05_charts import (
 from .s01_common import _ABSENT_TENOR_LABELS, _meaningful_tenor_mask
 from .s08_quickrisk import _quick_search_number, _quick_search_text
 
-_MARKET_AXIS_ORDER_COLUMNS = {
-    "Tenor Swap": "Tenor Swap Order",
-    "Tenor Option": "Tenor Option Order",
-}
 _QUICK_MARKET_HISTORY_PERIOD_LABELS = {
     "wtd": "WTD",
     "mtd": "MTD",
     "ytd": "YTD",
     "all": "All",
     "custom": "Custom",
+}
+_MARKET_AXIS_ORDER_COLUMNS = {
+    "Tenor Swap": "Tenor Swap Order",
+    "Tenor Option": "Tenor Option Order",
 }
 QUICK_MARKET_DEFAULT_INDEX = (
     "Risk Type",
@@ -167,130 +167,6 @@ def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.
                         ),
                         type="dot",
                         delay_show=160,
-                    ),
-                    html.Details(
-                        [
-                            html.Summary(
-                                [
-                                    html.Span(
-                                        "Historical data",
-                                        className="quick-search-pivot-title",
-                                    ),
-                                    html.Span(
-                                        "One exact quote cell through time",
-                                        className="quick-search-pivot-values",
-                                    ),
-                                ],
-                                id="quick-market-history-summary",
-                                n_clicks=0,
-                                className="quick-search-pivot-summary",
-                            ),
-                            html.Div(
-                                [
-                                    html.Div(
-                                        [
-                                            html.Label(
-                                                "Exact quote cell",
-                                                htmlFor="quick-market-history-cell",
-                                            ),
-                                            dcc.Dropdown(
-                                                id="quick-market-history-cell",
-                                                options=[],
-                                                value=None,
-                                                clearable=False,
-                                                searchable=True,
-                                                disabled=True,
-                                                placeholder="Select one tenor cell",
-                                                className="quick-search-metric-dropdown",
-                                            ),
-                                            html.Small(
-                                                "Connector-ranked tenor cells stay separate; no curve, surface or Portfolio averaging is used.",
-                                                className="quick-search-dimension-help",
-                                            ),
-                                        ],
-                                        className="quick-market-history-control",
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Label(
-                                                "Period",
-                                                htmlFor="quick-market-history-period",
-                                            ),
-                                            dcc.RadioItems(
-                                                id="quick-market-history-period",
-                                                options=[
-                                                    {"label": "WTD", "value": "wtd"},
-                                                    {"label": "MTD", "value": "mtd"},
-                                                    {"label": "YTD", "value": "ytd"},
-                                                    {"label": "All", "value": "all"},
-                                                    {
-                                                        "label": "Custom",
-                                                        "value": "custom",
-                                                    },
-                                                ],
-                                                value="all",
-                                                inline=True,
-                                                className="detail-tenor-view-radio quick-market-history-period",
-                                            ),
-                                        ],
-                                        className="quick-market-history-control",
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Label(
-                                                "Custom dates",
-                                                htmlFor="quick-market-history-date-range",
-                                            ),
-                                            dcc.DatePickerRange(
-                                                id="quick-market-history-date-range",
-                                                start_date=None,
-                                                end_date=None,
-                                                display_format="YYYY-MM-DD",
-                                                minimum_nights=0,
-                                                clearable=True,
-                                                className="quick-market-history-date-range",
-                                            ),
-                                            html.Small(
-                                                "Choose Custom to apply this inclusive date range.",
-                                                className="quick-search-dimension-help",
-                                            ),
-                                        ],
-                                        className="quick-market-history-control",
-                                    ),
-                                ],
-                                className="quick-market-history-controls",
-                            ),
-                            html.Div(
-                                [
-                                    html.H3(
-                                        "Historical market",
-                                        className="detail-chart-title",
-                                    ),
-                                    html.Small(
-                                        "Open Historical data to load one exact raw MarketBook quote cell.",
-                                        id="quick-market-history-status",
-                                        className="quick-search-dimension-help",
-                                    ),
-                                ],
-                                className="quick-market-history-heading",
-                            ),
-                            dcc.Loading(
-                                html.Div(
-                                    "Historical market will appear here.",
-                                    id="quick-market-history-chart",
-                                    className="quick-search-hint",
-                                ),
-                                type="dot",
-                                delay_show=160,
-                            ),
-                        ],
-                        id="quick-market-history-details",
-                        open=False,
-                        className=(
-                            "quick-search-shell quick-search-pivot-details "
-                            "quick-market-history-details"
-                        ),
-                        **{"aria-label": "Historical data"},
                     ),
                 ],
                 className="quick-search-pivot-body",

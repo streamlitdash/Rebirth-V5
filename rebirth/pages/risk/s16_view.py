@@ -41,7 +41,6 @@ from rebirth.ui.s03_filters import build_saved_filter_view_bar
 from .s05_charts import detail_tenor_view_state
 from .s01_common import RISK_FILTER_NOTE, RISK_SAVED_VIEW_CONTROLS, metric_title
 from .s03_defaults import default_risk_filter_payload, default_risk_filter_values
-from .s13_pivot import build_custom_risk_pivot_workspace
 from .s11_promotion import build_promotion_generation_controls
 from .s06_explorertables import build_risk_table
 from .s09_quickmarket import build_quick_market_search
@@ -668,10 +667,6 @@ def build_layout(
             dcc.Store(id="risk-metric-action-store", data=None),
             dcc.Store(id="aggregate-open-risk-types", data=[]),
             dcc.Store(
-                id="dimension-filter-store",
-                data=initial_filter_payload,
-            ),
-            dcc.Store(
                 id="dimension-filter-values-store",
                 # This Store is positional because the Risk reducer binds it to
                 # FILTER_DIMENSION_FIELDS with ``zip(..., strict=True)``.  Its
@@ -681,10 +676,6 @@ def build_layout(
                 data=[list(value) for value in initial_filter_values],
             ),
             dcc.Store(id="selected-cell-store", data=None),
-            dcc.Store(
-                id="detail-component-request-store",
-                data={"measure": "risk", "component": "total"},
-            ),
             # Promotion toggle: True = promotion enabled (display bucket between risk greek and group)
             #                   False = promotion disabled (group immediately after risk greek)
             dcc.Store(id="promotion-toggle-store", data=True),
@@ -866,42 +857,19 @@ def build_layout(
                                             [
                                                 html.H2("Top Promotions"),
                                                 html.P(
-                                                    "A flat rank of the committed promotion generation. "
-                                                    "Changing the rank never recalculates promotion."
+                                                    "A flat rank of eligible committed promotions. "
+                                                    "Vol Score comes directly from the Risk connector."
                                                 ),
                                             ],
                                             className="top-promotions-heading-copy",
                                         ),
                                         html.Div(
                                             [
-                                                html.Label(
-                                                    "Rank by",
-                                                    htmlFor="top-promotions-rank-by",
+                                                html.Span(
+                                                    "Connector signal",
+                                                    className="eyebrow",
                                                 ),
-                                                dcc.Dropdown(
-                                                    id="top-promotions-rank-by",
-                                                    options=[
-                                                        {
-                                                            "label": "Overall score",
-                                                            "value": "score",
-                                                        },
-                                                        {
-                                                            "label": "Absolute P&L",
-                                                            "value": "pl",
-                                                        },
-                                                        {
-                                                            "label": "Absolute Risk",
-                                                            "value": "risk",
-                                                        },
-                                                        {
-                                                            "label": "Absolute dRisk",
-                                                            "value": "drisk",
-                                                        },
-                                                    ],
-                                                    value="score",
-                                                    clearable=False,
-                                                    searchable=False,
-                                                ),
+                                                html.Strong("Ranked by Vol Score"),
                                             ],
                                             className="top-promotions-rank-control",
                                         ),
@@ -947,7 +915,6 @@ def build_layout(
                         children=[
                             dcc.Tab(label="Cross", value="main"),
                             dcc.Tab(label="SplitVA", value="alt"),
-                            dcc.Tab(label="Custom", value="custom"),
                         ],
                         className="workspace-tabs view-mode-tabs",
                     ),
@@ -966,9 +933,6 @@ def build_layout(
                     ),
                 ],
                 className="workspace-toolbar",
-            ),
-            build_promotion_generation_controls(
-                int(initial_snapshot.revision) if initial_snapshot is not None else 0
             ),
             dcc.Tabs(
                 id="risk-type-tabs",
@@ -1104,11 +1068,19 @@ def build_layout(
                                             "aria-pressed": "false",
                                         },
                                     ),
+                                    build_promotion_generation_controls(
+                                        int(initial_snapshot.revision)
+                                        if initial_snapshot is not None
+                                        else 0
+                                    ),
                                 ],
-                                className="toggle-controls inline-toggles",
+                                className=(
+                                    "toggle-controls inline-toggles "
+                                    "risk-explorer-actions"
+                                ),
                             ),
                         ],
-                        className="control-field",
+                        className="control-field risk-explorer-action-field",
                     ),
                 ],
                 className="controls",
@@ -1151,7 +1123,6 @@ def build_layout(
                 className="risk-panel",
                 style={"display": "none"},
             ),
-            build_custom_risk_pivot_workspace(),
             html.Div(
                 [
                     html.Div(

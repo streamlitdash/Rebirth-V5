@@ -58,8 +58,20 @@ from .s06_explorertables import (
     build_credit_multi_table,
     build_risk_table,
 )
-from .s15_workspacetables import NEW_TRADE_SPLIT
-from .s18_view import build_unmapped_books_table
+from .s13_workspacetables import NEW_TRADE_SPLIT
+from .s16_view import build_unmapped_books_table
+
+
+def _pruned_split_selection(
+    selected: Sequence[str] | None,
+    available: Sequence[str],
+) -> tuple[list[str], Any]:
+    """Return the valid split scope and only publish a genuinely changed value."""
+
+    normalized = list(selected or [])
+    available_set = set(available)
+    pruned = [split for split in normalized if split in available_set]
+    return pruned, (no_update if pruned == normalized else pruned)
 
 
 def register_explorer_callbacks(
@@ -72,22 +84,12 @@ def register_explorer_callbacks(
     """Register Cross, Split VA, detail, filters, and tree interactions."""
 
     @app.callback(
-        Output("dimension-filter-store", "data"),
         Output("dimension-filter-values-store", "data"),
         *dimension_filter_inputs,
     )
     def sync_dimension_filters(*filter_values):
-        """Sync filter dropdown values to both filter stores."""
-        return (
-            dict(
-                zip(
-                    (field.key for field in FILTER_DIMENSION_FIELDS),
-                    filter_values,
-                    strict=True,
-                )
-            ),
-            list(filter_values),
-        )
+        """Sync filter dropdown values to the positional reducer store."""
+        return list(filter_values)
 
     @app.callback(
         Output("risk-type-tabs", "children"),
@@ -295,9 +297,6 @@ def register_explorer_callbacks(
                 promotion_generation=promotion_generation,
             )
 
-        if table_view == "custom":
-            return no_update, no_update
-
         if table_view == "alt":
             view_token = risk_action_view_token(
                 risk_context,
@@ -459,7 +458,6 @@ def register_explorer_callbacks(
         Output("open-rows-store", "data"),
         Output("selected-cell-store", "data"),
         Output("plot-measure", "value"),
-        Output("detail-component-request-store", "data"),
         Output("risk-view-context-store", "data"),
         Output("plot-component", "options"),
         Output("plot-component", "value"),
@@ -568,7 +566,7 @@ def register_explorer_callbacks(
             "detail-tenor-view.value",
         }
 
-        updates = [no_update] * 12
+        updates = [no_update] * 11
         effective_splits = list(selected_splits or [])
         effective_open_rows = list(current_open_rows or [])
         effective_expanded_metrics = list(current_expanded_metrics or [])
@@ -596,16 +594,17 @@ def register_explorer_callbacks(
             frame = frame.loc[frame["risk type"].eq(active_risk_type)]
             frame = filter_ir_family(frame, active_risk_type, normalized_ir_family)
             available = ordered_unique(frame, "split")
-            effective_splits = [
-                split for split in effective_splits if split in available
-            ]
+            effective_splits, split_value_update = _pruned_split_selection(
+                effective_splits,
+                available,
+            )
             context_changed = (
                 not isinstance(previous_context, Mapping)
                 or previous_context.get("risk_type") != active_risk_type
                 or previous_context.get("ir_family") != normalized_ir_family
             )
             updates[0] = [{"label": split, "value": split} for split in available]
-            updates[1] = effective_splits
+            updates[1] = split_value_update
             if context_changed:
                 effective_open_rows = default_open_rows(frame, active_risk_type)
                 effective_selection = None
@@ -615,16 +614,15 @@ def register_explorer_callbacks(
                 updates[2] = effective_open_rows
                 updates[3] = None
                 updates[4] = "risk"
-                updates[5] = {"measure": "risk", "component": "total"}
-                updates[7] = [
+                updates[6] = [
                     {
                         "label": DETAIL_COMPONENT_LABELS[value],
                         "value": value,
                     }
                     for value in DETAIL_COMPONENTS["risk"]
                 ]
-                updates[8] = "total"
-            updates[6] = context
+                updates[7] = "total"
+            updates[5] = context
             should_render_table = True
             should_render_detail = True
 
@@ -635,12 +633,11 @@ def register_explorer_callbacks(
             effective_tenor_view = "auto"
             updates[3] = None
             updates[4] = "risk"
-            updates[5] = {"measure": "risk", "component": "total"}
-            updates[7] = [
+            updates[6] = [
                 {"label": DETAIL_COMPONENT_LABELS[value], "value": value}
                 for value in DETAIL_COMPONENTS["risk"]
             ]
-            updates[8] = "total"
+            updates[7] = "total"
             should_render_table = True
             should_render_detail = True
 
@@ -710,7 +707,7 @@ def register_explorer_callbacks(
                 effective_expanded_metrics = [
                     name for name in EXPANDABLE_METRICS if name in expanded
                 ]
-                updates[11] = effective_expanded_metrics
+                updates[10] = effective_expanded_metrics
                 should_render_table = True
 
             elif ctx.triggered_id == "risk-cell-action-store":
@@ -758,15 +755,14 @@ def register_explorer_callbacks(
                 effective_tenor_view = "auto"
                 updates[3] = selection
                 updates[4] = measure
-                updates[5] = {"measure": measure, "component": component}
-                updates[7] = [
+                updates[6] = [
                     {
                         "label": DETAIL_COMPONENT_LABELS[value],
                         "value": value,
                     }
                     for value in DETAIL_COMPONENTS[measure]
                 ]
-                updates[8] = component
+                updates[7] = component
                 should_render_detail = True
 
             elif "plot-measure.value" in triggered:
@@ -776,14 +772,14 @@ def register_explorer_callbacks(
                 effective_plot_component = (
                     "move" if effective_plot_measure == "move" else "total"
                 )
-                updates[7] = [
+                updates[6] = [
                     {
                         "label": DETAIL_COMPONENT_LABELS[value],
                         "value": value,
                     }
                     for value in DETAIL_COMPONENTS[effective_plot_measure]
                 ]
-                updates[8] = effective_plot_component
+                updates[7] = effective_plot_component
                 should_render_detail = True
 
             elif "plot-component.value" in triggered:
@@ -841,8 +837,8 @@ def register_explorer_callbacks(
                 exclude_selected=exclude_selected,
                 promotion_generation=promotion_generation,
             )
-            updates[9] = detail_tenor_options
-            updates[10] = effective_tenor_view
+            updates[8] = detail_tenor_options
+            updates[9] = effective_tenor_view
         return (
             *updates,
             main_grid,
@@ -891,17 +887,13 @@ def register_explorer_callbacks(
         """
         function (view) {
             if (view === "alt") {
-                return [{display: "none"}, {}, {display: "none"}, {}];
+                return [{display: "none"}, {}, {}];
             }
-            if (view === "custom") {
-                return [{display: "none"}, {display: "none"}, {}, {display: "none"}];
-            }
-            return [{}, {display: "none"}, {display: "none"}, {display: "none"}];
+            return [{}, {display: "none"}, {display: "none"}];
         }
         """,
         Output("main-risk-panel", "style"),
         Output("alt-risk-panel", "style"),
-        Output("custom-risk-panel", "style"),
         Output("alt-metric-control", "style"),
         Input("table-view-tabs", "value"),
     )

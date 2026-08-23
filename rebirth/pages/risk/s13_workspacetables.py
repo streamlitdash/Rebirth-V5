@@ -7,7 +7,8 @@ from typing import Mapping
 
 import numpy as np
 import pandas as pd
-from dash import html
+from dash import dash_table, html
+from dash.dash_table.Format import Format, Scheme
 
 from rebirth.domain.s01_schema import PORTFOLIO_FIELDS
 from rebirth.domain.s05_newtrades import NEW_TRADES_SPLIT
@@ -60,25 +61,30 @@ def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "dRisk",
         "P&L",
         "Score",
+        "Vol Score",
     ]
     if frame.empty:
         return pd.DataFrame(columns=output_columns)
+    source = frame.copy()
+    if "vol score" not in source:
+        source["vol score"] = 0.0
     required = [
         "risk type",
         "risk greek",
         "reported underlying",
         "promotion reason",
         "promotion score",
+        "vol score",
         "risk",
         "drisk",
         "pl",
     ]
-    missing = [column for column in required if column not in frame]
+    missing = [column for column in required if column not in source]
     if missing:
         raise ValueError(f"Top book exposures require columns: {missing}")
 
-    promoted = frame.loc[
-        frame["promotion reason"].fillna("").astype(str).str.strip().ne("")
+    promoted = source.loc[
+        source["promotion reason"].fillna("").astype(str).str.strip().ne("")
     ].copy()
     if promoted.empty:
         return pd.DataFrame(columns=output_columns)
@@ -99,6 +105,7 @@ def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
             {
                 "promotion reason": combined_label,
                 "promotion score": "max",
+                "vol score": "max",
                 "risk": lambda values: values.sum(min_count=1),
                 "drisk": lambda values: values.sum(min_count=1),
                 "pl": lambda values: values.sum(min_count=1),
@@ -128,32 +135,24 @@ def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
             "drisk": "dRisk",
             "pl": "P&L",
             "promotion score": "Score",
+            "vol score": "Vol Score",
         }
     )[output_columns].reset_index(drop=True)
-
-
-_TOP_PROMOTION_SORT_COLUMNS = {
-    "score": "Score",
-    "pl": "P&L",
-    "risk": "Risk",
-    "drisk": "dRisk",
-}
 
 
 def top_promotions_frame(
     frame: pd.DataFrame,
     *,
-    rank_by: str = "score",
     limit: int = 500,
 ) -> pd.DataFrame:
-    """Return a deterministic flat rank from committed promotion columns.
+    """Rank committed promotions by their connector-owned Vol Score.
 
     This function never classifies or recalculates promotion. It only groups
     position rows carrying the committed ``promotion reason`` and
-    ``promotion score`` fields, then changes their presentation order.
+    ``promotion score`` fields. Promotion Score remains visible as threshold
+    context, but it no longer controls rank.
     """
 
-    selected_rank = rank_by if rank_by in _TOP_PROMOTION_SORT_COLUMNS else "score"
     promoted = top_book_exposure_frame(frame).rename(
         columns={
             "Label": "Promotion Reason",
@@ -170,24 +169,20 @@ def top_promotions_frame(
         "Risk",
         "dRisk",
         "P&L",
+        "Vol Score",
         "Promotion Score",
     ]
     if promoted.empty:
         return pd.DataFrame(columns=output_columns)
 
-    metric_column = _TOP_PROMOTION_SORT_COLUMNS[selected_rank].replace(
-        "Score", "Promotion Score"
-    )
-    promoted["_primary_rank"] = pd.to_numeric(
-        promoted[metric_column], errors="coerce"
-    ).abs()
+    promoted["_vol_rank"] = pd.to_numeric(promoted["Vol Score"], errors="coerce")
     promoted["_score_rank"] = pd.to_numeric(
         promoted["Promotion Score"], errors="coerce"
     )
     promoted["_pl_rank"] = pd.to_numeric(promoted["P&L"], errors="coerce").abs()
     promoted = promoted.sort_values(
         [
-            "_primary_rank",
+            "_vol_rank",
             "_score_rank",
             "_pl_rank",
             "Risk Type",
@@ -205,12 +200,11 @@ def top_promotions_frame(
 def build_top_promotions_table(
     frame: pd.DataFrame,
     *,
-    rank_by: str = "score",
     limit: int = 500,
 ) -> html.Div:
-    """Render committed promotions as a bounded semantic flat table."""
+    """Render a bounded flat rank with ten visible rows per native page."""
 
-    ranked = top_promotions_frame(frame, rank_by=rank_by, limit=limit)
+    ranked = top_promotions_frame(frame, limit=limit)
     if ranked.empty:
         return html.Div(
             "No committed promotions are available for this view.",
@@ -219,35 +213,21 @@ def build_top_promotions_table(
         )
 
     headers = list(ranked.columns)
-    numeric_columns = {"Risk", "dRisk", "P&L", "Promotion Score"}
-    rows: list[html.Tr] = []
-    for record in ranked.to_dict("records"):
-        cells: list[html.Td] = []
-        for column in headers:
-            value = record[column]
-            if column == "Rank":
-                cells.append(html.Td(str(int(value)), className="promotion-rank"))
-            elif column in numeric_columns:
-                numeric = pd.to_numeric(value, errors="coerce")
-                rendered = (
-                    ""
-                    if pd.isna(numeric)
-                    else (
-                        f"{float(numeric):,.3f}"
-                        if column == "Promotion Score"
-                        else format_number(float(numeric), column=column.casefold())
-                    )
+    number_format = Format(precision=2, scheme=Scheme.fixed, group=",")
+    score_format = Format(precision=3, scheme=Scheme.fixed, group=",")
+    numeric_columns = {"Rank", "Risk", "dRisk", "P&L", "Vol Score", "Promotion Score"}
+    columns = []
+    for column in headers:
+        definition: dict[str, object] = {"name": column, "id": column}
+        if column in numeric_columns:
+            definition["type"] = "numeric"
+            if column != "Rank":
+                definition["format"] = (
+                    score_format
+                    if column in {"Vol Score", "Promotion Score"}
+                    else number_format
                 )
-                sign = "" if pd.isna(numeric) else number_sign_class(float(numeric))
-                cells.append(
-                    html.Td(
-                        rendered,
-                        className=f"promotion-number {sign}".strip(),
-                    )
-                )
-            else:
-                cells.append(html.Td(str(value), title=str(value)))
-        rows.append(html.Tr(cells))
+        columns.append(definition)
 
     return html.Div(
         [
@@ -255,17 +235,30 @@ def build_top_promotions_table(
                 f"{len(ranked):,} committed promotion identities",
                 className="top-promotions-count",
             ),
-            html.Table(
-                [
-                    html.Caption(
-                        "Flat ranked Top Promotions",
-                        className="sr-only",
-                    ),
-                    html.Thead(html.Tr([html.Th(column) for column in headers])),
-                    html.Tbody(rows),
+            dash_table.DataTable(
+                id="top-promotions-table",
+                columns=columns,
+                data=ranked.to_dict("records"),
+                page_action="native",
+                page_current=0,
+                page_size=10,
+                cell_selectable=False,
+                style_table={"overflowX": "auto"},
+                style_cell={
+                    "padding": "0.65rem 0.75rem",
+                    "fontFamily": "inherit",
+                    "fontSize": "0.82rem",
+                    "textAlign": "left",
+                    "whiteSpace": "nowrap",
+                },
+                style_header={"fontWeight": 700},
+                style_data_conditional=[
+                    {
+                        "if": {"column_id": column},
+                        "textAlign": "right",
+                    }
+                    for column in numeric_columns
                 ],
-                className="top-promotions-table",
-                **{"aria-label": "Top Promotions flat ranked table"},
             ),
         ],
         className="top-promotions-table-wrap",

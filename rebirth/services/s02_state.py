@@ -241,6 +241,8 @@ class _RefreshStateMixin:
         identity_mode: str = "reported",
         limit: int = 100,
         include: str | None = None,
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]:
         """Return bounded current-revision dropdown choices without connector I/O."""
         with self._state_lock:
@@ -252,6 +254,8 @@ class _RefreshStateMixin:
             identity_mode=identity_mode,
             limit=limit,
             include=include,
+            risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
         )
 
     def pivot_market_exact(

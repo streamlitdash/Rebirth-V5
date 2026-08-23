@@ -44,7 +44,6 @@ def test_v4_domain_service_and_adapter_modules_have_descriptive_owners() -> None
             "s08_pnl.py",
             "s09_stock.py",
             "s10_search.py",
-            "s11_riskviews.py",
         },
         "services": {
             "s01_snapshots.py",
