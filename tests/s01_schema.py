@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from rebirth.domain.schema import (
+from rebirth.domain.s01_schema import (
     PL_SIGNOFF_COLUMN,
     PORTFOLIO_CONFIG_COLUMNS,
     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
@@ -12,7 +12,7 @@ from rebirth.domain.schema import (
     TENOR_SWAP,
     TENOR_SWAP_ORDER,
 )
-from rebirth.domain.products import (
+from rebirth.domain.s02_products import (
     CREDIT_MEASURE_COLUMNS,
     CREDIT_MEASURES,
     PRODUCT_SPECS,

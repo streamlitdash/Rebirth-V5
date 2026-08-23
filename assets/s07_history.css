@@ -1,0 +1,140 @@
+/* Native V4 Data history */
+.data-page {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+.data-page-header,
+.data-controls,
+.data-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.data-page-header {
+  display: block;
+}
+
+.data-page-eyebrow,
+.data-page-intro {
+  margin: 0;
+}
+
+.data-page-eyebrow {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.data-open-button,
+.data-player-button {
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 12px;
+  text-decoration: none;
+}
+
+.data-request-panel,
+.data-chart-panel,
+.data-table-panel {
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 16px;
+}
+
+.data-identity-breadcrumb {
+  margin-bottom: 14px;
+  font-weight: 700;
+}
+
+.data-controls {
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.data-history-kind-tabs {
+  margin-bottom: 16px;
+}
+
+.data-identity-controls {
+  padding-bottom: 12px;
+}
+
+.data-underlying-control {
+  flex: 1 1 300px;
+}
+
+.data-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.data-selection-actions .data-history-status {
+  margin-top: 0;
+}
+
+.data-control {
+  min-width: 180px;
+}
+
+.data-period-control {
+  flex: 1 1 420px;
+}
+
+.data-history-status,
+.data-clear-status {
+  margin-top: 10px;
+  color: var(--text-muted);
+}
+
+.data-player-slider {
+  flex: 1;
+  min-width: 220px;
+}
+
+.data-date-pill {
+  border-radius: 999px;
+  background: var(--surface-soft);
+  padding: 6px 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-history-chart {
+  min-height: 500px;
+}
+
+.data-tables {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.data-table-panel h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.data-open-control {
+  align-items: start;
+}
+
+@media (max-width: 850px) {
+  .data-page-header,
+  .data-player-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .data-tables {
+    grid-template-columns: 1fr;
+  }
+}

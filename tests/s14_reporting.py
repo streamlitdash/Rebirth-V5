@@ -6,12 +6,12 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from rebirth.domain.governance import apply_baseline_promotions, apply_thresholds
-from rebirth.domain.search import (
+from rebirth.domain.s07_governance import apply_baseline_promotions, apply_thresholds
+from rebirth.domain.s10_search import (
     MARKET_RESULT_COLUMNS,
     SearchCatalog,
 )
-from rebirth.domain.reporting import (
+from rebirth.domain.s06_reporting import (
     REPORTED_UNDERLYING,
     REPORTED_UNDERLYING_COLUMNS,
     attach_reported_underlying,

@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from rebirth.adapters.ir import (
+from rebirth.adapters.s02_ir import (
     IR_DELTA_CURRENT,
     IR_DELTA_OPEN,
     IR_DELTA_RISK,
@@ -17,13 +17,13 @@ from rebirth.adapters.ir import (
     IR_DELTAVEGA_RISK,
     build_ir_adapters,
 )
-from rebirth.adapters.commodities import (
+from rebirth.adapters.s05_commodities import (
     COMMO_DELTA_CURRENT,
     COMMO_DELTA_OPEN,
     COMMO_DELTA_RISK,
     build_commo_adapter,
 )
-from rebirth.adapters.credit import (
+from rebirth.adapters.s04_credit import (
     CREDIT_DELTA_CURRENT,
     CREDIT_DELTA_OPEN,
     CREDIT_DELTA_RISK,
@@ -31,26 +31,26 @@ from rebirth.adapters.credit import (
     CREDIT_DELTA_RISK_REGION_BASE,
     build_credit_adapter,
 )
-from rebirth.domain.calculations import (
+from rebirth.domain.s03_calculations import (
     get_product_market_status,
     get_product_risk,
 )
-from rebirth.domain.products import MARKET_STATUS, OFFICIAL, PRODUCT_SPECS
+from rebirth.domain.s02_products import MARKET_STATUS, OFFICIAL, PRODUCT_SPECS
 
 
 ADAPTERS = Path(__file__).resolve().parents[1] / "rebirth" / "adapters"
 
 
-def test_v4_adapter_modules_have_descriptive_single_owners() -> None:
+def test_v41_adapter_modules_have_ordered_single_owners() -> None:
     expected = [
-        "commodities.py",
-        "common.py",
-        "credit.py",
-        "cross_gamma.py",
-        "fx.py",
-        "ir.py",
-        "new_positions.py",
-        "stock.py",
+        "s01_common.py",
+        "s02_ir.py",
+        "s03_fx.py",
+        "s04_credit.py",
+        "s05_commodities.py",
+        "s06_crossgamma.py",
+        "s07_newpositions.py",
+        "s08_stock.py",
     ]
 
     assert (

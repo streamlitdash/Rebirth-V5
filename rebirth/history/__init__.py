@@ -1,6 +1,6 @@
-"""Canonical immutable-history and archive API for Rebirth V4."""
+"""Canonical immutable-history and archive API for Rebirth V4.1."""
 
-from .archive_contracts import (
+from .s02_contracts import (
     ALL_ARCHIVE_FILE_NAMES,
     ARCHIVE_FILE_NAMES,
     ARCHIVE_SCHEMA_VERSION,
@@ -38,7 +38,7 @@ from .archive_contracts import (
     validate_risk_archive_frame,
     validate_stock_archive_frame,
 )
-from .archive_io import (
+from .s03_io import (
     archive_from_manager,
     archive_official_snapshot,
     list_completed_market_dates,
@@ -47,7 +47,7 @@ from .archive_io import (
     load_risk_archive,
     load_stock_archive_frame,
 )
-from .archive_queries import (
+from .s04_queries import (
     build_history_portfolio_authority,
     build_market_history_loader,
     clear_archive_caches,
@@ -57,7 +57,7 @@ from .archive_queries import (
     load_shared_pl_history,
     project_archive_to_pl_history,
 )
-from .models import (
+from .s01_models import (
     HISTORY_CANONICAL_CELL_BUDGET,
     HISTORY_HANDOFF_SCHEMA_VERSION,
     HISTORY_PERIODS,
@@ -78,8 +78,8 @@ from .models import (
     RiskFilterView,
     resolve_actual_period_dates,
 )
-from .repository import ArchiveHistoryRepository
-from .sql import (
+from .s06_repository import ArchiveHistoryRepository
+from .s07_sql import (
     PL_HISTORY_DAILY_PREDICT,
     PL_HISTORY_DEPTH,
     PL_HISTORY_LABEL,
@@ -100,7 +100,7 @@ from .sql import (
     open_history_database,
     open_history_query_database,
 )
-from .sql_store import ArchiveSQLStore
+from .s05_store import ArchiveSQLStore
 
 __all__ = [
     "ALL_ARCHIVE_FILE_NAMES",

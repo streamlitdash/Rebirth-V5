@@ -11,24 +11,24 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from rebirth.history import PLHistoryHierarchyResult, PLHistorySeriesResult
-from rebirth.domain.pnl import (
+from rebirth.history import PLHistorySeriesResult
+from rebirth.domain.s08_pnl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
     PL_SEND_COLUMNS,
     PREDICT_TYPE,
     load_pl_history,
-    select_pl_history_series,
 )
-from rebirth.services.adjustments import LocalCsvAdjustmentRepository
-from rebirth.services.sources import build_production_refresh_manager
-from rebirth.pages.pnl import aggregate_callbacks as pl_aggregate_events
-from rebirth.pages.pnl import editor as pl_editor
-from rebirth.pages.pnl import history_callbacks as pl_history_events
-from rebirth.pages.pnl import send_callbacks as pl_send_events
-from rebirth.pages.pnl.aggregate_callbacks import register_pl_aggregate_callbacks
-from rebirth.pages.pnl.common import (
+from rebirth.services.s03_adjustments import LocalCsvAdjustmentRepository
+from rebirth.services.s05_sources import build_production_refresh_manager
+from rebirth.pages.pnl import s08_aggregate as pl_aggregate_events
+from rebirth.pages.pnl import s02_editor as pl_editor
+from rebirth.pages.pnl import s09_drilldown as pl_history_events
+from rebirth.pages.pnl import s05_sendcallbacks as pl_send_events
+from rebirth.pages.pnl.s08_aggregate import register_pl_aggregate_callbacks
+from rebirth.pages.pnl.s01_common import (
     DISPLAY_COLUMNS,
+    PL_AGGREGATE_HISTORY_CELL_TYPE,
     PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
@@ -37,25 +37,16 @@ from rebirth.pages.pnl.common import (
     PL_SAVED_VIEW_CONTROLS,
     PLSendConfig,
 )
-from rebirth.pages.pnl.history import (
-    DAILY_P_PERIOD,
-    MTD_PERIOD,
-    PL_HISTORY_METRIC_CELL_TYPE,
-    PL_HISTORY_PERIOD_HEADER_TYPE,
-    PL_HISTORY_ROW_TOGGLE_TYPE,
-    pl_history_path_token,
-    summarize_visible_pl_history,
-)
-from rebirth.pages.pnl.validation import register_validate_pl_callbacks
-from rebirth.pages.pnl.view import (
+from rebirth.pages.pnl.s06_validation import register_validate_pl_callbacks
+from rebirth.pages.pnl.s07_view import (
     build_pl_aggregate_table,
     build_pl_filter_bar,
     build_pl_page,
     build_pl_send_sections,
 )
-from rebirth.ui.aggregation import format_number, prepare_risk_data
-from rebirth.app.factory import build_app
-from rebirth.ui.filter_views import build_saved_filter_view_bar
+from rebirth.ui.s02_aggregation import format_number, prepare_risk_data
+from rebirth.app.s07_factory import build_app
+from rebirth.ui.s03_filters import build_saved_filter_view_bar
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -319,12 +310,6 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
     assert [
         item.children for item in _walk(explorer) if isinstance(item, html.Summary)
     ] == ["Validate P&L"]
-    history_workspace = next(
-        item
-        for item in _walk(html.Div(sections))
-        if getattr(item, "id", None) == "pnl-history-workspace"
-    )
-    assert "Raw historical rows" in _text(history_workspace)
     explorer_ids = _string_ids(explorer)
     assert set(PL_FILTER_IDS.values()).isdisjoint(explorer_ids)
     assert PL_FILTER_EXCLUDE_ID not in explorer_ids
@@ -358,10 +343,14 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
-        "pnl-workspace-tabs",
         "pnl-current-workspace",
         "pnl-history-workspace",
-        "pl-history-raw-table",
+        "pl-history-selection-store",
+        "pl-history-period",
+        "pl-history-series-selector",
+        "pl-history-date-range",
+        "pl-history-chart",
+        "pl-history-plot-status",
     } <= ids
     mounted_filter_ids = [
         getattr(item, "id", None)
@@ -419,28 +408,29 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         for item in _walk(page)
     )
     assert aggregate_heading is not None
-    history_grid = next(
-        item for item in _walk(page) if getattr(item, "id", None) == "pl-history-grid"
-    )
-    assert isinstance(history_grid, html.Div)
-    assert "expandable hierarchy" in str(history_grid.children)
     assert {
-        "pl-history-range-wtd",
-        "pl-history-range-mtd",
-        "pl-history-range-ytd",
-        "pl-history-range-all",
-        "pl-history-series-selector",
-        "pl-history-date-range",
+        "pnl-workspace-tabs",
+        "pl-history-grid",
         "pl-history-open-paths",
         "pl-history-open-comparisons",
-        "pl-history-selection-store",
         "pl-history-observations-table",
-    } <= ids
-    assert (
-        "Selected daily observations (aggregated for the selected hierarchy scope)"
-        in _text(page)
+        "pl-history-raw-table",
+        "pl-history-raw-details",
+    }.isdisjoint(ids)
+    period = next(
+        item
+        for item in _walk(page)
+        if isinstance(item, dcc.RadioItems) and item.id == "pl-history-period"
     )
-    assert "pl-history-range-1w" not in ids
+    assert period.value == "1y"
+    assert [option["value"] for option in period.options] == [
+        "wtd",
+        "mtd",
+        "ytd",
+        "1y",
+        "all",
+        "custom",
+    ]
     series_selector = next(
         item
         for item in _walk(page)
@@ -470,7 +460,6 @@ def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> 
         "pl-send-sog-effective-store.data",
         "pl-send-portfolio-effective-store.data",
         "pl-validate-table.children",
-        "pl-history-grid.children",
         "pl-history-chart.figure",
     ):
         metadata = _callback_metadata(app, output_fragment)
@@ -668,10 +657,20 @@ def test_pl_aggregate_table_restores_page_owned_collapsible_chevrons() -> None:
     prepared = prepare_risk_data(manager.read_frame("dashboard_frame").frame)
 
     table = build_pl_aggregate_table(prepared, "activity", ["IR"])
-    toggle_ids = [
+    pattern_ids = [
         component_id
         for item in _walk(table)
         if isinstance((component_id := getattr(item, "id", None)), dict)
+    ]
+    toggle_ids = [
+        component_id
+        for component_id in pattern_ids
+        if component_id.get("type") == PL_AGGREGATE_TOGGLE_TYPE
+    ]
+    history_cell_ids = [
+        component_id
+        for component_id in pattern_ids
+        if component_id.get("type") == PL_AGGREGATE_HISTORY_CELL_TYPE
     ]
 
     assert toggle_ids
@@ -679,6 +678,18 @@ def test_pl_aggregate_table_restores_page_owned_collapsible_chevrons() -> None:
         component_id["type"] == PL_AGGREGATE_TOGGLE_TYPE
         and set(component_id) == {"type", "risk_type"}
         for component_id in toggle_ids
+    )
+    assert history_cell_ids
+    assert all(
+        set(component_id) == {"type", "risk_type", "risk_greek", "dimension", "value"}
+        and component_id["dimension"] == "activity"
+        for component_id in history_cell_ids
+    )
+    assert any(
+        component_id["risk_type"] == "IR"
+        and component_id["risk_greek"]
+        and component_id["value"] != "__total__"
+        for component_id in history_cell_ids
     )
     assert any(isinstance(item, html.Button) for item in _walk(table))
     assert (
@@ -751,7 +762,7 @@ def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
     assert open_state is no_update
     assert len(risk_rows) == prepared["risk type"].nunique()
     assert prepared["portfolio"].nunique() > 0
-    assert total_row.children[-1].children.children == format_number(
+    assert _text(total_row.children[-1]) == format_number(
         prepared["pl"].sum(min_count=1)
     )
 
@@ -772,7 +783,7 @@ def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
         for item in _walk(included)
         if getattr(item, "className", None) == "aggregate-total-row"
     )
-    assert included_total.children[-1].children.children == format_number(
+    assert _text(included_total.children[-1]) == format_number(
         prepared.loc[prepared["activity"].eq(activity), "pl"].sum(min_count=1)
     )
     _excluded_open, excluded = aggregate(
@@ -788,7 +799,7 @@ def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
         for item in _walk(excluded)
         if getattr(item, "className", None) == "aggregate-total-row"
     )
-    assert excluded_total.children[-1].children.children == format_number(
+    assert _text(excluded_total.children[-1]) == format_number(
         prepared.loc[prepared["activity"].ne(activity), "pl"].sum(min_count=1)
     )
 
@@ -887,211 +898,64 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
     assert acknowledged[-1] == []
 
 
-def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
-    tmp_path: Path,
+def test_clicking_aggregate_value_stores_complete_history_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, _manager = _registered_pl_app(tmp_path)
-    history_callback = _callback(app, "pl-history-grid.children")
-    real_loader = pl_history_events.load_pl_history
+    manager = SimpleNamespace(health=SimpleNamespace(revision=0))
+    app = Dash(__name__)
+    app.layout = html.Div(
+        [
+            dcc.Store(id="data-revision-store"),
+            dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
+            dcc.Store(id="pl-history-selection-store", data={}),
+            build_pl_filter_bar(),
+            html.Div(id="pnl-aggregate-pl-grid"),
+        ]
+    )
+    register_pl_aggregate_callbacks(
+        app,
+        manager,
+        prepared_frame_loader=lambda: pd.DataFrame(),
+    )
+    select_cell = _callback(app, "pl-history-selection-store.data")
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("closed Histo Data performed file work")
-
-    monkeypatch.setattr(pl_history_events, "load_pl_history", forbidden)
     monkeypatch.setattr(
-        pl_history_events,
+        pl_aggregate_events,
         "ctx",
-        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
+        SimpleNamespace(triggered_id=None),
     )
-    closed = history_callback(
-        "current", [], [], [], [], [], [], [], [], [], [], [], [], {}
-    )
-    assert all(value is no_update for value in closed)
+    assert select_cell([0, None]) is no_update
 
-    monkeypatch.setattr(pl_history_events, "load_pl_history", real_loader)
-    table, status, minimum, maximum, open_paths, comparisons, selection = (
-        history_callback("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
-    )
-    assert isinstance(table, html.Div)
-    assert "Expand only the branches you need" in status
-    assert (minimum, maximum) == (
-        "2026-07-18",
-        "2026-07-19",
-    )
-    assert open_paths == []
-    assert comparisons == []
-    assert selection == {"path": []}
-    headers = [
-        _text(item)
-        for item in _walk(table)
-        if isinstance(item, html.Th) and "header" in str(item.className or "")
-    ]
-    assert headers == ["Index", DAILY_P_PERIOD, "▸ MTD", "▸ YTD"]
-    assert "Risk Type" not in _text(table)
-    assert "Risk Greek" not in _text(table)
-    closed_toggle_ids = [
-        item.id
-        for item in _walk(table)
-        if isinstance(getattr(item, "id", None), dict)
-        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
-    ]
-    assert {item["path"] for item in closed_toggle_ids} == {
-        pl_history_path_token(("Unmapped",)),
+    cell_id = {
+        "type": PL_AGGREGATE_HISTORY_CELL_TYPE,
+        "risk_type": "IR",
+        "risk_greek": "Delta",
+        "dimension": "portfolio",
+        "value": "BOOK-A",
     }
-    assert all(len(item["path"].split(",")) == 1 for item in closed_toggle_ids)
-
-    # The disclosure owns disk refresh. Branch and comparison interactions
-    # use its cached validated frame instead of touching the CSV source again.
-    monkeypatch.setattr(pl_history_events, "load_pl_history", forbidden)
-    unmapped_token = pl_history_path_token(("Unmapped",))
     monkeypatch.setattr(
-        pl_history_events,
+        pl_aggregate_events,
         "ctx",
-        SimpleNamespace(
-            triggered_id={
-                "type": PL_HISTORY_ROW_TOGGLE_TYPE,
-                "path": unmapped_token,
-            }
-        ),
+        SimpleNamespace(triggered_id=cell_id),
     )
-    expanded = history_callback(
-        "history",
-        [],
-        [1],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        open_paths,
-        comparisons,
-        selection,
-    )
-    assert expanded[4] == [unmapped_token]
-    expanded_toggle_ids = [
-        item.id
-        for item in _walk(expanded[0])
-        if isinstance(getattr(item, "id", None), dict)
-        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
-    ]
-    ir_token = pl_history_path_token(("Unmapped", "IR"))
-    assert ir_token in {item["path"] for item in expanded_toggle_ids}
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(
-            triggered_id={
-                "type": PL_HISTORY_PERIOD_HEADER_TYPE,
-                "period": MTD_PERIOD,
-            }
-        ),
-    )
-    compared = history_callback(
-        "history",
-        [],
-        [],
-        [1],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        expanded[4],
-        expanded[5],
-        expanded[6],
-    )
-    assert compared[5] == [MTD_PERIOD]
-    assert compared[6] == {"path": []}
-    headers = [
-        _text(item)
-        for item in _walk(compared[0])
-        if isinstance(item, html.Th) and "header" in str(item.className or "")
-    ]
-    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▸ YTD"]
-    assert not any(isinstance(item, html.Small) for item in _walk(compared[0]))
-    compared_buttons = [
-        item
-        for item in _walk(compared[0])
-        if isinstance(getattr(item, "id", None), dict)
-        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
-        and item.id.get("path") == ir_token
-        and item.id.get("period") == MTD_PERIOD
-    ]
-    assert {item.id["series"] for item in compared_buttons} == {
-        COLOSSUS_TYPE,
-        PREDICT_TYPE,
+    assert select_cell([0, 2]) == {
+        "risk_type": "IR",
+        "risk_greek": "Delta",
+        "dimension": "portfolio",
+        "value": "BOOK-A",
     }
 
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(
-            triggered_id={
-                "type": PL_HISTORY_METRIC_CELL_TYPE,
-                "path": ir_token,
-                "period": MTD_PERIOD,
-                "series": COLOSSUS_TYPE,
-            }
-        ),
+    metadata = _callback_metadata(app, "pl-history-selection-store.data")
+    pattern_id = metadata["inputs"][0]["id"]
+    assert metadata["inputs"][0]["property"] == "n_clicks"
+    assert PL_AGGREGATE_HISTORY_CELL_TYPE in pattern_id
+    assert all(
+        f'"{key}"' in pattern_id
+        for key in ("risk_type", "risk_greek", "dimension", "value")
     )
-    selected = history_callback(
-        "history",
-        [],
-        [],
-        [],
-        [1],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        compared[4],
-        compared[5],
-        compared[6],
-    )
-    assert selected[6] == {"path": ["Unmapped", "IR"], "period": MTD_PERIOD}
-
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(
-            triggered_id={
-                "type": PL_HISTORY_PERIOD_HEADER_TYPE,
-                "period": MTD_PERIOD,
-            }
-        ),
-    )
-    collapsed_comparison = history_callback(
-        "history",
-        [],
-        [],
-        [2],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        selected[4],
-        selected[5],
-        selected[6],
-    )
-    assert collapsed_comparison[5] == []
-    assert collapsed_comparison[6] == {
-        "path": ["Unmapped", "IR"],
-        "period": MTD_PERIOD,
-    }
 
 
-def test_histo_accepts_a_lazy_canonical_history_function(
+def test_inline_histo_is_lazy_and_reuses_canonical_history_function(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1104,444 +968,275 @@ def test_histo_accepts_a_lazy_canonical_history_function(
         calls += 1
         return expected.copy(deep=True)
 
-    config = replace(file_config, history_source=history_source)
-    app, _manager = _registered_pl_app(tmp_path, config=config)
-    history_callback = _callback(app, "pl-history-grid.children")
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
-    )
-    monkeypatch.setattr(
-        pl_history_events,
-        "load_pl_history",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("callable history fell back to the directory loader")
-        ),
-    )
-
-    table, status, *_state = history_callback(
-        "history", [], [], [], [], [], [], [], [], [], [], [], [], {}
-    )
-
-    assert isinstance(table, html.Div)
-    assert "daily partitions" in status
-    assert calls == 1
-
-
-def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, _manager = _registered_pl_app(tmp_path)
-    hierarchy_callback = _callback(app, "pl-history-grid.children")
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
-    )
-    hierarchy_callback("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("chart interaction reloaded P&L history")
-
-    monkeypatch.setattr(pl_history_events, "load_pl_history", forbidden)
-    chart_callback = _callback(app, "pl-history-chart.figure")
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pl-history-range-wtd"),
-    )
-    both = chart_callback(
-        "history",
-        {"path": ["Unmapped", "IR"]},
-        "both",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        1,
-        0,
-        0,
-        0,
-        None,
-        None,
-        False,
-        {"preset": "all"},
-    )
-    assert both[1] == {
-        "preset": "wtd",
-        "start_date": "2026-07-13",
-        "end_date": "2026-07-19",
-    }
-    assert both[7:9] == ("2026-07-13", "2026-07-19")
-    assert "is-active" in both[3]
-    assert all("is-active" not in class_name for class_name in both[4:7])
-    assert "4 observed daily points" in both[2]
-    assert [trace.name for trace in both[0].data] == [
-        COLOSSUS_TYPE,
-        PREDICT_TYPE,
-    ]
-    assert [list(trace.x) for trace in both[0].data] == [
-        ["2026-07-18", "2026-07-19"],
-        ["2026-07-18", "2026-07-19"],
-    ]
-    assert [list(trace.y) for trace in both[0].data] == [
-        [10.0, 19.0],
-        [9.0, pytest.approx(17.1)],
-    ]
-    assert all(value != 0 for trace in both[0].data for value in trace.y)
-    assert len(both[9]) == 4
-    assert list(both[9][0]) == ["Market Date", "P&L Type", "PL"]
-
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pl-history-series-selector"),
-    )
-    colossus = chart_callback(
-        "history",
-        {"path": ["Unmapped", "IR"]},
-        "colossus",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        1,
-        0,
-        0,
-        0,
-        both[7],
-        both[8],
-        False,
-        both[1],
-    )
-    predict = chart_callback(
-        "history",
-        {"path": ["Unmapped", "IR"]},
-        "predict",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        1,
-        0,
-        0,
-        0,
-        both[7],
-        both[8],
-        False,
-        both[1],
-    )
-    assert [trace.name for trace in colossus[0].data] == [COLOSSUS_TYPE]
-    assert [trace.name for trace in predict[0].data] == [PREDICT_TYPE]
-
-
-def test_bounded_history_source_drives_hierarchy_chart_and_clear_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    file_config = _config(tmp_path)
-    expected = load_pl_history(file_config.history_source)
-
-    class BoundedHistory:
-        def __init__(self) -> None:
-            self.hierarchy_calls: list[dict[str, object]] = []
-            self.series_calls: list[dict[str, object]] = []
-            self.clear_calls = 0
-
-        def clear(self) -> None:
-            self.clear_calls += 1
-
-        def hierarchy(self, **kwargs) -> PLHistoryHierarchyResult:
-            self.hierarchy_calls.append(kwargs)
-            tokens = [
-                pl_history_path_token(path) for path in kwargs.get("open_paths", [])
-            ]
-            return PLHistoryHierarchyResult(
-                summarize_visible_pl_history(
-                    expected,
-                    open_path_tokens=tokens,
-                ),
-                len(expected),
-                expected["Market Date"].nunique(),
-                str(expected["Market Date"].min()),
-                str(expected["Market Date"].max()),
-                len(expected),
-            )
-
-        def series(self, **kwargs) -> PLHistorySeriesResult:
-            self.series_calls.append(kwargs)
-            frame = select_pl_history_series(
-                expected,
-                kwargs.get("path", ()),
-                kwargs.get("history_types", ()),
-            )
-            return PLHistorySeriesResult(
-                frame,
-                "2026-07-18",
-                "2026-07-19",
-                "2026-07-18",
-                "2026-07-19",
-            )
-
-        def raw_rows(self, **_kwargs):
-            raise AssertionError("closed raw-row disclosure performed an archive query")
-
-    source = BoundedHistory()
     app, _manager = _registered_pl_app(
         tmp_path,
-        config=replace(file_config, history_source=source),
+        config=replace(file_config, history_source=history_source),
     )
-    monkeypatch.setattr(
-        pl_history_events,
-        "load_pl_history",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("bounded source fell back to full DataFrame history")
-        ),
-    )
-    hierarchy = _callback(app, "pl-history-grid.children")
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
-    )
-
-    rendered = hierarchy("history", [], [], [], [], [], [], [], [], [], [], [], [], {})
-
-    assert "8 filtered rows" in rendered[1]
-    assert len(source.hierarchy_calls) == 1
     chart = _callback(app, "pl-history-chart.figure")
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-series-selector"),
+        SimpleNamespace(triggered_id="pl-history-selection-store"),
     )
-    plotted = chart(
-        "history",
-        {"path": ["Unmapped", "IR"]},
+
+    empty_figure, empty_status, empty_label = chart(
+        {},
         "both",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        0,
-        0,
-        0,
-        0,
+        "all",
         None,
         None,
-        False,
-        {"preset": "all"},
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        None,
     )
-    assert len(source.series_calls) == 1
-    assert "4 observed daily points" in plotted[2]
-    assert plotted[10] == []
-    assert plotted[11] == "Open Raw historical rows to query the selected scope."
-    assert plotted[9] == select_pl_history_series(
-        expected,
-        ("Unmapped", "IR"),
-    ).to_dict("records")
+    assert calls == 0
+    assert not empty_figure.data
+    assert empty_status == "History loads only after a P&L value is selected."
+    assert empty_label == "No P&L value selected."
+
+    selection = {
+        "risk_type": "IR",
+        "risk_greek": "Delta",
+        "dimension": "portfolio",
+        "value": "BOOK-A",
+    }
+    both_figure, both_status, label = chart(
+        selection,
+        "both",
+        "all",
+        None,
+        None,
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        None,
+    )
+    assert calls == 1
+    assert [trace.name for trace in both_figure.data] == [
+        COLOSSUS_TYPE,
+        PREDICT_TYPE,
+    ]
+    assert [list(trace.x) for trace in both_figure.data] == [
+        ["2026-07-18", "2026-07-19"],
+        ["2026-07-18", "2026-07-19"],
+    ]
+    assert [list(trace.y) for trace in both_figure.data] == [
+        [10.0, 12.0],
+        [9.0, pytest.approx(10.8)],
+    ]
+    assert "4 observed points" in both_status
+    assert label == "IR · Delta · Portfolio: BOOK-A"
+
+    colossus_figure, _status, _label = chart(
+        selection,
+        "colossus",
+        "wtd",
+        None,
+        None,
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        None,
+    )
+    assert calls == 1
+    assert [trace.name for trace in colossus_figure.data] == [COLOSSUS_TYPE]
 
     monkeypatch.setattr(
         pl_history_events,
         "ctx",
         SimpleNamespace(triggered_id="clear-cache-complete-store"),
     )
-    cleared = hierarchy(
-        "history",
-        {"generation": 1},
+    chart(
+        selection,
+        "predict",
+        "all",
+        None,
+        None,
         [],
         [],
         [],
         [],
         [],
         [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        {},
+        {"generation": 2},
     )
-    assert all(value is no_update for value in cleared)
-    assert source.clear_calls == 1
+    assert calls == 2
 
 
-def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
+def test_inline_histo_bounded_query_combines_filters_and_positive_cell_criteria(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app, _manager = _registered_pl_app(tmp_path)
-    hierarchy = _callback(app, "pl-history-grid.children")
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id="pnl-workspace-tabs"),
-    )
-    rendered = hierarchy(
-        "history",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        ["book-b"],
-        [],
-        [],
-        [],
-        [],
-        [],
-        {},
-    )
-    assert "2 filtered rows" in rendered[1]
-    total_daily_predict = next(
-        item
-        for item in _walk(rendered[0])
-        if isinstance(getattr(item, "id", None), dict)
-        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
-        and item.id.get("path") == pl_history_path_token(())
-        and item.id.get("period") == DAILY_P_PERIOD
-        and item.id.get("series") == PREDICT_TYPE
-    )
-    assert _text(total_daily_predict) == "6"
+    file_config = _config(tmp_path)
 
-    stale_path = pl_history_path_token(("Unmapped",))
-    monkeypatch.setattr(
-        pl_history_events,
-        "ctx",
-        SimpleNamespace(triggered_id=PL_FILTER_IDS["portfolio"]),
-    )
-    reset = hierarchy(
-        "history",
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        ["BOOK-B"],
-        [],
-        [],
-        [],
-        [stale_path],
-        [MTD_PERIOD],
-        {"path": ["Unmapped", "IR"]},
-    )
-    assert reset[4:] == ([], [], {"path": []})
+    class BoundedHistory:
+        def __init__(self) -> None:
+            self.series_calls: list[dict[str, object]] = []
+            self.clear_calls = 0
 
+        def clear(self) -> None:
+            self.clear_calls += 1
+
+        def hierarchy(self, **_kwargs):
+            raise AssertionError("inline history must not run a hierarchy query")
+
+        def series(self, **kwargs) -> PLHistorySeriesResult:
+            self.series_calls.append(kwargs)
+            history_types = tuple(kwargs["history_types"])
+            rows = pd.DataFrame(
+                [
+                    {
+                        "Market Date": "2026-07-18",
+                        "P&L Type": COLOSSUS_TYPE,
+                        "PL": 10.0,
+                    },
+                    {
+                        "Market Date": "2026-07-19",
+                        "P&L Type": PREDICT_TYPE,
+                        "PL": 9.0,
+                    },
+                ]
+            )
+            rows = rows.loc[rows["P&L Type"].isin(history_types)].reset_index(drop=True)
+            return PLHistorySeriesResult(
+                rows,
+                "2026-07-18",
+                "2026-07-19",
+                "2026-07-18",
+                "2026-07-19",
+            )
+
+    source = BoundedHistory()
+    app, _manager = _registered_pl_app(
+        tmp_path,
+        config=replace(file_config, history_source=source),
+    )
     chart = _callback(app, "pl-history-chart.figure")
     monkeypatch.setattr(
         pl_history_events,
+        "load_pl_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bounded history fell back to a full archive load")
+        ),
+    )
+    monkeypatch.setattr(
+        pl_history_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-series-selector"),
+        SimpleNamespace(triggered_id="pl-history-period"),
     )
-    plotted = chart(
-        "history",
-        {"path": ["Unmapped", "IR"]},
-        "both",
-        [],
-        [],
-        ["BOOK-B"],
-        [],
-        [],
-        [],
-        0,
-        0,
-        0,
-        0,
+
+    selection = {
+        "risk_type": "IR",
+        "risk_greek": "Delta",
+        "dimension": "portfolio",
+        "value": "BOOK-A",
+    }
+    figure, status, label = chart(
+        selection,
+        "predict",
+        "custom",
+        "2026-07-18",
+        "2026-07-19",
+        ["XVA"],
+        ["SOG-A"],
+        ["BOOK-A"],
+        ["Rates"],
+        ["Vanilla"],
+        ["exclude"],
         None,
-        None,
-        False,
-        {"preset": "all"},
     )
-    assert "2 observed daily points" in plotted[2]
-    assert [list(trace.x) for trace in plotted[0].data] == [
-        ["2026-07-19"],
-        ["2026-07-19"],
+
+    assert [trace.name for trace in figure.data] == [PREDICT_TYPE]
+    assert "1 observed points" in status
+    assert label == "IR · Delta · Portfolio: BOOK-A"
+    assert source.series_calls == [
+        {
+            "path": (),
+            "history_types": (PREDICT_TYPE,),
+            "preset": "custom",
+            "start_date": "2026-07-18",
+            "end_date": "2026-07-19",
+            "filters": {
+                "Activity": ["XVA"],
+                "SignoffGroup": ["SOG-A"],
+                "Portfolio": ["BOOK-A"],
+                "Category": ["Rates"],
+                "Sub Category": ["Vanilla"],
+            },
+            "criteria": {
+                "Risk Type": ["IR"],
+                "Risk Greek": ["Delta"],
+                "Portfolio": ["BOOK-A"],
+            },
+            "exclude_selected": True,
+        }
     ]
-    assert [list(trace.y) for trace in plotted[0].data] == [[7.0], [6.3]]
+
+    monkeypatch.setattr(
+        pl_history_events,
+        "ctx",
+        SimpleNamespace(triggered_id="clear-cache-complete-store"),
+    )
+    chart(
+        {},
+        "both",
+        "1y",
+        None,
+        None,
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {"generation": 3},
+    )
+    assert source.clear_calls == 1
+    assert len(source.series_calls) == 1
 
 
-def test_histo_callback_metadata_owns_tree_range_and_series_state(
+def test_inline_histo_callback_metadata_has_no_tree_or_raw_contract(
     tmp_path: Path,
 ) -> None:
     app, _manager = _registered_pl_app(tmp_path)
-    hierarchy = next(
-        metadata
-        for metadata in app.callback_map.values()
-        if "pl-history-grid.children" in str(metadata["output"])
-    )
-    assert [str(output) for output in hierarchy["output"]] == [
-        "pl-history-grid.children",
-        "pl-history-status.children",
-        "pl-history-date-range.min_date_allowed",
-        "pl-history-date-range.max_date_allowed",
-        "pl-history-open-paths.data",
-        "pl-history-open-comparisons.data",
-        "pl-history-selection-store.data",
-    ]
-    assert {item["property"] for item in hierarchy["inputs"]} == {
-        "data",
-        "n_clicks",
-        "value",
-    }
-    assert hierarchy["inputs"][1] == {
-        "id": "clear-cache-complete-store",
-        "property": "data",
-    }
-    assert PL_HISTORY_ROW_TOGGLE_TYPE in hierarchy["inputs"][2]["id"]
-    assert PL_HISTORY_PERIOD_HEADER_TYPE in hierarchy["inputs"][3]["id"]
-    assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][4]["id"]
-    hierarchy_inputs = {(item["id"], item["property"]) for item in hierarchy["inputs"]}
-    assert {
-        (component_id, "value") for component_id in PL_FILTER_IDS.values()
-    } <= hierarchy_inputs
-    assert (PL_FILTER_EXCLUDE_ID, "value") in hierarchy_inputs
-
-    chart = next(
-        metadata
-        for metadata in app.callback_map.values()
-        if "pl-history-chart.figure" in str(metadata["output"])
-    )
-    chart_inputs = {(item["id"], item["property"]) for item in chart["inputs"]}
-    assert {
-        ("pnl-workspace-tabs", "value"),
-        ("pl-history-selection-store", "data"),
-        ("pl-history-series-selector", "value"),
-        *{(component_id, "value") for component_id in PL_FILTER_IDS.values()},
-        (PL_FILTER_EXCLUDE_ID, "value"),
-        ("pl-history-range-wtd", "n_clicks"),
-        ("pl-history-range-mtd", "n_clicks"),
-        ("pl-history-range-ytd", "n_clicks"),
-        ("pl-history-range-all", "n_clicks"),
-        ("pl-history-date-range", "start_date"),
-        ("pl-history-date-range", "end_date"),
-        ("pl-history-raw-details", "open"),
-    } == chart_inputs
+    chart = _callback_metadata(app, "pl-history-chart.figure")
     assert [str(output) for output in chart["output"]] == [
         "pl-history-chart.figure",
-        "pl-history-range-store.data",
         "pl-history-plot-status.children",
-        "pl-history-range-wtd.className",
-        "pl-history-range-mtd.className",
-        "pl-history-range-ytd.className",
-        "pl-history-range-all.className",
-        "pl-history-date-range.start_date",
-        "pl-history-date-range.end_date",
-        "pl-history-observations-table.data",
-        "pl-history-raw-table.data",
-        "pl-history-raw-status.children",
+        "pl-history-selection-label.children",
     ]
+    assert {(item["id"], item["property"]) for item in chart["inputs"]} == {
+        ("pl-history-selection-store", "data"),
+        ("pl-history-series-selector", "value"),
+        ("pl-history-period", "value"),
+        ("pl-history-date-range", "start_date"),
+        ("pl-history-date-range", "end_date"),
+        *{(component_id, "value") for component_id in PL_FILTER_IDS.values()},
+        (PL_FILTER_EXCLUDE_ID, "value"),
+        ("clear-cache-complete-store", "data"),
+    }
+    callback_contract = " ".join(app.callback_map)
+    assert all(
+        retired not in callback_contract
+        for retired in (
+            "pnl-workspace-tabs",
+            "pl-history-grid",
+            "pl-history-open-paths",
+            "pl-history-open-comparisons",
+            "pl-history-observations-table",
+            "pl-history-raw-table",
+        )
+    )
 
 
 def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> None:
@@ -1589,9 +1284,15 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
         "pl-portfolio-summary",
         "pl-validate-summary",
         "pnl-history-workspace",
-        "pl-history-raw-table",
+        "pl-history-selection-store",
+        "pl-history-chart",
         "pl-adjustment-revision-store",
     } <= with_ids
+    assert {
+        "pnl-workspace-tabs",
+        "pl-history-grid",
+        "pl-history-raw-table",
+    }.isdisjoint(with_ids)
     assert "pl-preview-summary" not in with_ids
     assert "pl-workflow-summary" not in with_ids
     assert not any("pl-send-preview" in key for key in with_pl.callback_map)

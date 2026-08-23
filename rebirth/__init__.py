@@ -1,5 +1,5 @@
-"""Rebirth V4 application package."""
+"""Rebirth V4.1 application package."""
 
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 __all__ = ["__version__"]

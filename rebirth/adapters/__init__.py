@@ -1,1 +1,1 @@
-"""Strict external connector adapters owned by Rebirth V4."""
+"""Strict external connector adapters owned by Rebirth V4.1."""

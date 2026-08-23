@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import page_services
-from .callbacks import register_callbacks
-from .view import build_data_page
+from .s03_callbacks import register_callbacks
+from .s02_view import build_data_page
 
 
 def layout(**_kwargs: Any):

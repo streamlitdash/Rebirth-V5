@@ -96,10 +96,10 @@
   "risk_rows": 10000,
   "schema_version": 4,
   "sha256": {
-    "colossus.parquet": "c64740c5c8f7c63aae9efac004806c5225b2ccf0f4d9be51b60060b122fb339d",
-    "market.parquet": "404ba6517d419f65e3129edad3c38927f3c308c69fb6cd0f9de64044349ae16d",
-    "risk.parquet": "276160d355fae723f58c937021bd69be59e1a00469163498cddb758863428b2a",
-    "stock.parquet": "afb91fafb34507bff35c689bffaca4575762f658bf948a1465a431424556ec23"
+    "colossus.parquet": "f7631f3d9d960f611b590dc6224830bbf3e3814a5a7b1e9fe32f46399a4b145a",
+    "market.parquet": "e8cb6df2e9209f6392302dde0cdca2c099c705d69555df0c5e0817c154bbbf34",
+    "risk.parquet": "78ee0d4e28171d8f8eb6e8aa023965c6ef8dbf3408f6559a0b2e32ecc634397f",
+    "stock.parquet": "2b82ecfa3456946cf59263a277b8b1b0515951f50089fd8ce9aa6abab100eda8"
   },
   "stock_columns": [
     "CRDS",

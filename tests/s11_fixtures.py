@@ -10,10 +10,15 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from rebirth.domain.schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
-from rebirth.domain.products import CURRENT, PL, PRODUCT_SPECS_BY_SOURCE_TYPE
-from rebirth.domain.search import SearchCatalog
-from rebirth.history import ArchiveHistoryRepository, HistoryHandoff, HistoryQuery
+from rebirth.domain.s01_schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
+from rebirth.domain.s02_products import CURRENT, PL, PRODUCT_SPECS_BY_SOURCE_TYPE
+from rebirth.domain.s10_search import SearchCatalog
+from rebirth.history import (
+    ArchiveHistoryRepository,
+    HistoryHandoff,
+    HistoryQuery,
+    HistoryValidationError,
+)
 from rebirth.history import (
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_FILE_NAME,
@@ -24,10 +29,11 @@ from rebirth.history import (
     load_risk_archive,
     load_stock_archive_frame,
 )
-from rebirth.services.sources import _FAKE_CSV_SCHEMAS
-from rebirth.pages.pnl.validation import build_validate_pl_comparison
-from tools import fixtures
-from tools.fixtures import (
+from rebirth.services.s05_sources import _FAKE_CSV_SCHEMAS
+from rebirth.services.s05_sources import build_production_refresh_manager
+from rebirth.pages.pnl.s06_validation import build_validate_pl_comparison
+from tools import s01_fixtures as fixtures
+from tools.s01_fixtures import (
     FAKE_NOTICE,
     FIXTURE_TAG,
     HISTORICAL_MARKET_DATES,
@@ -96,6 +102,15 @@ def test_generator_uses_canonical_axes_and_current_field() -> None:
         ]
         assert len({row[TENOR_SWAP] for row in source_rows}) >= 3
         assert all(not row[TENOR_OPTION] for row in source_rows)
+    assert {
+        row["Underlying"]
+        for row in datasets["s03_risk.csv"]
+        if row["Source Type"] == "ir/gamma"
+    } == {
+        row["Underlying"]
+        for row in datasets["s03_risk.csv"]
+        if row["Source Type"] == "ir/delta"
+    }
 
 
 def test_risk_fixture_supplies_connector_owned_groups() -> None:
@@ -175,7 +190,6 @@ def test_one_day_history_has_exact_grains_and_all_product_axes(
     quote_key = [
         "Source Type",
         "Risk Type",
-        "Risk Greek",
         "Underlying",
         "Tenor Swap",
         "Tenor Option",
@@ -187,14 +201,20 @@ def test_one_day_history_has_exact_grains_and_all_product_axes(
     assert fixture.risk[PL].sum() != pytest.approx(fixture.colossus[PL].sum())
     cells_by_axes = {0: 1, 1: 6, 2: 12}
     for source_type, spec in PRODUCT_SPECS_BY_SOURCE_TYPE.items():
+        raw_counts = (
+            fixture.risk.loc[fixture.risk["Source Type"].eq(source_type)]
+            .groupby("Underlying")
+            .size()
+        )
+        max_positions = cells_by_axes[len(spec.axes)] * 2
+        assert raw_counts.max() == max_positions
+        assert raw_counts.le(max_positions).all()
         reported_counts = (
             fixture.risk.loc[fixture.risk["Source Type"].eq(source_type)]
             .groupby("Reported Underlying")
             .size()
         )
-        max_positions = cells_by_axes[len(spec.axes)] * 2
-        assert reported_counts.max() == max_positions
-        assert reported_counts.le(max_positions).all()
+        assert reported_counts.sum() == raw_counts.sum()
     assert (
         fixture.risk.groupby(["Source Type", "Underlying"])["Portfolio"]
         .nunique()
@@ -207,6 +227,103 @@ def test_one_day_history_has_exact_grains_and_all_product_axes(
         "Matched": 2_000,
         "Predict only": 564,
     }
+
+
+def test_every_handoff_constructible_quick_identity_exists_in_history() -> None:
+    fixture = build_official_history_fixture(HISTORICAL_MARKET_DATES[-1])
+    archive = SearchCatalog(
+        revision=fixture.revision,
+        risk_dates=fixture.risk_dates,
+        market_date=pd.Timestamp(fixture.market_date),
+        market_frame=fixture.market,
+        risk_pivot_frame=fixture.risk,
+    )
+    manager = build_production_refresh_manager(stage_delays={"risk_product": 0.0})
+    manager.refresh(force_risk=True, reason="quick-history-coverage", copy_result=False)
+
+    archived_risk_identities = {
+        HistoryHandoff.from_resolved_identity(
+            archive.resolve_history_identity(
+                "risk",
+                option,
+                identity_mode=identity_mode,
+            ),
+            metric="risk",
+        ).identity
+        for identity_mode in ("reported", "underlying")
+        for option in archive.combine_udl_options(identity_mode=identity_mode)
+    }
+    expected_current_only = {
+        (("credit/delta",), "Credit", "XGamma"),
+        (("credit/vega",), "Credit", "XGamma Vega"),
+        (("new-position/cash-flow",), "Cash Flow", "New"),
+    }
+    for identity_mode in ("reported", "underlying"):
+        current_only: set[tuple[tuple[str, ...], str, str]] = set()
+        accepted_signatures: set[tuple[tuple[str, ...], str, str]] = set()
+        covered_sources: set[str] = set()
+        for option in manager.combine_udl_options(identity_mode=identity_mode):
+            resolved = manager.resolve_history_identity(
+                "risk",
+                option,
+                identity_mode=identity_mode,
+            )
+            signature = (
+                resolved.source_types,
+                resolved.risk_type,
+                resolved.risk_greek,
+            )
+            if signature in expected_current_only:
+                current_only.add(signature)
+                with pytest.raises(HistoryValidationError):
+                    HistoryHandoff.from_resolved_identity(
+                        resolved,
+                        metric="risk",
+                    )
+                continue
+
+            assert set(resolved.source_types) <= set(HISTORY_SOURCE_TYPES)
+            handoff = HistoryHandoff.from_resolved_identity(
+                resolved,
+                metric="risk",
+            )
+            accepted_signatures.add(signature)
+            covered_sources.update(resolved.source_types)
+            assert handoff.identity in archived_risk_identities
+
+        assert covered_sources == set(HISTORY_SOURCE_TYPES)
+        assert {
+            (("fx/delta", "fx/gamma"), "FX", "Delta"),
+            (("ir/delta", "ir/gamma"), "IR", "Delta"),
+        } <= accepted_signatures
+        assert current_only == expected_current_only
+
+    archived_market_identities = {
+        HistoryHandoff.from_resolved_identity(
+            archive.resolve_history_identity(
+                "market",
+                option,
+                identity_mode="underlying",
+            ),
+            metric="current",
+        ).identity
+        for option in archive.market_udl_options()
+    }
+    current_market_identities = {
+        HistoryHandoff.from_resolved_identity(
+            manager.resolve_history_identity(
+                "market",
+                option,
+                identity_mode="underlying",
+            ),
+            metric="current",
+        ).identity
+        for option in manager.market_udl_options()
+    }
+    assert {identity.source_type for identity in current_market_identities} == set(
+        HISTORY_SOURCE_TYPES
+    )
+    assert current_market_identities <= archived_market_identities
 
 
 def test_history_has_temporal_dynamics_and_stock_lifecycle() -> None:
@@ -303,6 +420,37 @@ def test_one_leaf_uses_live_v4_parquet_writer_and_specialized_stock_reader(
     assert set(bundle.raw_rows["Source Type"]) == {"ir/delta", "ir/gamma"}
     assert set(bundle.raw_rows["Split"]) == {"Risk", "Gamma"}
     assert bundle.values["Risk"].sum() == pytest.approx(bundle.raw_rows["Risk"].sum())
+
+
+def test_history_install_restores_parent_acl_before_atomic_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "histo"
+    root.mkdir()
+    market_date = HISTORICAL_MARKET_DATES[-1]
+    staged = tmp_path / "stage" / market_date
+    staged.mkdir(parents=True)
+    (staged / "payload").write_text("fixture", encoding="utf-8")
+    destination = root / market_date
+    observed: list[Path] = []
+
+    def restore_permissions(pending: Path) -> None:
+        assert pending.is_dir()
+        assert not destination.exists()
+        observed.append(pending)
+
+    monkeypatch.setattr(fixtures, "RISK_ARCHIVE_DIRECTORY", root)
+    monkeypatch.setattr(
+        fixtures,
+        "_restore_windows_parent_acl",
+        restore_permissions,
+    )
+
+    fixtures._install_history_leaf(staged)
+
+    assert observed == [root / f".{market_date}.fixture-v4-pending"]
+    assert (destination / "payload").read_text(encoding="utf-8") == "fixture"
 
 
 def test_replacement_preflight_accepts_only_recognized_fixture_leaves(

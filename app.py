@@ -1,4 +1,4 @@
-"""Compose and run the Rebirth V4 Dash application."""
+"""Compose and run the Rebirth V4.1 Dash application."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ import logging
 import os
 from pathlib import Path
 
-from rebirth.adapters.stock import get_stock
-from rebirth.app.factory import build_app
-from rebirth.app.observability import configure_runtime_logging, perf_span
-from rebirth.app.settings import RuntimeSettings, resolve_data_path
+from rebirth.adapters.s08_stock import get_stock
+from rebirth.app.s07_factory import build_app
+from rebirth.app.s03_logging import configure_runtime_logging, perf_span
+from rebirth.app.s01_settings import RuntimeSettings, resolve_data_path
 from rebirth.history import SQLPLHistoryRepository, build_market_history_loader
 from rebirth.pages.pnl import PLSendConfig
-from rebirth.pages.stock.history import SQLStockHistoryRepository
-from rebirth.services.adjustments import LocalCsvAdjustmentRepository
-from rebirth.services.sources import (
+from rebirth.pages.stock.s02_history import SQLStockHistoryRepository
+from rebirth.services.s03_adjustments import LocalCsvAdjustmentRepository
+from rebirth.services.s05_sources import (
     build_production_refresh_manager,
     get_portfolio_config,
     send_portfolio_pl,
@@ -26,7 +26,7 @@ from rebirth.services.sources import (
 configure_runtime_logging()
 LOGGER = logging.getLogger(__name__)
 
-_parser = argparse.ArgumentParser(description="Rebirth V4 Risk Cube")
+_parser = argparse.ArgumentParser(description="Rebirth V4.1 Risk Cube")
 _parser.add_argument("--port", type=int, help="Port (default: PORT or 8050).")
 _parser.add_argument("--host", help="Host (default: HOST or 127.0.0.1).")
 _parser.add_argument("--debug", action="store_true", help="Enable Dash debug mode.")

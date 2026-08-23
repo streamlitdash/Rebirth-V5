@@ -9,10 +9,10 @@ from time import monotonic, sleep
 import pandas as pd
 import pytest
 
-from rebirth.domain.products import ProductConnectorAdapter
-from rebirth.services.refresh import RiskRefreshManager
-from rebirth.services.snapshots import StaleResetGenerationError
-from rebirth.services.sources import (
+from rebirth.domain.s02_products import ProductConnectorAdapter
+from rebirth.services.s06_refresh import RiskRefreshManager
+from rebirth.services.s01_snapshots import StaleResetGenerationError
+from rebirth.services.s05_sources import (
     build_production_refresh_manager,
     get_portfolio_config,
     get_product_connector_adapters,

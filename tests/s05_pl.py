@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rebirth.domain.pnl import (
+from rebirth.domain.s08_pnl import (
     ACTIVITY,
     ADJUSTMENT,
     BOOK,
@@ -44,11 +44,11 @@ from rebirth.domain.pnl import (
     pl_history_period_values,
     select_pl_history_series,
 )
-from rebirth.services.adjustments import (
+from rebirth.services.s03_adjustments import (
     AdjustmentPersistenceError,
     LocalCsvAdjustmentRepository,
 )
-from rebirth.domain.cross_gamma import XGAMMA_RISK_GREEK, XGAMMA_VEGA_RISK_GREEK
+from rebirth.domain.s04_crossgamma import XGAMMA_RISK_GREEK, XGAMMA_VEGA_RISK_GREEK
 
 
 MARKET_DATE = "2026-07-20"
@@ -708,7 +708,7 @@ def test_repository_rolls_back_all_target_portfolios_after_publish_error(
         base_revision=1,
     )
 
-    from rebirth.services import adjustments as storage
+    from rebirth.services import s03_adjustments as storage
 
     real_replace = storage.os.replace
     published = 0

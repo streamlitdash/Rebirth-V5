@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import pytest
 
-from rebirth.services.sources import build_production_refresh_manager
+from rebirth.services.s05_sources import build_production_refresh_manager
 
 
 def test_targeted_manager_reads_copy_only_the_requested_frames(
@@ -74,7 +74,7 @@ def test_refresh_can_skip_its_result_copy_and_logs_bounded_metrics(
         "_copy_snapshot",
         lambda _snapshot: pytest.fail("copy_result=False copied financial frames"),
     )
-    caplog.set_level(logging.INFO, logger="rebirth.services.refresh")
+    caplog.set_level(logging.INFO, logger="rebirth.services.s06_refresh")
 
     assert manager.refresh(force_risk=True, force_pl=True, copy_result=False) is None
 
@@ -105,7 +105,9 @@ def test_refresh_can_skip_its_result_copy_and_logs_bounded_metrics(
     def fail_metrics(**_kwargs) -> None:
         raise RuntimeError("metrics sink unavailable")
 
-    monkeypatch.setattr("rebirth.services.refresh._log_refresh_metrics", fail_metrics)
+    monkeypatch.setattr(
+        "rebirth.services.s06_refresh._log_refresh_metrics", fail_metrics
+    )
     result = manager.refresh(force_pl=True)
     assert result is not None
     assert result.revision == revision + 1

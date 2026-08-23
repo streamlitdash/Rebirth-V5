@@ -15,17 +15,17 @@ import pytest
 from dash import page_registry
 from dash.exceptions import UnsupportedRelativePath
 
-from rebirth.services.sources import build_production_refresh_manager
-from rebirth.pages.pnl.common import PL_FILTER_FIELDS
+from rebirth.services.s05_sources import build_production_refresh_manager
+from rebirth.pages.pnl.s01_common import PL_FILTER_FIELDS
 from rebirth.pages.static_data import (
     STATIC_FILE_OPTIONS,
     build_static_data_page,
     build_static_data_table,
 )
-from rebirth.app import factory
-from rebirth.app import startup as events
-from rebirth.app.factory import build_app
-from rebirth.app.startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
+from rebirth.app import s07_factory as factory
+from rebirth.app import s04_startup as events
+from rebirth.app.s07_factory import build_app
+from rebirth.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -386,7 +386,7 @@ def test_public_endpoint_urls_do_not_reuse_internal_route_prefix() -> None:
 
 def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
     source = (
-        Path(__file__).resolve().parent.parent / "assets" / "40_refresh_lifecycle.js"
+        Path(__file__).resolve().parent.parent / "assets" / "s12_refresh.js"
     ).read_text(encoding="utf-8")
 
     assert "the refresh is still being followed" not in source
@@ -536,7 +536,7 @@ def test_composed_app_defaults_to_no_artificial_risk_product_hold(monkeypatch) -
 def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     monkeypatch,
 ) -> None:
-    from rebirth.history import sql as archive_sql_module
+    from rebirth.history import s07_sql as archive_sql_module
     import app as app_module
 
     history_root = (Path(app_module.__file__).parent / "data" / "histo").resolve()
@@ -758,7 +758,13 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link"
     assert shell_style == {}
-    assert {"data-page", "data-history-chart", "data-raw-table"} <= data_ids
+    assert {
+        "data-page",
+        "data-history-chart",
+        "data-load-history-button",
+        "data-underlying",
+    } <= data_ids
+    assert "data-raw-table" not in data_ids
     assert "cube-page-container" not in data_ids
 
     pnl_page, metadata = _native_page(app, "/pnl")

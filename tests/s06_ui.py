@@ -10,12 +10,12 @@ import pandas as pd
 import pytest
 from dash import dash_table, dcc, html
 
-from rebirth.pages.risk.charts import (
+from rebirth.pages.risk.s05_charts import (
     build_detail_panel_with_state,
     build_tenor_heatmap,
     detail_tenor_view_state,
 )
-from rebirth.pages.risk.quick_market import (
+from rebirth.pages.risk.s09_quickmarket import (
     build_quick_market_history_result,
     build_quick_market_result,
     build_quick_market_search,
@@ -23,25 +23,25 @@ from rebirth.pages.risk.quick_market import (
     quick_market_history_date_window,
     quick_market_history_identity,
 )
-from rebirth.pages.risk.quick_risk import (
+from rebirth.pages.risk.s08_quickrisk import (
     QUICK_SEARCH_HIERARCHY_DEPTH,
     build_quick_search,
     build_quick_search_pivot,
 )
-from rebirth.pages.risk.explorer_tables import (
+from rebirth.pages.risk.s06_explorertables import (
     build_small_table,
     build_tree_rows,
     metric_header,
 )
-from rebirth.pages.risk.workspace_tables import (
+from rebirth.pages.risk.s15_workspacetables import (
     build_new_trade_detail_table,
     build_top_book_exposures,
     build_top_promotions_table,
     top_promotions_frame,
 )
-from rebirth.pages.risk.view import build_unmapped_books_table
-from rebirth.ui.aggregation import ordered_unique, row_key
-from rebirth.pages.risk.search_callbacks import (
+from rebirth.pages.risk.s18_view import build_unmapped_books_table
+from rebirth.ui.s02_aggregation import ordered_unique, row_key
+from rebirth.pages.risk.s10_search import (
     _prune_quick_search_indexes,
     _render_quick_search_pivot,
 )
@@ -1096,13 +1096,13 @@ def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     assert "aria-expanded" not in toggles[3].to_plotly_json()["props"]
 
     stylesheet = (
-        Path(__file__).resolve().parents[1] / "assets" / "20_controls_tables.css"
+        Path(__file__).resolve().parents[1] / "assets" / "s02_controls.css"
     ).read_text(encoding="utf-8")
     selector = stylesheet.split(".hierarchy-total-row > *", maxsplit=1)[1].split(
         "}", maxsplit=1
     )[0]
-    assert "border-top: 1px solid #111111" in selector
-    assert "border-bottom: 1px solid #111111" in selector
+    assert "border-top: 1px solid var(--semantic-rule)" in selector
+    assert "border-bottom: 1px solid var(--semantic-rule)" in selector
     assert "font-weight: 850" in selector
 
 
@@ -1161,7 +1161,7 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
     assert leaf_spacer.to_plotly_json()["props"]["aria-hidden"] == "true"
 
     browser_source = (
-        Path(__file__).resolve().parents[1] / "assets" / "50_risk_events.js"
+        Path(__file__).resolve().parents[1] / "assets" / "s13_risk.js"
     ).read_text(encoding="utf-8")
     assert 'toggle.textContent = expanded ? "\\u2212" : "\\u25b8";' in browser_source
 

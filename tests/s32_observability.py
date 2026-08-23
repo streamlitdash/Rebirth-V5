@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rebirth.app.observability import (
+from rebirth.app.s03_logging import (
     configure_runtime_logging,
     perf_span,
     reset_performance_warnings,

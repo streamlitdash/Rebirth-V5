@@ -8,9 +8,9 @@ from uuid import uuid4
 from dash import dcc, html
 
 from .. import page_services
-from .callbacks import register_callbacks
-from .data import default_stock_dates
-from .view import build_stock_page_shell
+from .s04_callbacks import register_callbacks
+from .s01_data import default_stock_dates
+from .s03_view import build_stock_page_shell
 
 
 def build_stock_page_route(

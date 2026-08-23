@@ -17,7 +17,7 @@ def layout(**_kwargs: Any):
 
 def register_callbacks(*args: Any, **kwargs: Any) -> None:
     """Register Risk behavior without loading callback modules during page discovery."""
-    from .callbacks import register_callbacks as register
+    from .s19_callbacks import register_callbacks as register
 
     register(*args, **kwargs)
 

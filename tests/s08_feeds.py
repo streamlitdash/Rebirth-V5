@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rebirth.services.sources import (
+from rebirth.services.s05_sources import (
     FAKE_CSV_FILES,
     _load_fake_csv,
     _load_fake_source_partition,

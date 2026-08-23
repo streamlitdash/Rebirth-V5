@@ -1,4 +1,4 @@
-"""V4 runtime bundle and Plotly publish boundary regression tests."""
+"""V4.1 runtime bundle and Plotly publish boundary regression tests."""
 
 from __future__ import annotations
 
@@ -56,7 +56,8 @@ def _write_fixture_leaf(
     return leaf
 
 
-def test_project_release_boundary_is_conventional_and_v4_owned() -> None:
+def test_project_release_boundary_is_conventional_and_v41_owned() -> None:
+    assert publishing.APP_NAME == "rebirth-v4-1"
     assert publishing.RUNTIME_FILES == (
         "app.py",
         "gunicorn.conf.py",
@@ -66,13 +67,11 @@ def test_project_release_boundary_is_conventional_and_v4_owned() -> None:
     for relative_path in (*publishing.RUNTIME_FILES, *publishing.RUNTIME_DIRECTORIES):
         assert (publishing.PROJECT / relative_path).exists()
     assert tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8")) == {
-        "name": "rebirth-v4",
-        "app_id": "99bb2eb2-47d7-48ce-a901-2aaf48d88560",
-        "app_url": "6e5bc823-783b-44cb-b4e4-c4e5be489df7",
+        "name": "rebirth-v4-1"
     }
 
 
-def test_checked_in_history_is_the_exact_262_day_v4_archive() -> None:
+def test_checked_in_history_is_the_exact_262_day_schema_v4_archive() -> None:
     assert len(publishing.EXPECTED_HISTORY_DATES) == 262
     assert publishing.EXPECTED_HISTORY_DATES[0] == "2025-08-21"
     assert publishing.EXPECTED_HISTORY_DATES[-1] == "2026-08-21"
@@ -102,7 +101,7 @@ def test_archive_validation_rejects_partial_corrupt_or_reordered_revisions(
         publishing._validate_history_archive(history, expected_dates=dates)
 
 
-def test_stage_bundle_contains_only_the_minimal_v4_runtime(
+def test_stage_bundle_contains_only_the_minimal_v41_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -186,7 +185,7 @@ def test_cloud_optimization_preserves_source_rows_and_updates_staged_hashes(
     assert not list(optimized_leaf.glob(".*.cloud.tmp"))
 
 
-def test_publish_uses_native_v4_entrypoint_discovery(
+def test_publish_uses_native_v41_entrypoint_discovery(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -194,7 +193,7 @@ def test_publish_uses_native_v4_entrypoint_discovery(
     project = tmp_path / "project"
     project.mkdir()
     config = project / "plotly-cloud.toml"
-    config.write_text('name = "rebirth-v4"\n', encoding="utf-8")
+    config.write_text('name = "rebirth-v4-1"\n', encoding="utf-8")
 
     def stage(destination: Path) -> Path:
         destination.mkdir(parents=True)
@@ -215,7 +214,7 @@ def test_publish_uses_native_v4_entrypoint_discovery(
 
     command = captured["command"]
     assert isinstance(command, list)
-    assert command[command.index("--name") + 1] == "rebirth-v4"
+    assert command[command.index("--name") + 1] == "rebirth-v4-1"
     assert command[command.index("--project-path") + 1] == str(captured["optimized"])
     assert "--entrypoint-module" not in command
     assert captured["cwd"] == project

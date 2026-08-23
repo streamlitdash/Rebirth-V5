@@ -1,4 +1,4 @@
-"""Validate, stage, and publish the minimal Rebirth V4 Plotly runtime."""
+"""Validate, stage, and publish the minimal Rebirth V4.1 Plotly runtime."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import pyarrow.parquet as pq
 
 PROJECT = Path(__file__).resolve().parent
 CONFIG = PROJECT / "plotly-cloud.toml"
-APP_NAME = "rebirth-v4"
+APP_NAME = "rebirth-v4-1"
 RUNTIME_FILES = ("app.py", "gunicorn.conf.py", "requirements.txt")
 RUNTIME_DIRECTORIES = ("rebirth", "assets", "data")
 IGNORED_NAMES = (
@@ -106,7 +106,7 @@ def _business_dates(start: date, end: date) -> tuple[str, ...]:
 
 EXPECTED_HISTORY_DATES = _business_dates(_HISTORY_START, _HISTORY_END)
 if len(EXPECTED_HISTORY_DATES) != _HISTORY_DAY_COUNT:
-    raise RuntimeError("The configured V4 history window must contain 262 weekdays")
+    raise RuntimeError("The configured V4.1 history window must contain 262 weekdays")
 
 
 def _file_sha256(path: Path) -> str:
@@ -131,7 +131,7 @@ def _is_deployable_fixture_history_leaf(
     *,
     expected_revision: int | None = None,
 ) -> bool:
-    """Return whether one archive day exactly matches the V4 fixture contract."""
+    """Return whether one archive day matches the immutable schema-v4 fixture."""
     if (
         child_names != _DETERMINISTIC_HISTORY_ARTIFACTS
         or not _DATE_HISTORY_LEAF.fullmatch(candidate.name)
@@ -221,7 +221,7 @@ def _validate_history_archive(
         missing = sorted(set(expected) - set(actual))
         unexpected = sorted(set(actual) - set(expected))
         raise ValueError(
-            "V4 history must contain exactly "
+            "V4.1 history must contain exactly "
             f"{len(expected)} dated leaves; missing={missing[:3]}, "
             f"unexpected={unexpected[:3]}"
         )
@@ -229,13 +229,13 @@ def _validate_history_archive(
         try:
             child_names = {path.name for path in leaf.iterdir()}
         except OSError as error:
-            raise ValueError(f"could not inspect V4 history leaf: {leaf}") from error
+            raise ValueError(f"could not inspect V4.1 history leaf: {leaf}") from error
         if not _is_deployable_fixture_history_leaf(
             leaf,
             child_names,
             expected_revision=revision,
         ):
-            raise ValueError(f"V4 history leaf failed validation: {leaf}")
+            raise ValueError(f"V4.1 history leaf failed validation: {leaf}")
     return entries
 
 
@@ -357,12 +357,12 @@ def _publish_staged(staged: Path) -> None:
 
 
 def publish(*, keep_bundle: Path | None = None) -> None:
-    """Publish the new V4 app, retaining an optional bundle for inspection."""
+    """Publish the V4.1 app, retaining an optional bundle for inspection."""
     _require_file(CONFIG.name)
     if keep_bundle is not None:
         _publish_staged(stage_bundle(keep_bundle.resolve() / "runtime"))
         return
-    with tempfile.TemporaryDirectory(prefix="rebirth-v4-plotly-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="rebirth-v4-1-plotly-") as temporary:
         _publish_staged(stage_bundle(Path(temporary) / "runtime"))
 
 

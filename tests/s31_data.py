@@ -7,12 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from dash import no_update
 
-from rebirth.history import repository as history_module
+from rebirth.history import s06_repository as history_module
 from rebirth.history import (
     HISTORY_CANONICAL_CELL_BUDGET,
     HISTORY_HANDOFF_SCHEMA_VERSION,
@@ -30,25 +31,27 @@ from rebirth.history import (
     HistoryValidationError,
     RiskFilterView,
 )
-from rebirth.domain.search import ResolvedHistoryIdentity
-from rebirth.services.sources import build_production_refresh_manager
-from rebirth.pages.data.callbacks import (
+from rebirth.domain.s10_search import ResolvedHistoryIdentity
+from rebirth.services.s05_sources import build_production_refresh_manager
+from rebirth.pages.data.s03_callbacks import (
+    history_request_payload,
     load_archive_catalog,
     poll_archive_generation,
     query_history_bundle,
     serialize_history_bundle,
 )
-from rebirth.pages.data.selection import (
+from rebirth.pages.data import s03_callbacks as data_callbacks_module
+from rebirth.pages.data.s01_selection import (
     catalog_key_for_handoff,
     direct_history_handoff,
     risk_greek_options,
     risk_type_options,
     underlying_options,
 )
-from rebirth.pages.data.view import build_data_page
-from rebirth.pages.risk.handoff import build_history_handoff
-from rebirth.ui.constants import FILTER_DIMENSION_FIELDS
-from rebirth.app.factory import build_app
+from rebirth.pages.data.s02_view import build_data_page
+from rebirth.pages.risk.s04_handoff import build_history_handoff
+from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from rebirth.app.s07_factory import build_app
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -292,6 +295,61 @@ def test_quick_handoff_uses_catalog_identity_and_active_filter_view() -> None:
     assert market.filter_view is None
 
 
+def test_real_fx_quick_handoff_resolves_and_loads_checked_in_history() -> None:
+    manager = build_production_refresh_manager(stage_delays={"risk_product": 0.0})
+    manager.refresh(
+        force_risk=True,
+        reason="quick-history-integration",
+        copy_result=False,
+    )
+    selected = "FX | Delta | FAKE_REPLACE_ME - G10 FX"
+    assert selected in manager.combine_udl_options(identity_mode="reported")
+    handoff = build_history_handoff(
+        manager,
+        kind="risk",
+        combine_udl=selected,
+        identity_mode="reported",
+        reset_generation=0,
+        dimension_values=[[] for _field in FILTER_DIMENSION_FIELDS],
+    )
+    assert handoff.identity.source_types == ("fx/delta", "fx/gamma")
+    assert handoff.identity.underlying == "FAKE_REPLACE_ME - G10 FX"
+
+    history_root = Path(__file__).resolve().parents[1] / "data" / "histo"
+    repository = ArchiveHistoryRepository(history_root)
+    catalog = repository.catalog()
+    entry_key = catalog_key_for_handoff(catalog.to_mapping(), handoff.to_mapping())
+    assert entry_key is not None
+    assert (
+        direct_history_handoff(
+            catalog.to_mapping(),
+            entry_key,
+            kind="risk",
+            reset_generation=0,
+        ).identity
+        == handoff.identity
+    )
+
+    request = history_request_payload(
+        handoff,
+        period="custom",
+        start_date="2026-08-21",
+        end_date="2026-08-21",
+    )
+    payload, status = query_history_bundle(
+        repository,
+        request,
+        {"generation": repository.generation(), "reset_generation": 0},
+        0,
+    )
+
+    assert payload is not None
+    assert payload["dates"] == ["2026-08-21"]
+    assert payload["values"]
+    assert payload["handoff"]["identity"]["underlying"] == ("FAKE_REPLACE_ME - G10 FX")
+    assert "Loaded 1 dates" in status
+
+
 def test_direct_selectors_build_the_same_strict_handoff_contract() -> None:
     catalog = _catalog()
     raw_catalog = catalog.to_mapping()
@@ -345,25 +403,19 @@ def test_catalog_loading_is_bounded_to_identity_metadata() -> None:
     )
 
     assert repository.calls == 1
-    assert payload == {
-        "generation": "generation-a",
-        "risk_count": 1,
-        "market_count": 1,
-    }
+    assert payload == catalog.to_mapping()
     assert "1 Risk and 1 Market" in status
-    assert set(payload) == {"generation", "risk_count", "market_count"}
+    assert set(payload) == {"generation", "entries"}
+    assert all("Risk" not in entry for entry in payload["entries"])
 
 
 def test_query_reads_once_and_rejects_a_stale_reset_before_read() -> None:
     bundle = _bundle()
     repository = _Repository(bundle)
-    payload, raw_rows, raw_columns, status = query_history_bundle(
+    request = history_request_payload(bundle.query.handoff, period="all")
+    payload, status = query_history_bundle(
         repository,
-        bundle.query.handoff.to_mapping(),
-        "risk",
-        "all",
-        None,
-        None,
+        request,
         {"generation": "generation-a", "reset_generation": 3},
         3,
     )
@@ -372,18 +424,12 @@ def test_query_reads_once_and_rejects_a_stale_reset_before_read() -> None:
     assert payload is not None
     assert "raw_rows" not in payload
     assert "raw_columns" not in payload
-    assert len(raw_rows) == 4
-    assert raw_columns[-1]["id"] == "Portfolio"
     assert "2 dates" in status
 
     with pytest.raises(HistoryValidationError, match="predates Clear Cache"):
         query_history_bundle(
             repository,
-            bundle.query.handoff.to_mapping(),
-            "risk",
-            "all",
-            None,
-            None,
+            request,
             {"generation": "generation-a", "reset_generation": 4},
             4,
         )
@@ -549,10 +595,10 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
         ("data-history-date-a", "value"),
         ("data-history-date-b", "value"),
         ("data-player-interval", "n_intervals"),
-        ("data-raw-table", "data"),
-        ("data-raw-table", "columns"),
         ("data-player-visibility-store", "data"),
     } <= input_ids
+    assert ("data-raw-table", "data") not in input_ids
+    assert ("data-raw-table", "columns") not in input_ids
     assert all(item.component_id.startswith("data-") for item in outputs)
 
     base = _callback_metadata(app, "data-history-projection", "options")
@@ -568,7 +614,7 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
     }
 
     source = (
-        Path(__file__).resolve().parents[1] / "assets" / "10_data_playback.js"
+        Path(__file__).resolve().parents[1] / "assets" / "s09_playback.js"
     ).read_text(encoding="utf-8")
     for projection in (
         "zero_timeline",
@@ -586,6 +632,8 @@ def test_playback_and_selected_date_filter_are_clientside() -> None:
         "dataProjectionSlice",
         "dataHistoryBounds",
         "dataDifference",
+        "const records = Array.isArray(bundle.values)",
+        "Object.keys(records[0] || {})",
         "record[dateColumn]",
         "document.hidden",
         '"data-history-chart", String(bundle.key || "")',
@@ -610,13 +658,18 @@ def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -
     assert {
         ("data-history-handoff-store", "data"),
         ("data-load-history-button", "n_clicks"),
-        ("data-unlock-identity-button", "n_clicks"),
-        ("data-history-kind-tabs", "value"),
+        ("reset-generation-store", "data"),
     } <= request_inputs
+    assert ("data-unlock-identity-button", "n_clicks") not in request_inputs
+    assert ("data-history-kind-tabs", "value") not in request_inputs
 
     load = _callback_metadata(app, "data-history-bundle-store", "data")
     load_inputs = {(item["id"], item["property"]) for item in load["inputs"]}
-    assert ("data-history-request-store", "data") in load_inputs
+    assert load_inputs == {
+        ("data-history-request-store", "data"),
+        ("data-history-cache-state-store", "data"),
+        ("reset-generation-store", "data"),
+    }
     assert ("data-history-handoff-store", "data") not in load_inputs
     assert {
         ("data-history-projection", "value"),
@@ -625,6 +678,79 @@ def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -
         ("data-history-date-b", "value"),
         ("data-player-slider", "value"),
     }.isdisjoint(load_inputs)
+
+    registration = next(
+        item
+        for item in app._callback_list
+        if "data-history-bundle-store.data" in item["output"]
+    )
+    assert (
+        registration["running"]["running"]["data-load-history-button.disabled"] is True
+    )
+    assert (
+        registration["running"]["running"]["data-load-history-button.children"]
+        == "Loading history…"
+    )
+
+
+def test_quick_handoff_prefills_editable_controls_without_catalogue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = build_app(refresh_manager=build_production_refresh_manager())
+    handoff = _handoff("ir/delta")
+
+    sync = _callback_for_output(app, "data-history-kind-tabs", "value")
+    assert sync(handoff.to_mapping()) == ("risk", "underlying")
+
+    monkeypatch.setattr(
+        ArchiveHistoryRepository,
+        "catalog",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Quick handoff must not build the archive catalogue")
+        ),
+    )
+    monkeypatch.setattr(
+        data_callbacks_module,
+        "ctx",
+        SimpleNamespace(triggered_id="data-history-handoff-store"),
+    )
+    request = _callback_for_output(app, "data-history-request-store", "data")
+    payload = request(
+        handoff.to_mapping(),
+        0,
+        3,
+        "risk",
+        None,
+        None,
+        "risk",
+        "all",
+        None,
+        None,
+        None,
+    )
+    assert HistoryHandoff.from_mapping(payload["handoff"]) == handoff
+
+    defer_catalogue = _callback_for_output(
+        app,
+        "data-history-catalog-store",
+        "data",
+    )
+    assert (
+        defer_catalogue(
+            {"generation": "generation-a", "reset_generation": 3},
+            {"status": "waiting"},
+            handoff.to_mapping(),
+            None,
+        )[0]
+        is no_update
+    )
+
+    callback_outputs = "\n".join(
+        str(metadata["output"]) for metadata in app.callback_map.values()
+    )
+    assert "data-risk-type.disabled" not in callback_outputs
+    assert "data-risk-greek.disabled" not in callback_outputs
+    assert "data-underlying.disabled" not in callback_outputs
 
 
 def test_data_route_and_factory_layout_are_archive_lazy(
@@ -657,11 +783,6 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         stock_href="/proxy/stock",
     )
     page_ids = {getattr(component, "id", None) for component in _walk(page)}
-    hrefs = {
-        getattr(component, "href", None)
-        for component in _walk(page)
-        if getattr(component, "href", None)
-    }
     assert {
         "data-page",
         "data-history-kind-tabs",
@@ -669,14 +790,20 @@ def test_data_route_and_factory_layout_are_archive_lazy(
         "data-risk-greek",
         "data-underlying",
         "data-load-history-button",
-        "data-unlock-identity-button",
         "data-history-chart",
         "data-history-projection",
         "data-history-slice",
         "data-history-date-a",
         "data-history-date-b",
         "data-selected-table",
-        "data-raw-table",
+        "data-history-query-state-store",
         "data-player-visibility-store",
     } <= page_ids
-    assert {"/proxy/", "/proxy/pnl", "/proxy/stock"} <= hrefs
+    assert "data-unlock-identity-button" not in page_ids
+    assert "data-history-lock-store" not in page_ids
+    assert "data-raw-table" not in page_ids
+    assert not {
+        getattr(component, "href", None)
+        for component in _walk(page)
+        if getattr(component, "href", None)
+    }
