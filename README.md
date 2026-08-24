@@ -461,6 +461,289 @@ The application path overrides are `CONCERTO_MAPPING_PATH`,
 `SAVED_FILTER_VIEWS_PATH`. Defaults are respectively `data/s08_concerto.csv`,
 `adjustments/`, `data/histo/`, and `data/saved_views/`.
 
+### Download Risk and Market Parquet history
+
+Use this procedure when complete Rebirth history leaves already exist in S3
+and must be copied onto the machine that runs the application. The current
+reader is deliberately local: it does not install DuckDB `httpfs`, query S3
+URLs, or discover Hive partitions. It validates local files first and then
+passes their exact paths to an in-memory DuckDB connection. The governed file
+extension is `.parquet`, not `.pq`.
+
+Do the download before starting the app. This keeps network transfer and full
+archive validation out of the browser cold-start path.
+
+#### 1. Check the S3 layout
+
+The S3 prefix must preserve this exact date-folder layout:
+
+```text
+s3://YOUR-BUCKET/rebirth/histo/
+└── YYYY-MM-DD/
+    ├── risk.parquet
+    ├── colossus.parquet
+    ├── market.parquet
+    ├── stock.parquet       # optional unless declared by _SUCCESS
+    └── _SUCCESS
+```
+
+Risk and Market are the two history datasets used by the Data page, but a day
+with only those two files is not a valid application archive. Every schema-v4
+leaf also requires `colossus.parquet` and `_SUCCESS`. If `_SUCCESS` declares
+Stock metadata, that same leaf must contain `stock.parquet`. The application
+rejects partial leaves, extra files, wrong row counts, changed hashes, and a
+Market Date that differs from the folder name.
+
+Do not hand-create `_SUCCESS`. It is the completion manifest written by the
+official archive boundary and contains the schema version, revision, source
+dates, columns, row counts, and SHA-256 digest of every payload.
+
+#### 2. Check AWS access
+
+Install and authenticate the AWS CLI outside the repository, then run:
+
+```powershell
+aws --version
+aws sts get-caller-identity
+$S3HistoryUri = "s3://YOUR-BUCKET/rebirth/histo"
+aws s3 ls $S3HistoryUri
+```
+
+The identity needs permission to list the selected bucket/prefix and read its
+objects. Use `--profile YOUR-PROFILE` on each AWS command if the default AWS
+profile is not the correct one. Do not save access keys in this repository.
+
+#### 3. Choose the local history directory
+
+From PowerShell in the repository root:
+
+```powershell
+$ProjectRoot = (Get-Location).Path
+$HistoryRoot = Join-Path $ProjectRoot "private_data\histo"
+New-Item -ItemType Directory -Force -Path $HistoryRoot | Out-Null
+$env:PL_HISTORICAL_PATH = $HistoryRoot
+```
+
+`PL_HISTORICAL_PATH` is the historical root for Risk, Market, P&L, and Stock;
+the old name does not mean it is limited to P&L. Set it in the same process
+environment that will launch the application. `private_data/` is ignored by
+Git, so this choice also keeps real financial history separate from the
+versioned fake fixture under `data/histo/`.
+
+#### 4. Preview the download
+
+Always run the dry run first. The filters copy only governed archive files and
+preserve every `YYYY-MM-DD` directory:
+
+```powershell
+aws s3 sync $S3HistoryUri $HistoryRoot `
+  --exclude "*" `
+  --include "*/risk.parquet" `
+  --include "*/colossus.parquet" `
+  --include "*/market.parquet" `
+  --include "*/stock.parquet" `
+  --include "*/_SUCCESS" `
+  --dryrun
+```
+
+Check that the source and destination are correct and that the preview contains
+the expected dates. Do not add `--delete`; it is unnecessary for an immutable
+archive and could remove local leaves that are not present in the selected S3
+prefix. AWS documents the `sync`, `--dryrun`, `--exclude`, and `--include`
+behaviour in its [CLI reference](https://docs.aws.amazon.com/cli/latest/reference/s3/sync.html).
+
+#### 5. Download the files
+
+Run the same command without `--dryrun`:
+
+```powershell
+aws s3 sync $S3HistoryUri $HistoryRoot `
+  --exclude "*" `
+  --include "*/risk.parquet" `
+  --include "*/colossus.parquet" `
+  --include "*/market.parquet" `
+  --include "*/stock.parquet" `
+  --include "*/_SUCCESS"
+```
+
+For the simplest safe workflow, keep the app stopped until this command and
+the validation in the next step have completed.
+
+The equivalent Jupyter cell is:
+
+```python
+from pathlib import Path
+import os
+import subprocess
+
+project_root = next(
+    path.resolve()
+    for path in (Path.cwd(), *Path.cwd().parents)
+    if (path / "rebirth").is_dir()
+)
+history_root = project_root / "private_data" / "histo"
+history_root.mkdir(parents=True, exist_ok=True)
+s3_history_uri = "s3://YOUR-BUCKET/rebirth/histo"
+
+command = [
+    "aws", "s3", "sync", s3_history_uri, str(history_root),
+    "--exclude", "*",
+    "--include", "*/risk.parquet",
+    "--include", "*/colossus.parquet",
+    "--include", "*/market.parquet",
+    "--include", "*/stock.parquet",
+    "--include", "*/_SUCCESS",
+]
+subprocess.run([*command, "--dryrun"], check=True)
+# Inspect the dry-run output, then uncomment the next line.
+# subprocess.run(command, check=True)
+os.environ["PL_HISTORICAL_PATH"] = str(history_root)
+```
+
+#### 6. Validate every downloaded leaf
+
+Run this cell from the repository environment. Full validation checks the
+completion manifest, exact files, Parquet schemas, row counts, source dates,
+and SHA-256 hashes before DuckDB is opened:
+
+```python
+from pathlib import Path
+import os
+from rebirth.history import list_completed_v4_archive_days
+
+history_root = Path(os.environ["PL_HISTORICAL_PATH"])
+days = list_completed_v4_archive_days(history_root)
+if not days:
+    raise RuntimeError(f"No valid schema-v4 history found under {history_root}")
+
+print(f"Validated {len(days)} days")
+print(f"First: {days[0].snapshot_date}")
+print(f"Last:  {days[-1].snapshot_date}")
+print(f"Latest Risk rows:   {days[-1].risk_rows:,}")
+print(f"Latest Market rows: {days[-1].market_rows:,}")
+```
+
+Then make one small SQL check without loading every row into pandas:
+
+```python
+from rebirth.history import open_history_database
+
+db = open_history_database(history_root)
+try:
+    display(db.sql("""
+        SELECT "Snapshot Date",
+               count(*) AS risk_rows
+        FROM risk_history
+        GROUP BY "Snapshot Date"
+        ORDER BY "Snapshot Date" DESC
+        LIMIT 5
+    """).df())
+    display(db.sql("""
+        SELECT "Snapshot Date",
+               count(*) AS market_rows
+        FROM market_history
+        GROUP BY "Snapshot Date"
+        ORDER BY "Snapshot Date" DESC
+        LIMIT 5
+    """).df())
+finally:
+    db.close()
+```
+
+#### 7. Start the application
+
+Keep `PL_HISTORICAL_PATH` set and launch from the same PowerShell window:
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+Open Data and select Risk or Market. The first history interaction opens the
+local in-memory DuckDB views lazily. If the app was already running during a
+download, restart it or use Clear Cache once so every history owner sees the
+new archive generation. The current Plotly publisher does not bundle
+`private_data/`; a hosted deployment needs its own approved pre-start download
+or an explicitly reviewed history bundle. Its release validator is also
+fixture-specific today, so it must be generalized before publishing real
+history in place of the checked-in 262-day fake archive.
+
+#### File contracts
+
+Do not manually reshape downloaded files. A valid file produced by the current
+archive writer has these boundaries:
+
+- `risk.parquet` is the full committed, post-mapping Risk Explorer snapshot.
+  It therefore contains derived fields such as Activity and Reported
+  Underlying even though the raw Risk connector does not. At minimum it needs
+  `Source Type`, `Portfolio`, `Underlying`, `Risk Type`, `Risk Greek`,
+  `Product`, `Risk`, `dRisk`, and `PL`. Text identities are nonblank; `Risk` is
+  finite and required; `dRisk` and `PL` may be null but cannot be infinite or
+  non-numeric when present.
+- `market.parquet` has exactly `Source Type`, `Risk Type`, `Risk Greek`,
+  `Underlying`, `Tenor Swap`, `Tenor Option`, `Tenor Swap Order`,
+  `Tenor Option Order`, `Market Date`, `Open`, `Current`, `Move`,
+  `Market Status`, and `Market Data Status`. It uses raw Underlying and has no
+  Portfolio or Activity. Quote identity is unique across Source Type, Risk
+  Type, Risk Greek, Underlying, Tenor Swap, and Tenor Option. Market Status is
+  exactly `OFFICIAL`. `Open`, `Current`, and `Move` may be null; `Move` must be
+  present exactly when both quotes are present and must equal Current minus
+  Open. Tenor orders are connector-owned non-negative integers and are null
+  only for axes that the product does not declare.
+- `colossus.parquet` is mandatory and has exactly `Portfolio`, `Underlying`,
+  `Risk Type`, `Risk Greek`, and `PL`. Its first four columns form a unique,
+  nonblank key and `PL` is a required finite number.
+
+If the S3 objects are raw connector outputs rather than complete leaves written
+by Rebirth, downloading them is not sufficient. Run them through the official
+archive writer instead of inventing `_SUCCESS` or renaming columns by hand.
+
+### Generate one new official day from connectors
+
+Skip this section when S3 already contains complete archive leaves. To fetch
+one new day from the configured Risk and Market connectors and write its
+Parquet leaf, first replace the production boundaries in
+`rebirth/services/s05_sources.py`: `get_risk`, `get_market_open`,
+`get_market_status`, and `get_market_state`. The archive also requires a real
+Colossus loader returning the five-column contract above.
+
+After the natural Market Date is `OFFICIAL`, run:
+
+```powershell
+$env:RISK_CUBE_PROJECT_ROOT = (Get-Location).Path
+$env:PL_HISTORICAL_PATH = Join-Path (Get-Location).Path "private_data\histo"
+$env:COLOSSUS_LOADER = "your_connector_module:get_colossus_pl"
+.\.venv\Scripts\python.exe -m tools.s02_archive
+```
+
+Alternatively, open `jobs/s01_archive.ipynb` and run its cells from top to
+bottom. A successful first run prints `archived`; a repeated run for the same
+date prints `already_archived` and does not overwrite the completed leaf.
+
+The checked-in job intentionally creates only the current natural official
+Market Date. It does not accept a backfill date. To obtain a past year, either
+download already completed leaves from S3 with the steps above or implement a
+separate reviewed date-aware backfill boundary. Never copy today's payload into
+older date folders: date, source-date, manifest, and hash validation will
+reject it or, if validation is bypassed, produce financially false history.
+
+#### Common failures
+
+- **No history appears:** confirm that the date directory contains the complete
+  file set and a valid `_SUCCESS`, then run the validation cell.
+- **Access denied or no objects listed:** check the AWS account/profile,
+  bucket, prefix, `s3:ListBucket`, and `s3:GetObject` permissions.
+- **Hash, row-count, or schema error:** remove only the affected local date
+  after confirming its absolute path, re-download that complete leaf, and
+  validate again. Do not edit its Parquet files or `_SUCCESS` independently.
+- **Market source is not OFFICIAL yet:** wait for the authoritative market
+  status and rerun the daily job.
+- **Selected Market Date is not the current natural Market Date:** the daily
+  job is being used as an unsupported backfill. Use completed S3 leaves or a
+  reviewed backfill implementation.
+- **Real data appears in Git status:** check that `PL_HISTORICAL_PATH` points to
+  ignored `private_data/histo`, not versioned `data/histo`. Do not commit
+  confidential history unless that publication has been explicitly approved.
+
 ## Persistence boundary
 
 Local Statics writes are durable filesystem changes. Saved filter views are
