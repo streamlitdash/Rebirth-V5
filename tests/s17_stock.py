@@ -10,8 +10,8 @@ import pytest
 from dash import no_update
 from flask import Flask
 
-from rebirth.adapters import s08_stock as stock_adapter
-from rebirth.adapters.s08_stock import (
+from cube.adapters import s08_stock as stock_adapter
+from cube.adapters.s08_stock import (
     GetStock,
     STOCK_ARCHIVE_ROOT,
     STOCK_COLUMNS,
@@ -23,8 +23,8 @@ from rebirth.adapters.s08_stock import (
     load_stock_history,
     validate_stock_frame,
 )
-from rebirth.domain.s01_schema import PORTFOLIO_MAPPED_COLUMN, UNMAPPED_VALUE
-from rebirth.domain.s09_stock import (
+from cube.domain.s01_schema import PORTFOLIO_MAPPED_COLUMN, UNMAPPED_VALUE
+from cube.domain.s09_stock import (
     CURRENT_MARKET_VALUE_COLUMN,
     MAPPED_STOCK_COMPARISON_COLUMNS,
     MARKET_VALUE_CHANGE_COLUMN,
@@ -46,11 +46,11 @@ from rebirth.domain.s09_stock import (
     prepare_stock_hierarchy,
     summarize_stock_hierarchy,
 )
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages import PAGE_SERVICES_CONFIG_KEY
-from rebirth.pages.stock import s04_callbacks as stock_callbacks
-from rebirth.pages.stock import layout as stock_page_layout
-from rebirth.pages.stock.s01_data import (
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages import PAGE_SERVICES_CONFIG_KEY
+from cube.pages.stock import s04_callbacks as stock_callbacks
+from cube.pages.stock import layout as stock_page_layout
+from cube.pages.stock.s01_data import (
     STOCK_DISPLAY_COLUMNS,
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
@@ -61,24 +61,24 @@ from rebirth.pages.stock.s01_data import (
     stock_display_rows,
     stock_history_identities,
 )
-from rebirth.pages.stock.s02_history import (
+from cube.pages.stock.s02_history import (
     SQLStockHistoryRepository,
     build_stock_value_history_figure,
     stock_history_date_range,
     stock_history_identity_from_token,
     stock_value_history_frame,
 )
-from rebirth.pages.stock.s03_view import (
+from cube.pages.stock.s03_view import (
     build_stock_page_shell,
 )
-from rebirth.pages.stock.s05_pivot import (
+from cube.pages.stock.s05_pivot import (
     STOCK_PIVOT_DEFAULT_ROWS,
     build_stock_pivot,
     stock_pivot_row_payload,
     toggle_stock_pivot_path,
 )
-from rebirth.app.s07_factory import build_app
-from rebirth.ui.s03_filters import committed_filter_state
+from cube.app.s07_factory import build_app
+from cube.ui.s03_filters import committed_filter_state
 from tools.s01_fixtures import (
     HISTORICAL_MARKET_DATES,
     _materialize_history_leaf,
@@ -240,7 +240,7 @@ def test_stock_adapter_rejects_schema_and_value_contract_failures(
         validate_stock_frame(frame)
 
 
-def test_checked_in_getstock_is_fake_validated_and_varies_by_date() -> None:
+def test_checked_in_legacy_v4_stock_is_validated_and_varies_by_date() -> None:
     prior = get_stock("2026-08-20")
     current = GetStock("2026-08-21")
     prior_identities = set(
@@ -252,7 +252,7 @@ def test_checked_in_getstock_is_fake_validated_and_varies_by_date() -> None:
 
     assert tuple(current.columns) == STOCK_COLUMNS
     assert len(current) == 5_000
-    assert current["CRDS"].str.startswith("FAKE_REPLACE_ME").all()
+    assert current["CRDS"].str.startswith("TEMP_REPLACE_ME").all()
     assert len(current_identities - prior_identities) == 1
     assert len(prior_identities - current_identities) == 1
     stable = current_identities & prior_identities
@@ -263,7 +263,7 @@ def test_checked_in_getstock_is_fake_validated_and_varies_by_date() -> None:
     )
 
     current.loc[:, "CPTY"] = "changed"
-    assert GetStock("2026-08-21")["CPTY"].str.startswith("FAKE_REPLACE_ME").all()
+    assert GetStock("2026-08-21")["CPTY"].str.startswith("TEMP_REPLACE_ME").all()
 
 
 def test_stock_history_loader_is_bounded_and_explicitly_lazy(
@@ -706,7 +706,7 @@ def test_native_stock_page_resolves_the_active_flask_service() -> None:
         assert stock_page_layout() == "second"
 
 
-def _v41_config() -> pd.DataFrame:
+def _v5_config() -> pd.DataFrame:
     return _config(
         [
             ["BOOK_A", "XVA", "Activity 1", "SOG-A", "Core", "Rates"],
@@ -716,7 +716,7 @@ def _v41_config() -> pd.DataFrame:
     )
 
 
-def test_v41_latest_projection_is_row_level_and_preserves_unmapped() -> None:
+def test_v5_latest_projection_is_row_level_and_preserves_unmapped() -> None:
     current = _stock(
         [
             ["CRDS-1", "CPTY-A", "BOOK_A", "EURUSD", "USD", 110.0, 30.0],
@@ -726,7 +726,7 @@ def test_v41_latest_projection_is_row_level_and_preserves_unmapped() -> None:
     )
     prior = current.copy()
     prior["Market Value"] = [25.0, 11.0, 10.0]
-    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
 
     display = stock_display_rows(mapped)
 
@@ -739,28 +739,28 @@ def test_v41_latest_projection_is_row_level_and_preserves_unmapped() -> None:
     assert display.loc[0, "SubCategory"] == "Rates"
 
 
-def test_v41_default_activities_resolve_exact_fixture_aliases() -> None:
+def test_v5_default_activities_resolve_exact_fixture_aliases() -> None:
     frame = pd.DataFrame(
         {
             "Activity": [
-                "FAKE_REPLACE_ME - Activity 3",
+                "TEMP_REPLACE_ME - Activity 3",
                 "Something Else",
-                "FAKE_REPLACE_ME - Activity 1",
-                "FAKE_REPLACE_ME - Activity 2",
+                "TEMP_REPLACE_ME - Activity 1",
+                "TEMP_REPLACE_ME - Activity 2",
             ]
         }
     )
 
     assert default_stock_activities(frame) == [
-        "FAKE_REPLACE_ME - Activity 1",
-        "FAKE_REPLACE_ME - Activity 2",
-        "FAKE_REPLACE_ME - Activity 3",
+        "TEMP_REPLACE_ME - Activity 1",
+        "TEMP_REPLACE_ME - Activity 2",
+        "TEMP_REPLACE_ME - Activity 3",
     ]
 
 
-def test_v41_history_selection_resolves_exact_source_identities() -> None:
+def test_v5_history_selection_resolves_exact_source_identities() -> None:
     current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
 
     identities = stock_history_identities(
         mapped,
@@ -787,7 +787,7 @@ def test_v41_history_selection_resolves_exact_source_identities() -> None:
     )  # prior-only rows are not part of latest Stock
 
 
-def test_v41_stock_and_dstock_history_retain_business_day_gaps() -> None:
+def test_v5_stock_and_dstock_history_retain_business_day_gaps() -> None:
     history = _history_frame("2026-08-14", "2026-08-19").loc[
         lambda rows: rows["CRDS"].eq("CRDS-GAPPED")
     ]
@@ -819,7 +819,7 @@ def test_v41_stock_and_dstock_history_retain_business_day_gaps() -> None:
     assert figure.data[0].connectgaps is False
 
 
-def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
+def test_v5_shell_is_one_page_with_editable_inline_history() -> None:
     shell = build_stock_page_shell(
         current_date="2026-08-14",
         prior_date="2026-08-13",
@@ -876,7 +876,7 @@ def test_v41_shell_is_one_page_with_editable_inline_history() -> None:
     assert custom_range.style == {"display": "none"}
 
 
-def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
+def test_v5_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, pd.Timestamp]] = []
@@ -888,7 +888,7 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
 
     def config_source(stock_date: pd.Timestamp) -> pd.DataFrame:
         calls.append(("config", stock_date))
-        return _v41_config()
+        return _v5_config()
 
     app = build_app(
         refresh_manager=build_production_refresh_manager(),
@@ -962,7 +962,7 @@ def test_v41_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
     assert cached[0] == loaded[0]
 
 
-def test_v41_filter_and_row_click_use_cache_then_prefill_history(
+def test_v5_filter_and_row_click_use_cache_then_prefill_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current, prior = _comparison_legs()
@@ -976,7 +976,7 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history(
     app = build_app(
         refresh_manager=build_production_refresh_manager(),
         stock_source=source,
-        stock_portfolio_source=lambda _date: _v41_config(),
+        stock_portfolio_source=lambda _date: _v5_config(),
     )
     load = _callback_for_input(app, "stock-load-trigger")
     token, *_rest = load(
@@ -1059,7 +1059,7 @@ def test_v41_filter_and_row_click_use_cache_then_prefill_history(
 
 def test_stock_pivot_defaults_to_activity_bucket_crds_cpty_and_toggles() -> None:
     current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
     display = stock_display_rows(mapped)
 
     closed = build_stock_pivot(display)
@@ -1082,7 +1082,7 @@ def test_stock_pivot_defaults_to_activity_bucket_crds_cpty_and_toggles() -> None
 
 def test_stock_pivot_column_split_and_values_are_bounded() -> None:
     current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v41_config())
+    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
     display = stock_display_rows(mapped)
 
     pivot = build_stock_pivot(
@@ -1127,7 +1127,7 @@ def test_stock_saved_view_contract_is_base_review_with_five_filters() -> None:
     } <= saved_ids
 
 
-def test_v41_history_is_read_only_after_click_or_load(
+def test_v5_history_is_read_only_after_click_or_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current, prior = _comparison_legs()
@@ -1152,7 +1152,7 @@ def test_v41_history_is_read_only_after_click_or_load(
         stock_source=lambda stock_date: (
             current if stock_date == pd.Timestamp("2026-08-14") else prior
         ),
-        stock_portfolio_source=lambda _date: _v41_config(),
+        stock_portfolio_source=lambda _date: _v5_config(),
         stock_history_source=history_source,
     )
     load = _callback_for_input(app, "stock-load-trigger")
@@ -1228,11 +1228,11 @@ def test_v41_history_is_read_only_after_click_or_load(
     assert "2026-08-01" in refreshed_status
 
 
-def test_v41_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> None:
+def test_v5_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> None:
     app = build_app(
         refresh_manager=build_production_refresh_manager(),
         stock_source=lambda _date: _stock(),
-        stock_portfolio_source=lambda _date: _v41_config(),
+        stock_portfolio_source=lambda _date: _v5_config(),
         stock_history_source=lambda _identity, _start, _end: pd.DataFrame(
             columns=list(STOCK_HISTORY_COLUMNS)
         ),

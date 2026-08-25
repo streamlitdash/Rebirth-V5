@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rebirth.domain.s08_pnl import (
+from cube.domain.s08_pnl import (
     ACTIVITY,
     CATEGORY,
     COLOSSUS_TYPE,
@@ -19,7 +19,7 @@ from rebirth.domain.s08_pnl import (
     SUB_CATEGORY,
     select_pl_history_series,
 )
-from rebirth.pages.pnl.s03_history import build_pl_history_figure
+from cube.pages.pnl.s03_history import build_pl_history_figure
 
 
 def _history() -> pd.DataFrame:

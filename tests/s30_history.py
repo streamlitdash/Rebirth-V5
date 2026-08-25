@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from rebirth.history import s05_store as history_store_module
-from rebirth.history import (
+from cube.history import s05_store as history_store_module
+from cube.history import (
     HISTORY_HANDOFF_SCHEMA_VERSION,
     ORDER_AMBIGUOUS,
     ORDERED,
@@ -25,9 +25,9 @@ from rebirth.history import (
     RiskFilterView,
     resolve_actual_period_dates,
 )
-from rebirth.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
-from rebirth.domain.s10_search import SearchCatalog
-from rebirth.history import (
+from cube.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
+from cube.domain.s10_search import SearchCatalog
+from cube.history import (
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_COLUMNS,
     MARKET_ARCHIVE_COLUMNS,

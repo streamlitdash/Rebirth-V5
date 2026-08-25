@@ -1,4 +1,4 @@
-"""V4.1 domain/service ownership through ordered implementation modules."""
+"""V5 domain/service ownership through ordered implementation modules."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
 V4_ROOTS = (
-    PROJECT / "rebirth" / "domain",
-    PROJECT / "rebirth" / "services",
-    PROJECT / "rebirth" / "adapters",
+    PROJECT / "cube" / "domain",
+    PROJECT / "cube" / "services",
+    PROJECT / "cube" / "adapters",
 )
 FORBIDDEN_IMPORT_ROOTS = {"adapters", "core", "feeds", "shared"}
 
@@ -44,6 +44,7 @@ def test_v4_domain_service_and_adapter_modules_have_descriptive_owners() -> None
             "s08_pnl.py",
             "s09_stock.py",
             "s10_search.py",
+            "s11_tenorreduction.py",
         },
         "services": {
             "s01_snapshots.py",
@@ -52,6 +53,7 @@ def test_v4_domain_service_and_adapter_modules_have_descriptive_owners() -> None
             "s04_savedviews.py",
             "s05_sources.py",
             "s06_refresh.py",
+            "s07_tenorreduction.py",
         },
         "adapters": {
             "s01_common.py",

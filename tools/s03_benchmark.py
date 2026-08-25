@@ -1,4 +1,4 @@
-"""Measure Rebirth V4.1 startup and lazy-history paths on checked-in scale data."""
+"""Measure Rebirth V5 startup and lazy-history paths on checked-in scale data."""
 
 from __future__ import annotations
 
@@ -21,12 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from rebirth.domain.s01_schema import (  # noqa: E402
+from cube.domain.s01_schema import (  # noqa: E402
     PORTFOLIO_COLUMN,
     PORTFOLIO_METADATA_COLUMNS,
 )
-from rebirth.domain.s09_stock import STOCK_IDENTITY_COLUMNS  # noqa: E402
-from rebirth.history import (  # noqa: E402
+from cube.domain.s09_stock import STOCK_IDENTITY_COLUMNS  # noqa: E402
+from cube.history import (  # noqa: E402
     HISTORY_HANDOFF_SCHEMA_VERSION,
     SQLPLHistoryRepository,
     ArchiveHistoryRepository,
@@ -34,13 +34,13 @@ from rebirth.history import (  # noqa: E402
     HistoryIdentity,
     HistoryQuery,
 )
-from rebirth.services.s05_sources import build_production_refresh_manager  # noqa: E402
-from rebirth.pages.stock.s02_history import SQLStockHistoryRepository  # noqa: E402
-from rebirth.pages.risk.s06_explorertables import build_risk_table  # noqa: E402
-from rebirth.pages.risk.s03_defaults import (  # noqa: E402
+from cube.services.s05_sources import build_production_refresh_manager  # noqa: E402
+from cube.pages.stock.s02_history import SQLStockHistoryRepository  # noqa: E402
+from cube.pages.risk.s06_explorertables import build_risk_table  # noqa: E402
+from cube.pages.risk.s03_defaults import (  # noqa: E402
     default_risk_filter_payload,
 )
-from rebirth.ui.s02_aggregation import (  # noqa: E402
+from cube.ui.s02_aggregation import (  # noqa: E402
     apply_filters,
     default_open_rows,
     prepare_risk_data,
@@ -174,20 +174,20 @@ def _scaled_dashboard_fixture(
     scaled = source.iloc[positions % len(source)].reset_index(drop=True).copy()
     portfolio_ids = positions % portfolios
     scaled[PORTFOLIO_COLUMN] = [
-        f"FAKE_REPLACE_ME - BOOK_{value:04d}" for value in portfolio_ids
+        f"TEMP_REPLACE_ME - BOOK_{value:04d}" for value in portfolio_ids
     ]
     reporting_values = {
         "Activity": [
-            f"FAKE_REPLACE_ME - Activity {value % 3 + 1}" for value in positions
+            f"TEMP_REPLACE_ME - Activity {value % 3 + 1}" for value in positions
         ],
         "SignoffGroup": [
-            f"FAKE_REPLACE_ME - SOG_{value % 20 + 1:02d}" for value in positions
+            f"TEMP_REPLACE_ME - SOG_{value % 20 + 1:02d}" for value in positions
         ],
         "Category": [
-            f"FAKE_REPLACE_ME - Category {value % 12 + 1}" for value in positions
+            f"TEMP_REPLACE_ME - Category {value % 12 + 1}" for value in positions
         ],
         "Sub Category": [
-            f"FAKE_REPLACE_ME - Sub Category {value % 30 + 1}" for value in positions
+            f"TEMP_REPLACE_ME - Sub Category {value % 30 + 1}" for value in positions
         ],
     }
     for column in PORTFOLIO_METADATA_COLUMNS:
@@ -207,7 +207,7 @@ def run_benchmarks() -> list[BenchmarkResult]:
             2_000,
             lambda: manager.refresh(
                 force_risk=True,
-                reason="v4-benchmark",
+                reason="v5-benchmark",
                 copy_result=False,
             ),
             lambda _value: (

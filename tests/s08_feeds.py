@@ -1,14 +1,14 @@
-"""Focused fake-connector partition-cache tests."""
+"""Focused temp-connector partition-cache tests."""
 
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
-from rebirth.services.s05_sources import (
-    FAKE_CSV_FILES,
-    _load_fake_csv,
-    _load_fake_source_partition,
+from cube.services.s05_sources import (
+    TEMP_CSV_FILES,
+    _load_temp_csv,
+    _load_temp_source_partition,
     get_colossus_pl,
     get_market_open,
     get_market_state,
@@ -18,7 +18,7 @@ from rebirth.services.s05_sources import (
 
 def test_per_underlying_market_calls_reuse_cached_narrow_partitions() -> None:
     raw = pd.read_csv(
-        FAKE_CSV_FILES["market_open"],
+        TEMP_CSV_FILES["market_open"],
         dtype="string",
         encoding="utf-8-sig",
         keep_default_na=False,
@@ -30,8 +30,8 @@ def test_per_underlying_market_calls_reuse_cached_narrow_partitions() -> None:
     )
     assert len(underlyings) >= 2
 
-    _load_fake_csv.cache_clear()
-    _load_fake_source_partition.cache_clear()
+    _load_temp_csv.cache_clear()
+    _load_temp_source_partition.cache_clear()
     try:
         first = get_market_open(
             "ir/delta",
@@ -52,8 +52,8 @@ def test_per_underlying_market_calls_reuse_cached_narrow_partitions() -> None:
             market_status="Live",
         )
 
-        full_info = _load_fake_csv.cache_info()
-        partition_info = _load_fake_source_partition.cache_info()
+        full_info = _load_temp_csv.cache_info()
+        partition_info = _load_temp_source_partition.cache_info()
         assert not first.empty and not second.empty and not repeated.empty
         assert full_info.misses == 1
         assert full_info.hits == 1
@@ -69,11 +69,11 @@ def test_per_underlying_market_calls_reuse_cached_narrow_partitions() -> None:
         )
         assert not defensive["Open"].eq("MUTATED").any()
     finally:
-        _load_fake_source_partition.cache_clear()
-        _load_fake_csv.cache_clear()
+        _load_temp_source_partition.cache_clear()
+        _load_temp_csv.cache_clear()
 
 
-def test_fake_market_state_becomes_official_at_london_cutoff() -> None:
+def test_temp_market_state_becomes_official_at_london_cutoff() -> None:
     market_date = pd.Timestamp("2026-08-17")
 
     assert (
@@ -99,7 +99,7 @@ def test_fake_market_state_becomes_official_at_london_cutoff() -> None:
     )
 
 
-def test_fake_market_state_rolls_sunday_to_the_previous_official_friday() -> None:
+def test_temp_market_state_rolls_sunday_to_the_previous_official_friday() -> None:
     assert (
         get_market_state(
             pd.Timestamp("2026-08-16"),
@@ -109,12 +109,12 @@ def test_fake_market_state_rolls_sunday_to_the_previous_official_friday() -> Non
     )
 
 
-def test_fake_readiness_rejects_an_explicit_weekend_checker_date() -> None:
+def test_temp_readiness_rejects_an_explicit_weekend_checker_date() -> None:
     with pytest.raises(ValueError, match="checker_date must be a business day"):
         get_risk_checker(pd.Timestamp("2026-08-16"))
 
 
-def test_fake_colossus_loader_reads_unified_parquet_archive_grain() -> None:
+def test_legacy_v4_colossus_loader_reads_unified_parquet_archive_grain() -> None:
     frame = get_colossus_pl(pd.Timestamp("2026-08-14"))
 
     assert frame.columns.tolist() == [
@@ -126,4 +126,4 @@ def test_fake_colossus_loader_reads_unified_parquet_archive_grain() -> None:
     ]
     assert len(frame) == 5_000
     assert not frame.duplicated(frame.columns[:-1].tolist()).any()
-    assert frame["Portfolio"].str.contains("FAKE_REPLACE_ME", regex=False).all()
+    assert frame["Portfolio"].str.contains("TEMP_REPLACE_ME", regex=False).all()

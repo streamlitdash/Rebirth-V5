@@ -43,7 +43,7 @@
     table.dataset.validateLastToggleMs = (
       performance.now() - started
     ).toFixed(2);
-    window.__rebirthV4Assets?.clearSelection?.();
+    window.__cubeV5Assets?.clearSelection?.();
     return true;
   };
 

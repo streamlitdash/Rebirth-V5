@@ -1,98 +1,119 @@
-# Fix 1: Market calls
+# Fix 1: bounded Market calls
 
-This guide explains only the Market-call fix introduced by commit `3d1ef5e`.
-The implementation is in `rebirth/services/s06_refresh.py`.
+This note describes the Rebirth V5 cold-start Market-call design. The main
+implementation is in `cube/services/s06_refresh.py`; connector composition is
+in `cube/services/s05_sources.py`.
 
 ## Problem
 
-Open and Current Market data used to load one Underlying at a time. One slow or
-temporary failed call could therefore delay the entire refresh.
+Rebirth V4.1 could start 20 Market calls concurrently and retry each failed
+call four times. With a real service, that allowed one refresh to create a
+large burst of requests and up to five attempts per Underlying and leg. Slow
+or unavailable network calls could occupy the worker pool long enough for the
+host or browser request to time out.
 
-## Current fix
+## V5 behavior
 
-The file defines three settings:
+The safe production defaults are:
 
 ```python
-_MARKET_MAX_WORKERS = 20
-_MARKET_RETRIES = 4
+_MARKET_MAX_WORKERS = 1
+_MARKET_RETRIES = 0
 _MARKET_RETRY_DELAY_SECONDS = 0.5
+_CONNECTOR_CALL_TIMEOUT_SECONDS = 15.0
+_CONNECTOR_REFRESH_BUDGET_SECONDS = 120.0
+_CONNECTOR_MAX_OUTSTANDING_CALLS = 8
 ```
 
-For each product:
+The refresh therefore makes at most one normal Market request at a time and
+does not multiply failures with automatic retries. The limits remain explicit
+constructor settings for a site that has measured and approved a different
+connection budget.
 
-1. `_load_product_market_open()` prepares the Open connector call.
-2. `_load_product_market_status()` prepares the Current connector call.
-3. Both pass their ordered Underlying list to `_load_market_frames()`.
-4. `_load_market_frames()` runs at most 20 calls concurrently.
-5. A failed call is retried four times after its first attempt, giving five
-   possible attempts in total.
-6. Results are returned in the original Underlying order and concatenated only
-   after every call succeeds.
+All callable connector boundaries run through a finite daemon call gate. The
+refresh owner waits for at most 15 seconds for one call and at most 120 seconds
+across a complete refresh. A timed-out call may finish later, but the gate
+never launches another call with the same key while it is still running and
+retains at most eight outstanding calls process-wide.
 
-`TypeError` and `ValueError` are not retried because they normally indicate bad
-connector code or an invalid schema. Other connector exceptions are retried.
+The first operational Market exception or timeout opens one refresh-scoped
+circuit. Remaining Underlyings, the other quote leg, and later products are not
+requested; correctly shaped missing legs allow the calculation to continue.
+Cold Risk/checker availability failures similarly become shaped empty inputs,
+and unavailable optional overlays remain empty. `TypeError` and `ValueError`
+from returned data still fail fast because they indicate a programming or
+schema-contract error. A warm transactional failure retains the last good
+committed snapshot.
 
-If every retry fails, the refresh fails without publishing a partial snapshot.
-The application retains its last good snapshot.
+When only one quote leg exists, continuity is preserved:
 
-## Add a real timeout
+- missing Open uses Current;
+- missing Current uses Open;
+- when both are missing, the quote and P&L remain unavailable.
 
-The thread pool lets other calls continue while one call is slow, but it cannot
-safely kill a permanently stuck Python function. Put the timeout on the real
-MRX or network call itself.
+## FX Delta bulk adapter
 
-Example:
+`ProductConnectorAdapter` has optional `market_open_bulk` and
+`market_status_bulk` hooks. They are accepted only for `fx/delta`. Each hook
+receives the complete ordered tuple of requested Underlyings and returns one
+DataFrame for that leg, reducing FX Delta to one Open request and one Current
+request. If no bulk hook is supplied, the normal bounded per-Underlying path is
+used.
+
+The temporary adapter demonstrates the signature:
+
+```python
+def get_fx_delta_market_open_bulk(
+    source_date,
+    underlyings,
+    *,
+    market_status,
+):
+    ...
+```
+
+The bulk result may contain only requested Underlyings. A schema/type error is
+rejected; an operational exception becomes one missing bulk leg.
+
+## Native client deadline
+
+The manager now guarantees a finite wait for the application, but Python
+cannot safely terminate an arbitrary connector function blocked inside its own
+I/O. The real MRX/network client should also set a finite connect/read deadline
+so the abandoned daemon call releases its socket and thread:
 
 ```python
 MARKET_TIMEOUT_SECONDS = 5
 
 
 def get_market_data(market_date, underlying, *, market_status):
-    try:
-        return mrx_call(
-            market_date,
-            underlying,
-            market_status=market_status,
-            timeout=MARKET_TIMEOUT_SECONDS,
-        )
-    except TimeoutError as exc:
-        raise TimeoutError(
-            f"Market call timed out for {underlying}"
-        ) from exc
+    return mrx_call(
+        market_date,
+        underlying,
+        market_status=market_status,
+        timeout=MARKET_TIMEOUT_SECONDS,
+    )
 ```
 
-Replace `timeout` with the actual timeout argument supported by the MRX client.
-If it expects milliseconds, use `5_000` instead of `5`.
+Use the real client's timeout unit. The manager deadline protects the refresh;
+the client deadline releases the underlying resource.
 
-No refresh-manager change is needed after adding this timeout. The timeout
-exception reaches `_load_market_frames()`, which performs the four retries.
+## Multi-session automatic refresh
 
-Do not use `future.result(timeout=5)` as a hard-stop replacement. It can stop
-the caller waiting, but it does not terminate the underlying stuck thread.
+The 15-minute timer remains browser-local, but the manager coalesces an
+automatic request made within 14 minutes of the previous automatic attempt.
+Manual Risk, P&L, settings, and Clear Cache actions are never coalesced.
 
-## Adjust the settings
+## Verification
 
-Change only the constants near the top of
-`rebirth/services/s06_refresh.py`:
-
-```python
-_MARKET_MAX_WORKERS = 20          # simultaneous Market calls
-_MARKET_RETRIES = 4               # retries after the first attempt
-_MARKET_RETRY_DELAY_SECONDS = 0.5 # wait before each retry
-```
-
-Keep the worker count within the connection limit allowed by the real Market
-service.
-
-## Verify the fix
-
-Run the focused test:
+Run:
 
 ```powershell
-python -m pytest tests/s07_integration.py -q
+python -m pytest tests/s07_integration.py tests/s20_connectors.py tests/s22_refreshdates.py -q
+python -m pytest tests/s12_startup.py tests/s16_refreshshell.py -q
 ```
 
-The tests confirm that Open and Current calls overlap, results preserve their
-original order, and a temporary failure succeeds after four retries.
-
-To remove the code change completely, revert commit `3d1ef5e`.
+These contracts cover hard caller deadlines, total refresh budget, bounded
+outstanding calls, circuit breaking, zero-retry defaults, cold fail-soft
+behavior, strict schema failures, FX Delta bulk calls, quote-leg continuity,
+automatic-request coalescing, and single-writer cold-start behavior.

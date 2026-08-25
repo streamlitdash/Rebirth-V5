@@ -12,26 +12,26 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from rebirth.history import (
+from cube.history import (
     PL_RISK_SUMMARY_COLUMNS,
     PLHistorySeriesResult,
     PLRiskSummaryResult,
 )
-from rebirth.domain.s08_pnl import (
+from cube.domain.s08_pnl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
     PL_SEND_COLUMNS,
     PREDICT_TYPE,
     load_pl_history,
 )
-from rebirth.services.s03_adjustments import LocalCsvAdjustmentRepository
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.pnl import s08_aggregate as pl_aggregate_events
-from rebirth.pages.pnl import s02_editor as pl_editor
-from rebirth.pages.pnl import s09_drilldown as pl_history_events
-from rebirth.pages.pnl import s05_sendcallbacks as pl_send_events
-from rebirth.pages.pnl.s08_aggregate import register_pl_aggregate_callbacks
-from rebirth.pages.pnl.s01_common import (
+from cube.services.s03_adjustments import LocalCsvAdjustmentRepository
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.pnl import s08_aggregate as pl_aggregate_events
+from cube.pages.pnl import s02_editor as pl_editor
+from cube.pages.pnl import s09_drilldown as pl_history_events
+from cube.pages.pnl import s05_sendcallbacks as pl_send_events
+from cube.pages.pnl.s08_aggregate import register_pl_aggregate_callbacks
+from cube.pages.pnl.s01_common import (
     DISPLAY_COLUMNS,
     PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
@@ -42,21 +42,21 @@ from rebirth.pages.pnl.s01_common import (
     PL_SUMMARY_TOGGLE_TYPE,
     PLSendConfig,
 )
-from rebirth.pages.pnl.s06_validation import register_validate_pl_callbacks
-from rebirth.pages.pnl.s07_view import (
+from cube.pages.pnl.s06_validation import register_validate_pl_callbacks
+from cube.pages.pnl.s07_view import (
     build_pl_filter_bar,
     build_pl_page,
     build_pl_send_sections,
 )
-from rebirth.pages.pnl.s10_summary import (
+from cube.pages.pnl.s10_summary import (
     PL_SUMMARY_LEAF_PAGE_SIZE,
     PL_SUMMARY_PAGE_TYPE,
     build_pl_summary_table,
     path_token,
 )
-from rebirth.ui.s02_aggregation import prepare_risk_data
-from rebirth.app.s07_factory import build_app
-from rebirth.ui.s03_filters import build_saved_filter_view_bar
+from cube.ui.s02_aggregation import prepare_risk_data
+from cube.app.s07_factory import build_app
+from cube.ui.s03_filters import build_saved_filter_view_bar
 
 
 def _walk(component: object) -> Iterable[object]:

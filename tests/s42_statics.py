@@ -1,4 +1,4 @@
-"""V4.1 Statics read/write contracts."""
+"""V5 Statics read/write contracts."""
 
 from __future__ import annotations
 
@@ -10,19 +10,19 @@ import pandas as pd
 import pytest
 from dash import Dash, no_update
 
-from rebirth.pages.static_data.s01_store import (
+from cube.pages.static_data.s01_store import (
     WRITABLE_STATIC_FILES,
     StaticDataStore,
 )
-from rebirth.pages.static_data.s02_view import (
+from cube.pages.static_data.s02_view import (
     _editable_columns,
     _table_style,
     build_static_data_page,
 )
-from rebirth.pages.static_data import s03_callbacks as static_callbacks
-from rebirth.pages.static_data.s03_callbacks import register_callbacks
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.app.s07_factory import build_app
+from cube.pages.static_data import s03_callbacks as static_callbacks
+from cube.pages.static_data.s03_callbacks import register_callbacks
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.app.s07_factory import build_app
 
 
 def _walk(component: object):
@@ -57,6 +57,20 @@ def _callback_for_output(app: Dash, component_id: str, component_property: str):
             for output in _callback_outputs(metadata)
         )
     )
+
+
+def test_reduced_tenor_catalog_is_visible_but_read_only() -> None:
+    store = StaticDataStore()
+    readable = {option["value"] for option in store.options()}
+
+    assert "s11_matrix.csv" in readable
+    assert "s11_matrix.csv" not in WRITABLE_STATIC_FILES
+    assert store.read("s11_matrix.csv").columns.tolist() == [
+        "Risk Type",
+        "Risk Greek",
+        "Underlying",
+        "MatrixName",
+    ]
 
 
 def test_statics_page_has_plain_read_and_write_workspaces() -> None:

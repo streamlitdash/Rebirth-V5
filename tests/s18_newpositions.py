@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rebirth.adapters.s07_newpositions import (
+from cube.adapters.s07_newpositions import (
     CASHFLOW,
     CASH_FLOW,
     CASH_FLOW_RISK_GREEK,
@@ -30,8 +30,8 @@ from rebirth.adapters.s07_newpositions import (
     get_new_positions,
     validate_new_positions,
 )
-from rebirth.domain.s01_schema import TENOR_OPTION, TENOR_SWAP
-from rebirth.domain.s02_products import (
+from cube.domain.s01_schema import TENOR_OPTION, TENOR_SWAP
+from cube.domain.s02_products import (
     PL,
     PORTFOLIO,
     RISK,
@@ -102,7 +102,7 @@ def _cashflow_row(
     return pd.DataFrame([row], columns=list(NEW_POSITION_BLOTTER_COLUMNS))
 
 
-def test_default_fake_adapter_models_market_and_cashflow_rows() -> None:
+def test_default_temp_adapter_models_market_and_cashflow_rows() -> None:
     result = get_new_positions(pd.Timestamp("2026-08-15 16:00"))
 
     assert GetNewPositions is get_new_positions

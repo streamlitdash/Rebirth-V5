@@ -1,4 +1,4 @@
-"""Compose and run the Rebirth V4.1 Dash application."""
+"""Compose and run the Rebirth V5 Dash application."""
 
 from __future__ import annotations
 
@@ -7,26 +7,30 @@ import logging
 import os
 from pathlib import Path
 
-from rebirth.adapters.s08_stock import get_stock
-from rebirth.app.s07_factory import build_app
-from rebirth.app.s03_logging import configure_runtime_logging, perf_span
-from rebirth.app.s01_settings import RuntimeSettings, resolve_data_path
-from rebirth.history import SQLPLHistoryRepository
-from rebirth.pages.pnl import PLSendConfig
-from rebirth.pages.stock.s02_history import SQLStockHistoryRepository
-from rebirth.services.s03_adjustments import LocalCsvAdjustmentRepository
-from rebirth.services.s05_sources import (
+from cube.adapters.s08_stock import get_stock
+from cube.app.s07_factory import build_app
+from cube.app.s03_logging import configure_runtime_logging, perf_span
+from cube.app.s01_settings import RuntimeSettings, resolve_data_path
+from cube.history import SQLPLHistoryRepository
+from cube.pages.pnl import PLSendConfig
+from cube.pages.stock.s02_history import SQLStockHistoryRepository
+from cube.services.s03_adjustments import LocalCsvAdjustmentRepository
+from cube.services.s05_sources import (
     build_production_refresh_manager,
     get_portfolio_config,
     send_portfolio_pl,
     send_sog_pl,
+)
+from cube.services.s07_tenorreduction import (
+    get_reduced_tenor_catalog_source,
+    get_reduced_tenor_matrix,
 )
 
 
 configure_runtime_logging()
 LOGGER = logging.getLogger(__name__)
 
-_parser = argparse.ArgumentParser(description="Rebirth V4.1 Risk Cube")
+_parser = argparse.ArgumentParser(description="Rebirth V5 Risk Cube")
 _parser.add_argument("--port", type=int, help="Port (default: PORT or 8050).")
 _parser.add_argument("--host", help="Host (default: HOST or 127.0.0.1).")
 _parser.add_argument("--debug", action="store_true", help="Enable Dash debug mode.")
@@ -77,6 +81,8 @@ def create_app(settings: RuntimeSettings | None = None):
             stock_history_source=SQLStockHistoryRepository(history_path),
             saved_view_root=saved_view_path,
             pl_history_root=history_path,
+            reduced_tenor_catalog=get_reduced_tenor_catalog_source(),
+            reduced_tenor_matrix_provider=get_reduced_tenor_matrix,
             dash_kwargs=settings.dash_kwargs,
         )
 

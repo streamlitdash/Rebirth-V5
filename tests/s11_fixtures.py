@@ -1,4 +1,4 @@
-"""Canonical fake-fixture generator contract tests."""
+"""Canonical temp-fixture generator contract tests."""
 
 from __future__ import annotations
 
@@ -10,21 +10,21 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from rebirth.domain.s01_schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
-from rebirth.domain.s02_products import (
+from cube.domain.s01_schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
+from cube.domain.s02_products import (
     CURRENT,
     PL,
     VOL_SCORE,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
 )
-from rebirth.domain.s10_search import SearchCatalog
-from rebirth.history import (
+from cube.domain.s10_search import SearchCatalog
+from cube.history import (
     ArchiveHistoryRepository,
     HistoryHandoff,
     HistoryQuery,
     HistoryValidationError,
 )
-from rebirth.history import (
+from cube.history import (
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_FILE_NAME,
     MARKET_FILE_NAME,
@@ -34,12 +34,12 @@ from rebirth.history import (
     load_risk_archive,
     load_stock_archive_frame,
 )
-from rebirth.services.s05_sources import _FAKE_CSV_SCHEMAS
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.pnl.s06_validation import build_validate_pl_comparison
+from cube.services.s05_sources import _TEMP_CSV_SCHEMAS
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.pnl.s06_validation import build_validate_pl_comparison
 from tools import s01_fixtures as fixtures
 from tools.s01_fixtures import (
-    FAKE_NOTICE,
+    TEMP_NOTICE,
     CURRENT_PORTFOLIO_COUNT,
     CURRENT_RISK_ROWS,
     FIXTURE_TAG,
@@ -88,7 +88,7 @@ def _manifest(leaf: Path) -> dict[str, object]:
 
 def test_generated_schemas_are_the_exact_feed_contracts() -> None:
     assert {
-        filename: _FAKE_CSV_SCHEMAS[dataset]
+        filename: _TEMP_CSV_SCHEMAS[dataset]
         for filename, dataset in FILE_TO_FEED_DATASET.items()
     } == SCHEMAS
 
@@ -216,8 +216,8 @@ def test_one_day_history_has_exact_grains_and_all_product_axes(
     ]
     assert fixture.risk.groupby(quote_key, dropna=False).size().eq(2).all()
     assert fixture.risk["Portfolio"].nunique() == 640
-    assert fixture.risk["Portfolio"].str.contains(FAKE_NOTICE, regex=False).all()
-    assert fixture.stock["CRDS"].str.contains(FAKE_NOTICE, regex=False).all()
+    assert fixture.risk["Portfolio"].str.contains(TEMP_NOTICE, regex=False).all()
+    assert fixture.stock["CRDS"].str.contains(TEMP_NOTICE, regex=False).all()
     assert fixture.risk[PL].sum() != pytest.approx(fixture.colossus[PL].sum())
     cells_by_axes = {0: 1, 1: 6, 2: 12}
     for source_type, spec in PRODUCT_SPECS_BY_SOURCE_TYPE.items():
@@ -547,9 +547,9 @@ def test_checked_in_archive_has_262_exact_v4_leaves_and_sampled_content() -> Non
         stock = pd.read_parquet(leaf / STOCK_FILE_NAME)
         assert set(risk["Source Type"]) == set(HISTORY_SOURCE_TYPES)
         assert risk["Portfolio"].nunique() == 640
-        assert market["Underlying"].str.contains(FAKE_NOTICE, regex=False).all()
-        assert colossus["Portfolio"].str.contains(FAKE_NOTICE, regex=False).all()
-        assert stock["CRDS"].str.contains(FAKE_NOTICE, regex=False).all()
+        assert market["Underlying"].str.contains("FAKE_REPLACE_ME", regex=False).all()
+        assert colossus["Portfolio"].str.contains("FAKE_REPLACE_ME", regex=False).all()
+        assert stock["CRDS"].str.contains("FAKE_REPLACE_ME", regex=False).all()
         sampled_totals.append((market[CURRENT].sum(), risk["Risk"].sum()))
         sampled_stock_ids.append(set(stock["CRDS"]))
 

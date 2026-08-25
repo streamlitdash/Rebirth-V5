@@ -10,15 +10,15 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import no_update
 from dash.exceptions import PreventUpdate
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.risk import s15_refresh as risk_callbacks
-from rebirth.pages.risk import s02_state as risk_state
-from rebirth.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY
-from rebirth.ui.s04_components import (
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.risk import s15_refresh as risk_callbacks
+from cube.pages.risk import s02_state as risk_state
+from cube.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY
+from cube.ui.s04_components import (
     build_initial_load_layout,
     build_shared_refresh_shell,
 )
-from rebirth.app.s07_factory import build_app
+from cube.app.s07_factory import build_app
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -68,29 +68,29 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
     assert _by_id(neutral, "refresh-status").className == "refresh-status"
     assert _by_id(neutral, "refresh-progress").hidden is True
     assert _by_id(neutral, "shared-refresh-bootstrap-interval").disabled is True
-    assert (
-        _by_id(neutral, "commo-market-toggle").children == "Commodity quotes: Disabled"
-    )
-    assert _by_id(neutral, "risk-checker-toggle").children == "Risk dates: Checker"
-    assert _by_id(neutral, "auto-refresh-toggle").children == "Auto P&L: On · 15 min"
-    action_ids = [
+    action_ids = {
         component_id
         for item in _walk(_by_id(neutral, "refresh-control-strip"))
         if isinstance((component_id := getattr(item, "id", None)), str)
-    ]
-    assert action_ids.index("clear-cache-button") + 1 == action_ids.index(
-        "theme-toggle"
-    )
-    utility_pair = next(
-        item
-        for item in _walk(neutral)
-        if getattr(item, "className", None) == "header-utility-pair"
-    )
-    assert [item.id for item in utility_pair.children] == [
+    }
+    assert {"theme-toggle", "refresh-status"} <= action_ids
+    callback_target_ids = {
+        "refresh-portfolios-button",
+        "reload-risk-button",
+        "refresh-pl-button",
+        "commo-market-toggle",
+        "risk-checker-toggle",
+        "auto-refresh-toggle",
         "clear-cache-button",
-        "theme-toggle",
-    ]
-    assert _by_id(neutral, "clear-cache-button").title.startswith("Ready")
+        "operating-date-banner",
+    }
+    assert callback_target_ids <= action_ids
+    callback_targets = next(
+        item
+        for item in _walk(_by_id(neutral, "refresh-control-strip"))
+        if getattr(item, "className", None) == "cold-refresh-callback-targets"
+    )
+    assert callback_targets.hidden is True
     assert _by_id(neutral, "reset-generation-store").data == 0
     assert _by_id(neutral, "clear-cache-complete-store").data == 0
     assert _by_id(neutral, "refresh-busy-store").data is False
@@ -248,6 +248,84 @@ def test_positive_pl_click_still_runs_one_manual_refresh(monkeypatch) -> None:
     assert manager.health.revision == baseline_revision + 1
     assert manager.snapshot.refresh_reason == "manual P&L"
     assert result[0] == manager.health.revision
+
+
+def test_manual_pl_callback_copies_only_the_new_dashboard_frame(monkeypatch) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    callback = _callback_for_output(app, "refresh-commit-revision", "children")[
+        "callback"
+    ].__wrapped__
+    reads: list[str] = []
+    original_read_frame = manager.read_frame
+
+    def tracked_read_frame(name: str):
+        reads.append(name)
+        return original_read_frame(name)
+
+    def reject_full_snapshot_copy(_snapshot):
+        raise AssertionError("refresh callback requested a full snapshot copy")
+
+    monkeypatch.setattr(manager, "read_frame", tracked_read_frame)
+    monkeypatch.setattr(manager, "_copy_snapshot", reject_full_snapshot_copy)
+    monkeypatch.setattr(
+        risk_callbacks,
+        "ctx",
+        SimpleNamespace(
+            triggered_id="refresh-pl-button",
+            triggered_prop_ids={"refresh-pl-button.n_clicks": "refresh-pl-button"},
+        ),
+    )
+
+    result = callback(0, 0, 1, 0, 0, 0, 0, 0, {}, True, 0, 0)
+
+    assert result[0] == manager.health.revision
+    assert reads == ["dashboard_frame"]
+
+
+def test_browser_auto_ticks_coalesce_after_another_browser_auto_attempt(
+    monkeypatch,
+) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(
+        force_risk=True,
+        force_pl=True,
+        reason="automatic 15-minute refresh",
+    )
+    app = build_app(refresh_manager=manager)
+    callback = _callback_for_output(app, "refresh-commit-revision", "children")[
+        "callback"
+    ].__wrapped__
+    baseline_revision = manager.health.revision
+
+    def reject_duplicate_auto_refresh(**_kwargs):
+        raise AssertionError("coalesced browser tick reached the refresh manager")
+
+    monkeypatch.setattr(
+        manager,
+        "refresh",
+        reject_duplicate_auto_refresh,
+    )
+    monkeypatch.setattr(
+        risk_callbacks,
+        "ctx",
+        SimpleNamespace(
+            triggered_id="auto-refresh-interval",
+            triggered_prop_ids={
+                "auto-refresh-interval.n_intervals": "auto-refresh-interval"
+            },
+        ),
+    )
+
+    try:
+        callback(1, 0, 0, 0, 0, 0, 0, 0, {}, True, 0, 0)
+    except PreventUpdate:
+        pass
+    else:  # pragma: no cover - explicit failure documents the callback contract
+        raise AssertionError("a recent automatic refresh was not coalesced")
+
+    assert manager.health.revision == baseline_revision
 
 
 def test_cold_risk_body_can_exclude_every_shared_lifecycle_id() -> None:
@@ -442,12 +520,6 @@ def test_control_labels_and_committed_settings_are_unambiguous() -> None:
     checker_callback = _callback_for_output(app, "risk-checker-toggle", "children")[
         "callback"
     ].__wrapped__
-    promotion_callback = _callback_for_output(app, "promotion-toggle", "children")[
-        "callback"
-    ].__wrapped__
-    region_callback = _callback_for_output(app, "region-toggle", "children")[
-        "callback"
-    ].__wrapped__
     auto_on = auto_callback(True)
     auto_off = auto_callback(False)
     assert auto_on[1] == "Auto P&L: On · 15 min"
@@ -458,12 +530,6 @@ def test_control_labels_and_committed_settings_are_unambiguous() -> None:
     assert commo_callback(True)[0] == "Commodity quotes: Loaded"
     assert checker_callback(False)[0] == "Risk dates: Today"
     assert checker_callback(True)[0] == "Risk dates: Checker"
-    for callback in (promotion_callback, region_callback):
-        off_classes = set(callback(False)[4].split())
-        on_classes = set(callback(True)[4].split())
-        assert "is-off" in off_classes and "is-on" not in off_classes
-        assert "is-on" in on_classes and "is-off" not in on_classes
-
     settings_callback = next(
         metadata
         for metadata in app.callback_map.values()

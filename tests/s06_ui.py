@@ -10,12 +10,12 @@ import pandas as pd
 import pytest
 from dash import dash_table, dcc, html
 
-from rebirth.pages.risk.s05_charts import (
+from cube.pages.risk.s05_charts import (
     build_detail_panel_with_state,
     build_tenor_heatmap,
     detail_tenor_view_state,
 )
-from rebirth.pages.risk.s09_quickmarket import (
+from cube.pages.risk.s09_quickmarket import (
     build_quick_market_history_result,
     build_quick_market_result,
     build_quick_market_search,
@@ -23,25 +23,25 @@ from rebirth.pages.risk.s09_quickmarket import (
     quick_market_history_date_window,
     quick_market_history_identity,
 )
-from rebirth.pages.risk.s08_quickrisk import (
+from cube.pages.risk.s08_quickrisk import (
     QUICK_SEARCH_HIERARCHY_DEPTH,
     build_quick_search,
     build_quick_search_pivot,
 )
-from rebirth.pages.risk.s06_explorertables import (
+from cube.pages.risk.s06_explorertables import (
     build_small_table,
     build_tree_rows,
     metric_header,
 )
-from rebirth.pages.risk.s13_workspacetables import (
+from cube.pages.risk.s13_workspacetables import (
     build_new_trade_detail_table,
     build_top_book_exposures,
     build_top_promotions_table,
     top_promotions_frame,
 )
-from rebirth.pages.risk.s16_view import build_unmapped_books_table
-from rebirth.ui.s02_aggregation import ordered_unique, row_key
-from rebirth.pages.risk.s10_search import (
+from cube.pages.risk.s16_view import build_unmapped_books_table
+from cube.ui.s02_aggregation import ordered_unique, row_key
+from cube.pages.risk.s10_search import (
     _product_shaped_quick_search_indexes,
     _prune_quick_search_indexes,
     _render_quick_search_pivot,

@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rebirth.adapters.s04_credit import CREDIT_DELTA_CURRENT, CREDIT_DELTA_OPEN
-from rebirth.adapters.s06_crossgamma import build_cross_gamma_adapter, get_cross_gamma
-from rebirth.domain.s01_schema import TENOR_OPTION_ORDER, TENOR_SWAP, TENOR_SWAP_ORDER
-from rebirth.domain.s02_products import (
+from cube.adapters.s04_credit import CREDIT_DELTA_CURRENT, CREDIT_DELTA_OPEN
+from cube.adapters.s06_crossgamma import build_cross_gamma_adapter, get_cross_gamma
+from cube.domain.s01_schema import TENOR_OPTION_ORDER, TENOR_SWAP, TENOR_SWAP_ORDER
+from cube.domain.s02_products import (
     CURRENT,
     DRISK,
     GROUP,
@@ -31,8 +31,8 @@ from rebirth.domain.s02_products import (
     UNDERLYING,
     ProductConnectorAdapter,
 )
-from rebirth.services.s06_refresh import RiskRefreshManager
-from rebirth.domain.s04_crossgamma import (
+from cube.services.s06_refresh import RiskRefreshManager
+from cube.domain.s04_crossgamma import (
     CROSS_GAMMA_COLUMNS,
     CROSS_GAMMA_RELEASE_COLUMNS,
     CROSS_GAMMA_SENSITIVITY,
@@ -55,14 +55,14 @@ from rebirth.domain.s04_crossgamma import (
     cross_gamma_market_scope,
     validate_cross_gamma_rows,
 )
-from rebirth.services.s05_sources import (
+from cube.services.s05_sources import (
     get_portfolio_config,
     get_product_connector_adapters,
     get_reported_underlyings,
     get_risk_checker,
     get_risk_thresholds,
 )
-from rebirth.ui.s02_aggregation import (
+from cube.ui.s02_aggregation import (
     apply_credit_measure,
     credit_measure_available,
     filter_ir_family,
@@ -169,7 +169,7 @@ def _integration_matrix(*, missing_input: bool = False) -> pd.DataFrame:
                 sensitivity=-4.0,
             ),
         )
-    result[PORTFOLIO] = "FAKE_REPLACE_ME - BOOK_A"
+    result[PORTFOLIO] = "TEMP_REPLACE_ME - BOOK_A"
     return result
 
 
@@ -240,7 +240,7 @@ def _integration_manager(
     )
 
 
-def test_adapter_normalizes_date_and_exposes_exact_fake_credit_contract() -> None:
+def test_adapter_normalizes_date_and_exposes_exact_temp_credit_contract() -> None:
     calls: list[pd.Timestamp] = []
 
     def source(market_date: pd.Timestamp) -> pd.DataFrame:
@@ -249,44 +249,44 @@ def test_adapter_normalizes_date_and_exposes_exact_fake_credit_contract() -> Non
 
     adapter = build_cross_gamma_adapter(sensitivities=source)
     result = adapter(pd.Timestamp("2026-07-20 13:30", tz="Europe/London"))
-    fake = get_cross_gamma(pd.Timestamp("2026-07-20"))
+    temp = get_cross_gamma(pd.Timestamp("2026-07-20"))
 
     assert calls == [pd.Timestamp("2026-07-20")]
     assert result.columns.tolist() == list(CROSS_GAMMA_COLUMNS)
-    assert len(fake) == 3
-    assert fake[INPUT_RISK_TYPE].eq("Credit").all()
-    assert fake[INPUT_RISK_GREEK].tolist() == ["Delta", "Delta", "Vega"]
-    assert fake[RISK_GREEK].tolist() == [
+    assert len(temp) == 3
+    assert temp[INPUT_RISK_TYPE].eq("Credit").all()
+    assert temp[INPUT_RISK_GREEK].tolist() == ["Delta", "Delta", "Vega"]
+    assert temp[RISK_GREEK].tolist() == [
         XGAMMA_RISK_GREEK,
         XGAMMA_RISK_GREEK,
         XGAMMA_VEGA_RISK_GREEK,
     ]
-    assert fake[OUTPUT_RISK_GREEK].eq("Delta").all()
+    assert temp[OUTPUT_RISK_GREEK].eq("Delta").all()
     assert (
-        fake.astype(str)
-        .apply(lambda column: column.str.contains("FAKE_REPLACE_ME").any())
+        temp.astype(str)
+        .apply(lambda column: column.str.contains("TEMP_REPLACE_ME").any())
         .any()
     )
 
 
-def test_fake_matrix_develops_delta_and_vega_inputs_in_stored_move_units() -> None:
+def test_temp_matrix_develops_delta_and_vega_inputs_in_stored_move_units() -> None:
     rows = get_cross_gamma(pd.Timestamp("2026-07-20"))
     credit_delta = _credit_market(
-        ("FAKE_REPLACE_ME - CDX IG", "FAKE_REPLACE_ME - 1Y", 0, 2.3, True),
+        ("TEMP_REPLACE_ME - CDX IG", "TEMP_REPLACE_ME - 1Y", 0, 2.3, True),
         (
-            "FAKE_REPLACE_ME - iTraxx Main",
-            "FAKE_REPLACE_ME - 3Y",
+            "TEMP_REPLACE_ME - iTraxx Main",
+            "TEMP_REPLACE_ME - 3Y",
             1,
             -1.8,
             True,
         ),
-        ("FAKE_REPLACE_ME - Ford CDS", "FAKE_REPLACE_ME - 5Y", 2, 1.0, True),
-        ("FAKE_REPLACE_ME - CDX IG", "FAKE_REPLACE_ME - 5Y", 2, 1.0, True),
+        ("TEMP_REPLACE_ME - Ford CDS", "TEMP_REPLACE_ME - 5Y", 2, 1.0, True),
+        ("TEMP_REPLACE_ME - CDX IG", "TEMP_REPLACE_ME - 5Y", 2, 1.0, True),
     )
     credit_vega = _credit_market(
         (
-            "FAKE_REPLACE_ME - Ford CDS Vol",
-            "FAKE_REPLACE_ME - 3M",
+            "TEMP_REPLACE_ME - Ford CDS Vol",
+            "TEMP_REPLACE_ME - 3M",
             1,
             -1.2,
             True,
@@ -310,8 +310,8 @@ def test_fake_matrix_develops_delta_and_vega_inputs_in_stored_move_units() -> No
     ]
     vega_source = sources.loc[sources[RISK_GREEK].eq(XGAMMA_VEGA_RISK_GREEK)].iloc[0]
     assert vega_source[SOURCE_TYPE] == "credit/vega"
-    assert vega_source[UNDERLYING] == "FAKE_REPLACE_ME - Ford CDS Vol"
-    assert vega_source[TENOR_SWAP] == "FAKE_REPLACE_ME - 3M"
+    assert vega_source[UNDERLYING] == "TEMP_REPLACE_ME - Ford CDS Vol"
+    assert vega_source[TENOR_SWAP] == "TEMP_REPLACE_ME - 3M"
     assert vega_source[RISK] == pytest.approx(4_000.0)
     assert vega_source[MARKET_MOVE] == pytest.approx(-1.2)
 
@@ -323,16 +323,16 @@ def test_fake_matrix_develops_delta_and_vega_inputs_in_stored_move_units() -> No
     assert developed_risk == pytest.approx(
         {
             (
-                "FAKE_REPLACE_ME - BOOK_A",
+                "TEMP_REPLACE_ME - BOOK_A",
                 "Index",
-                "FAKE_REPLACE_ME - Ford CDS",
-                "FAKE_REPLACE_ME - 5Y",
+                "TEMP_REPLACE_ME - Ford CDS",
+                "TEMP_REPLACE_ME - 5Y",
             ): 42_250.0,
             (
-                "FAKE_REPLACE_ME - BOOK_C",
+                "TEMP_REPLACE_ME - BOOK_C",
                 "Single Name",
-                "FAKE_REPLACE_ME - CDX IG",
-                "FAKE_REPLACE_ME - 5Y",
+                "TEMP_REPLACE_ME - CDX IG",
+                "TEMP_REPLACE_ME - 5Y",
             ): -4_800.0,
         }
     )
@@ -625,7 +625,7 @@ def test_manager_loads_raw_matrix_before_market_and_publishes_summed_xgamma() ->
     ]
     assert len(released) == 1
     row = released.iloc[0]
-    assert row[PORTFOLIO] == "FAKE_REPLACE_ME - BOOK_A"
+    assert row[PORTFOLIO] == "TEMP_REPLACE_ME - BOOK_A"
     assert row[UNDERLYING] == XGAMMA_OUTPUT
     assert row[RISK] == pytest.approx(32.0)
     assert row["Risk SP01"] == pytest.approx(32.0)

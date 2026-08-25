@@ -1,19 +1,23 @@
-"""One fast end-to-end refresh over the explicit fake connector boundaries."""
+"""One fast end-to-end refresh over the explicit temp connector boundaries."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
-from threading import Barrier, BrokenBarrierError, Event, Thread
+from datetime import datetime, timedelta, timezone
+from threading import Barrier, BrokenBarrierError, Event, Lock, Thread
 from time import monotonic, sleep
 
 import pandas as pd
 import pytest
 
-from rebirth.domain.s02_products import PRODUCT_SPECS, ProductConnectorAdapter
-from rebirth.services.s06_refresh import RiskRefreshManager
-from rebirth.services.s01_snapshots import StaleResetGenerationError
-from rebirth.services.s05_sources import (
+from cube.domain.s02_products import PRODUCT_SPECS, ProductConnectorAdapter
+from cube.services.s06_refresh import (
+    RiskRefreshManager,
+    _ConnectorRefreshBudget,
+    _OperationalCircuitBreaker,
+)
+from cube.services.s01_snapshots import StaleResetGenerationError
+from cube.services.s05_sources import (
     build_production_refresh_manager,
     get_portfolio_config,
     get_product_connector_adapters,
@@ -26,6 +30,7 @@ def _market_test_manager(
     loader: Callable[..., object],
     *,
     wait: Callable[[float], None] = lambda _seconds: None,
+    **manager_options: object,
 ) -> RiskRefreshManager:
     return RiskRefreshManager(
         lambda _date: pd.DataFrame(),
@@ -36,6 +41,7 @@ def _market_test_manager(
         market_open_loader=loader,
         market_status_loader=loader,
         sleep=wait,
+        **manager_options,
     )
 
 
@@ -139,8 +145,7 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     assert sorted(
         (source, underlying, status) for source, _, underlying, status in open_calls
     ) == sorted(
-        (source, underlying, status)
-        for source, _, underlying, status in current_calls
+        (source, underlying, status) for source, _, underlying, status in current_calls
     )
     assert all(call[1] == expected_checker_date for call in open_calls)
     assert all(call[1] == expected_market_date for call in current_calls)
@@ -166,6 +171,7 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     )
 
     first_open_count = len(open_calls)
+    first_current_count = len(current_calls)
     official_snapshot = manager.refresh(
         force_pl=True,
         expected_revision=snapshot.revision,
@@ -177,20 +183,12 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
         expected_market_date,
         expected_market_date,
     ]
-    assert sorted(
-        (source, underlying, status)
-        for source, _, underlying, status in open_calls[first_open_count:]
-    ) == sorted(
-        (source, underlying, status)
-        for source, _, underlying, status in current_calls[first_open_count:]
-    )
-    assert all(
-        call[1] == expected_checker_date for call in open_calls[first_open_count:]
-    )
-    assert all(
-        call[1] == expected_market_date for call in current_calls[first_open_count:]
-    )
-    assert all(call[3] == "OFFICIAL" for call in open_calls[first_open_count:])
+    assert open_calls[first_open_count:] == []
+    assert official_snapshot.open_refreshed_source_types == ()
+    refreshed_current = current_calls[first_current_count:]
+    assert refreshed_current
+    assert all(call[1] == expected_market_date for call in refreshed_current)
+    assert all(call[3] == "OFFICIAL" for call in refreshed_current)
 
     portfolio_snapshot = manager.refresh_portfolios(
         expected_revision=official_snapshot.revision
@@ -199,7 +197,7 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     assert len(market_status_calls) == 2
 
 
-def test_market_calls_overlap_and_keep_underlying_result_order() -> None:
+def test_configured_market_calls_overlap_and_keep_underlying_result_order() -> None:
     underlyings = ("CREDIT_A", "CREDIT_B", "CREDIT_C", "CREDIT_D")
     barrier = Barrier(len(underlyings))
 
@@ -218,7 +216,7 @@ def test_market_calls_overlap_and_keep_underlying_result_order() -> None:
             {"Underlying": [underlying], "Market Status": [market_status]}
         )
 
-    manager = _market_test_manager(loader)
+    manager = _market_test_manager(loader, market_max_workers=len(underlyings))
     spec = PRODUCT_SPECS["creditdelta"]
     opened = manager._load_product_market_open(
         spec,
@@ -235,6 +233,41 @@ def test_market_calls_overlap_and_keep_underlying_result_order() -> None:
 
     assert opened["Underlying"].tolist() == list(underlyings)
     assert current["Underlying"].tolist() == list(underlyings)
+
+
+def test_market_calls_are_serial_by_default() -> None:
+    underlyings = ("CREDIT_A", "CREDIT_B", "CREDIT_C")
+    lock = Lock()
+    active = 0
+    peak_active = 0
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        sleep(0.01)
+        with lock:
+            active -= 1
+        return pd.DataFrame(
+            {"Underlying": [underlying], "Market Status": [market_status]}
+        )
+
+    result = _market_test_manager(loader)._load_product_market_status(
+        PRODUCT_SPECS["creditdelta"],
+        pd.Timestamp("2026-08-21"),
+        underlyings,
+        market_status="OFFICIAL",
+    )
+
+    assert peak_active == 1
+    assert result["Underlying"].tolist() == list(underlyings)
 
 
 def test_market_call_retries_four_times_then_succeeds() -> None:
@@ -256,7 +289,11 @@ def test_market_call_retries_four_times_then_succeeds() -> None:
             {"Underlying": [underlying], "Market Status": [market_status]}
         )
 
-    manager = _market_test_manager(loader, wait=waits.append)
+    manager = _market_test_manager(
+        loader,
+        wait=waits.append,
+        market_retries=4,
+    )
     result = manager._load_product_market_status(
         PRODUCT_SPECS["creditdelta"],
         pd.Timestamp("2026-08-21"),
@@ -267,6 +304,568 @@ def test_market_call_retries_four_times_then_succeeds() -> None:
     assert calls == 5
     assert waits == [0.5, 0.5, 0.5, 0.5]
     assert result["Underlying"].tolist() == ["CREDIT_A"]
+
+
+def test_operational_market_failures_are_soft_and_warn_once(caplog) -> None:
+    calls: list[str] = []
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        calls.append(underlying)
+        raise ConnectionError("upstream market service timed out")
+
+    manager = _market_test_manager(loader)
+    with caplog.at_level("WARNING", logger="cube.services.s06_refresh"):
+        result = manager._load_product_market_status(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+            ("CREDIT_A", "CREDIT_B", "CREDIT_C"),
+            market_status="OFFICIAL",
+        )
+
+    warnings = [
+        record
+        for record in caplog.records
+        if "Market connector unavailable for" in record.getMessage()
+    ]
+    assert calls == ["CREDIT_A", "CREDIT_B", "CREDIT_C"]
+    assert result.empty
+    assert result.columns.tolist() == [
+        "Underlying",
+        "Tenor Swap",
+        "Tenor Swap Order",
+        "Current",
+    ]
+    assert len(warnings) == 1
+    assert "3 of 3 credit/delta market_status calls" in warnings[0].getMessage()
+
+
+def test_blocking_connector_returns_by_deadline_and_same_key_is_not_relaunched() -> (
+    None
+):
+    entered = Event()
+    release = Event()
+    calls = 0
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        _underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        nonlocal calls
+        del market_status
+        calls += 1
+        entered.set()
+        release.wait(10)
+        return pd.DataFrame()
+
+    manager = _market_test_manager(
+        loader,
+        connector_call_timeout_seconds=0.05,
+    )
+    started = monotonic()
+    try:
+        first = manager._load_product_market_status(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+            ("CREDIT_A",),
+            market_status="OFFICIAL",
+        )
+        first_elapsed = monotonic() - started
+        assert entered.is_set()
+
+        second_started = monotonic()
+        second = manager._load_product_market_status(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+            ("CREDIT_A",),
+            market_status="OFFICIAL",
+        )
+        second_elapsed = monotonic() - second_started
+    finally:
+        release.set()
+
+    assert first.empty
+    assert second.empty
+    assert calls == 1
+    assert first_elapsed < 0.5
+    assert second_elapsed < 0.2
+
+
+def test_total_connector_budget_opens_market_circuit_before_callback_timeout() -> None:
+    calls: list[str] = []
+
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append(underlying)
+        sleep(0.04)
+        return pd.DataFrame(
+            {
+                "Underlying": [underlying],
+                "Current": [1.0],
+                "Market Status": [market_status],
+            }
+        )
+
+    manager = _market_test_manager(
+        loader,
+        connector_call_timeout_seconds=1.0,
+    )
+    circuit = _OperationalCircuitBreaker()
+    budget = _ConnectorRefreshBudget(0.09)
+    started = monotonic()
+    result = manager._load_product_market_status(
+        PRODUCT_SPECS["creditdelta"],
+        pd.Timestamp("2026-08-21"),
+        ("A", "B", "C", "D", "E"),
+        market_status="OFFICIAL",
+        circuit=circuit,
+        budget=budget,
+    )
+    elapsed = monotonic() - started
+
+    assert calls == ["A", "B", "C", "D", "E"][: len(calls)]
+    assert 2 <= len(calls) < 5
+    assert result["Underlying"].tolist() == calls[: len(result)]
+    assert circuit.is_open
+    assert elapsed < 0.5
+
+
+def test_cold_start_commits_after_total_connector_budget_is_exhausted() -> None:
+    risk_calls: list[str] = []
+    wrapped: dict[str, ProductConnectorAdapter] = {}
+    for source_type, adapter in get_product_connector_adapters().items():
+
+        def slow_risk(
+            risk_date: pd.Timestamp,
+            *,
+            _source_type: str = source_type,
+            _adapter: ProductConnectorAdapter = adapter,
+        ) -> pd.DataFrame:
+            risk_calls.append(_source_type)
+            sleep(0.03)
+            return _adapter.risk(risk_date)
+
+        wrapped[source_type] = ProductConnectorAdapter(
+            risk=slow_risk,
+            market_open=adapter.market_open,
+            market_status=adapter.market_status,
+            market_open_bulk=adapter.market_open_bulk,
+            market_status_bulk=adapter.market_status_bulk,
+        )
+
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=wrapped,
+        connector_call_timeout_seconds=0.5,
+        connector_refresh_budget_seconds=0.14,
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    started = monotonic()
+    snapshot = manager.refresh(force_risk=True, force_pl=True)
+    elapsed = monotonic() - started
+
+    assert snapshot.revision == 1
+    assert snapshot.errors == ()
+    assert 1 <= len(risk_calls) < len(wrapped)
+    assert not snapshot.dashboard_frame.empty
+    assert elapsed < 5
+
+
+def test_market_contract_failures_still_surface() -> None:
+    def loader(
+        _source_type: str,
+        _market_date: pd.Timestamp,
+        _underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        raise ValueError("invalid connector schema")
+
+    manager = _market_test_manager(loader)
+    with pytest.raises(ValueError, match="invalid connector schema"):
+        manager._load_product_market_status(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+            ("CREDIT_A",),
+            market_status="OFFICIAL",
+        )
+
+
+def test_fx_delta_bulk_connectors_are_called_once_per_leg() -> None:
+    per_underlying_calls: list[str] = []
+    bulk_calls: list[tuple[str, tuple[str, ...]]] = []
+    underlyings = ("EURUSD", "USDJPY", "GBPUSD")
+
+    def per_underlying(
+        _date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        per_underlying_calls.append(underlying)
+        raise AssertionError("per-Underlying hook must not be used")
+
+    def bulk_open(
+        _date: pd.Timestamp,
+        requested: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        bulk_calls.append(("open", requested))
+        return pd.DataFrame({"Underlying": requested, "Open": [1.0] * len(requested)})
+
+    def bulk_status(
+        _date: pd.Timestamp,
+        requested: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        bulk_calls.append((market_status, requested))
+        return pd.DataFrame(
+            {
+                "Underlying": requested,
+                "Current": [1.1] * len(requested),
+                "Market Status": [market_status] * len(requested),
+            }
+        )
+
+    adapter = ProductConnectorAdapter(
+        risk=lambda _date: pd.DataFrame(),
+        market_open=per_underlying,
+        market_status=per_underlying,
+        market_open_bulk=bulk_open,
+        market_status_bulk=bulk_status,
+    )
+    manager = _market_test_manager(
+        lambda *_args, **_kwargs: pd.DataFrame(),
+        connector_adapters={"fx/delta": adapter},
+    )
+
+    opened = manager._load_product_market_open(
+        PRODUCT_SPECS["fxdelta"],
+        pd.Timestamp("2026-08-20"),
+        underlyings,
+        market_status="OFFICIAL",
+    )
+    current = manager._load_product_market_status(
+        PRODUCT_SPECS["fxdelta"],
+        pd.Timestamp("2026-08-21"),
+        underlyings,
+        market_status="OFFICIAL",
+    )
+
+    assert bulk_calls == [("open", underlyings), ("OFFICIAL", underlyings)]
+    assert per_underlying_calls == []
+    assert opened["Underlying"].tolist() == list(underlyings)
+    assert current["Underlying"].tolist() == list(underlyings)
+
+
+def test_fx_delta_bulk_connector_rejects_unrequested_underlyings() -> None:
+    def connector(*_args, **_kwargs) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def bulk_open(
+        _date: pd.Timestamp,
+        _underlyings: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        return pd.DataFrame(
+            {"Underlying": ["EURUSD", "UNREQUESTED"], "Open": [1.0, 2.0]}
+        )
+
+    adapter = ProductConnectorAdapter(
+        risk=lambda _date: pd.DataFrame(),
+        market_open=connector,
+        market_status=connector,
+        market_open_bulk=bulk_open,
+    )
+    manager = _market_test_manager(
+        connector,
+        connector_adapters={"fx/delta": adapter},
+    )
+
+    with pytest.raises(ValueError, match="outside the requested scope"):
+        manager._load_product_market_open(
+            PRODUCT_SPECS["fxdelta"],
+            pd.Timestamp("2026-08-20"),
+            ("EURUSD",),
+            market_status="OFFICIAL",
+        )
+
+
+def test_bulk_market_hooks_are_rejected_outside_fx_delta() -> None:
+    def connector(*_args, **_kwargs) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    adapter = ProductConnectorAdapter(
+        risk=lambda _date: pd.DataFrame(),
+        market_open=connector,
+        market_status=connector,
+        market_open_bulk=connector,
+    )
+
+    with pytest.raises(ValueError, match="only for 'fx/delta'"):
+        _market_test_manager(
+            connector,
+            connector_adapters={"credit/delta": adapter},
+        )
+
+
+def test_cold_start_commits_when_market_service_is_operationally_unavailable(
+    caplog,
+) -> None:
+    adapters = dict(get_product_connector_adapters())
+    fx_delta = adapters["fx/delta"]
+    unavailable_calls: list[str] = []
+
+    def unavailable_bulk(
+        _date: pd.Timestamp,
+        _underlyings: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        unavailable_calls.append("called")
+        raise TimeoutError("market service deadline exceeded")
+
+    adapters["fx/delta"] = ProductConnectorAdapter(
+        risk=fx_delta.risk,
+        market_open=fx_delta.market_open,
+        market_status=fx_delta.market_status,
+        market_open_bulk=unavailable_bulk,
+        market_status_bulk=unavailable_bulk,
+    )
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=adapters,
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    with caplog.at_level("WARNING", logger="cube.services.s06_refresh"):
+        snapshot = manager.refresh(force_risk=True, force_pl=True)
+
+    fx_dashboard = snapshot.dashboard_frame.loc[
+        snapshot.dashboard_frame["Source Type"].eq("fx/delta")
+    ]
+    circuit_warnings = [
+        record
+        for record in caplog.records
+        if "Market circuit opened after bulk fx/delta" in record.getMessage()
+    ]
+    assert snapshot.revision == 1
+    assert snapshot.errors == ()
+    assert not fx_dashboard.empty
+    assert fx_dashboard["Market Available"].eq(False).all()
+    assert unavailable_calls == ["called"]
+    assert len(circuit_warnings) == 1
+
+
+def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -> None:
+    adapters = dict(get_product_connector_adapters())
+    ir_delta = adapters["ir/delta"]
+    risk_calls = 0
+
+    def unavailable_risk(_date: pd.Timestamp) -> pd.DataFrame:
+        nonlocal risk_calls
+        risk_calls += 1
+        raise ConnectionError("risk service unavailable")
+
+    adapters["ir/delta"] = ProductConnectorAdapter(
+        risk=unavailable_risk,
+        market_open=ir_delta.market_open,
+        market_status=ir_delta.market_status,
+    )
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=adapters,
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    snapshot = manager.refresh(force_risk=True, force_pl=True)
+
+    assert snapshot.revision == 1
+    assert snapshot.errors == ()
+    assert risk_calls == 1
+    assert not snapshot.dashboard_frame.empty
+    assert not snapshot.dashboard_frame["Source Type"].eq("ir/delta").any()
+    assert manager._risk_frames["ir/delta"].empty
+
+
+def test_cold_start_uses_default_readiness_when_checker_is_unavailable() -> None:
+    def unavailable_checker(_date: pd.Timestamp):
+        raise ConnectionError("checker service unavailable")
+
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=unavailable_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=get_product_connector_adapters(),
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    snapshot = manager.refresh(force_risk=True, force_pl=True)
+
+    assert snapshot.revision == 1
+    assert snapshot.errors == ()
+    assert snapshot.risk_checker.empty
+    assert snapshot.risk_status["Age"].eq(0).all()
+    assert snapshot.risk_status["Age Defaulted"].eq(True).all()
+    assert not snapshot.dashboard_frame.empty
+
+
+def test_cold_start_commits_risk_when_market_status_resolver_blocks() -> None:
+    entered = Event()
+    release = Event()
+
+    def blocking_resolver(_date: pd.Timestamp) -> str:
+        entered.set()
+        release.wait(10)
+        return "OFFICIAL"
+
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=blocking_resolver,
+        connector_adapters=get_product_connector_adapters(),
+        connector_call_timeout_seconds=0.05,
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    started = monotonic()
+    try:
+        snapshot = manager.refresh(force_risk=True, force_pl=True)
+    finally:
+        release.set()
+    elapsed = monotonic() - started
+
+    assert entered.is_set()
+    assert elapsed < 5
+    assert snapshot.revision == 1
+    assert snapshot.errors == ()
+    assert snapshot.market_status == "OFFICIAL"
+    assert not snapshot.dashboard_frame.empty
+    network_market_rows = snapshot.dashboard_frame.loc[
+        ~snapshot.dashboard_frame["Source Type"].str.startswith("commo/")
+    ]
+    assert network_market_rows["Market Available"].eq(False).all()
+
+
+def test_sequential_browser_auto_ticks_coalesce_to_one_connector_refresh() -> None:
+    current_time = [datetime(2026, 8, 16, 12, tzinfo=timezone.utc)]
+    resolver_calls: list[pd.Timestamp] = []
+
+    def clock() -> datetime:
+        return current_time[0]
+
+    def resolver(market_date: pd.Timestamp) -> str:
+        resolver_calls.append(pd.Timestamp(market_date))
+        return "OFFICIAL"
+
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=resolver,
+        connector_adapters=get_product_connector_adapters(),
+        clock=clock,
+        trading_timezone="Europe/London",
+    )
+    initial = manager.refresh(force_risk=True, force_pl=True)
+    calls_after_initial = len(resolver_calls)
+
+    current_time[0] += timedelta(minutes=15)
+    first_tick = manager.refresh(
+        force_pl=True,
+        reason="automatic 15-minute refresh",
+        expected_revision=initial.revision,
+    )
+    current_time[0] += timedelta(seconds=1)
+    second_tick = manager.refresh(
+        force_pl=True,
+        reason="automatic 15-minute refresh",
+        # Simulate another browser whose revision has not observed first_tick.
+        expected_revision=initial.revision,
+    )
+
+    assert first_tick.revision == initial.revision + 1
+    assert second_tick.revision == first_tick.revision
+    assert len(resolver_calls) == calls_after_initial + 1
+
+
+def test_market_contract_failure_retains_the_atomic_last_good_snapshot() -> None:
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=get_product_connector_adapters(),
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+    baseline = manager.refresh(force_risk=True, force_pl=True)
+    fx_delta = manager._connector_adapters["fx/delta"]
+
+    def invalid_bulk(
+        _date: pd.Timestamp,
+        _underlyings: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        raise ValueError("connector returned an invalid market contract")
+
+    manager._connector_adapters["fx/delta"] = ProductConnectorAdapter(
+        risk=fx_delta.risk,
+        market_open=fx_delta.market_open,
+        market_status=fx_delta.market_status,
+        market_open_bulk=fx_delta.market_open_bulk,
+        market_status_bulk=invalid_bulk,
+    )
+
+    retained = manager.refresh(
+        force_pl=True,
+        expected_revision=baseline.revision,
+    )
+
+    assert retained.revision == baseline.revision
+    assert retained.errors
+    pd.testing.assert_frame_equal(retained.market_frame, baseline.market_frame)
+    pd.testing.assert_frame_equal(retained.dashboard_frame, baseline.dashboard_frame)
 
 
 def test_historical_view_rejects_forced_risk_after_checker_date() -> None:

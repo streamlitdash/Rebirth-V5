@@ -1,4 +1,4 @@
-"""Rebirth V4.1 Risk defaults and explicit-promotion contracts."""
+"""Rebirth V5 Risk defaults and explicit-promotion contracts."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from rebirth.pages.risk.s03_defaults import (
+from cube.pages.risk.s03_defaults import (
     DEFAULT_RISK_FILTER_LABEL,
     default_risk_filter_values,
     resolve_default_risk_activities,
 )
-from rebirth.pages.risk.s11_promotion import (
+from cube.pages.risk.s11_promotion import (
     PromotionBasis,
     PromotionGeneration,
     apply_promotion_generation,
@@ -21,7 +21,7 @@ from rebirth.pages.risk.s11_promotion import (
     promotion_basis_is_stale,
     promotion_basis_summary,
 )
-from rebirth.ui.s01_constants import FILTER_COLUMNS
+from cube.ui.s01_constants import FILTER_COLUMNS
 
 
 def _filters(**updates: list[str]) -> dict[str, list[str]]:
@@ -53,18 +53,18 @@ def _promotion_frame() -> pd.DataFrame:
 def test_default_risk_filter_resolves_current_and_legacy_fixture_names() -> None:
     resolved = resolve_default_risk_activities(
         [
-            "FAKE_REPLACE_ME - Macro",
-            "FAKE_REPLACE_ME - Credit",
-            "FAKE_REPLACE_ME - Hedge",
+            "TEMP_REPLACE_ME - Macro",
+            "TEMP_REPLACE_ME - Credit",
+            "TEMP_REPLACE_ME - Hedge",
             "Unrelated",
         ]
     )
 
     assert DEFAULT_RISK_FILTER_LABEL == "Default - Activities 1-3"
     assert resolved.activities == (
-        "FAKE_REPLACE_ME - Macro",
-        "FAKE_REPLACE_ME - Credit",
-        "FAKE_REPLACE_ME - Hedge",
+        "TEMP_REPLACE_ME - Macro",
+        "TEMP_REPLACE_ME - Credit",
+        "TEMP_REPLACE_ME - Hedge",
     )
     assert resolved.missing == ()
     values = default_risk_filter_values(

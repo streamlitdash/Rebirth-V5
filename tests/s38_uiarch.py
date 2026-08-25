@@ -1,4 +1,4 @@
-"""V4.1 shared-UI ownership and page-isolation guards."""
+"""V5 shared-UI ownership and page-isolation guards."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-UI_PACKAGE = PROJECT / "rebirth" / "ui"
+UI_PACKAGE = PROJECT / "cube" / "ui"
 FORBIDDEN_ROOTS = {"adapters", "core", "feeds", "pages", "shared"}
 
 
@@ -22,7 +22,7 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
-def test_shared_ui_has_one_ordered_v41_tree() -> None:
+def test_shared_ui_has_one_ordered_v5_tree() -> None:
     assert {
         path.name for path in UI_PACKAGE.glob("*.py") if path.name != "__init__.py"
     } == {
@@ -41,12 +41,12 @@ def test_v4_ui_never_reaches_into_pages_or_data_sources() -> None:
 
 def test_completed_v4_owners_do_not_use_removed_root_packages() -> None:
     roots = (
-        PROJECT / "rebirth" / "app",
-        PROJECT / "rebirth" / "pages" / "risk",
-        PROJECT / "rebirth" / "pages" / "data",
-        PROJECT / "rebirth" / "pages" / "pnl",
-        PROJECT / "rebirth" / "pages" / "static_data",
-        PROJECT / "rebirth" / "pages" / "stock",
+        PROJECT / "cube" / "app",
+        PROJECT / "cube" / "pages" / "risk",
+        PROJECT / "cube" / "pages" / "data",
+        PROJECT / "cube" / "pages" / "pnl",
+        PROJECT / "cube" / "pages" / "static_data",
+        PROJECT / "cube" / "pages" / "stock",
     )
     for root in roots:
         for path in root.glob("*.py"):
@@ -55,12 +55,12 @@ def test_completed_v4_owners_do_not_use_removed_root_packages() -> None:
 
 
 def test_pages_do_not_import_sibling_page_packages() -> None:
-    pages_root = PROJECT / "rebirth" / "pages"
+    pages_root = PROJECT / "cube" / "pages"
     for path in pages_root.rglob("*.py"):
         relative = path.relative_to(pages_root)
         owner = relative.parts[0] if len(relative.parts) > 1 else None
         for module in _imports(path):
-            if not module.startswith("rebirth.pages."):
+            if not module.startswith("cube.pages."):
                 continue
             imported_owner = module.split(".", maxsplit=3)[2]
             assert owner is not None and imported_owner == owner, (

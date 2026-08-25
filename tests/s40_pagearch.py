@@ -1,4 +1,4 @@
-"""Final V4.1 page-tree ownership with no compatibility package."""
+"""Final V5 page-tree ownership with no compatibility package."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
-V4_PAGES = PROJECT / "rebirth" / "pages"
+V4_PAGES = PROJECT / "cube" / "pages"
 LEGACY_PAGES = PROJECT / "pages"
 PAGE_OWNERS = ("risk", "data", "stock", "pnl", "static_data")
 
@@ -42,8 +42,8 @@ def test_v4_pages_do_not_import_legacy_or_sibling_pages() -> None:
                     path.relative_to(PROJECT),
                     module,
                 )
-                if module.startswith("rebirth.pages."):
-                    assert module.startswith(f"rebirth.pages.{owner}"), (
+                if module.startswith("cube.pages."):
+                    assert module.startswith(f"cube.pages.{owner}"), (
                         path.relative_to(PROJECT),
                         module,
                     )
@@ -51,11 +51,11 @@ def test_v4_pages_do_not_import_legacy_or_sibling_pages() -> None:
 
 def test_app_composition_imports_pages_only_from_v4_tree() -> None:
     for relative in ("app/s07_factory.py", "app/s06_routing.py"):
-        imports = _absolute_imports(PROJECT / "rebirth" / relative)
+        imports = _absolute_imports(PROJECT / "cube" / relative)
         assert not any(
             module == "pages" or module.startswith("pages.") for module in imports
         )
-        assert any(module.startswith("rebirth.pages") for module in imports)
+        assert any(module.startswith("cube.pages") for module in imports)
 
 
 def test_no_python_or_notebook_imports_root_pages_package() -> None:

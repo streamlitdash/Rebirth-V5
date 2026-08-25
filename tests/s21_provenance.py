@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rebirth.domain.s03_calculations import risk_date_for
-from rebirth.domain.s02_products import MMM_FILE, PRODUCT_SPECS
+from cube.domain.s03_calculations import risk_date_for
+from cube.domain.s02_products import MRX_FILE, PRODUCT_SPECS
 
 
 PROJECT = Path(__file__).resolve().parents[1]
 PIPELINE_FILES = (
-    PROJECT / "rebirth" / "domain" / "s02_products.py",
-    PROJECT / "rebirth" / "domain" / "s03_calculations.py",
+    PROJECT / "cube" / "domain" / "s02_products.py",
+    PROJECT / "cube" / "domain" / "s03_calculations.py",
 )
 
 
@@ -34,7 +34,7 @@ def test_pipeline_contracts_have_no_retired_inline_implementations() -> None:
 
 
 def test_active_pipeline_remains_on_validated_csv_compatible_contract() -> None:
-    assert MMM_FILE == "MMMFile"
+    assert MRX_FILE == "MRX File"
     assert PRODUCT_SPECS["irdelta"].pl_formula == "absolute"
     assert PRODUCT_SPECS["irdeltavega"].pl_formula == "percentage"
     assert PRODUCT_SPECS["irgamma"].gamma_move_scale == 10_000.0

@@ -1,4 +1,4 @@
-"""V4.1 runtime bundle and Plotly publish boundary regression tests."""
+"""V5 runtime bundle and Plotly publish boundary regression tests."""
 
 from __future__ import annotations
 
@@ -56,18 +56,18 @@ def _write_fixture_leaf(
     return leaf
 
 
-def test_project_release_boundary_is_conventional_and_v41_owned() -> None:
-    assert publishing.APP_NAME == "rebirth-v4-1"
+def test_project_release_boundary_is_conventional_and_v5_owned() -> None:
+    assert publishing.APP_NAME == "rebirth-v5"
     assert publishing.RUNTIME_FILES == (
         "app.py",
         "gunicorn.conf.py",
         "requirements.txt",
     )
-    assert publishing.RUNTIME_DIRECTORIES == ("rebirth", "assets", "data")
+    assert publishing.RUNTIME_DIRECTORIES == ("cube", "assets", "data")
     for relative_path in (*publishing.RUNTIME_FILES, *publishing.RUNTIME_DIRECTORIES):
         assert (publishing.PROJECT / relative_path).exists()
     assert tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8")) == {
-        "name": "rebirth-v4-1",
+        "name": "rebirth-v5",
         "app_id": "bd0ffe87-8003-4157-a54f-3d69fd601891",
         "app_url": "8d1e8451-d8ed-4e0b-ba89-bdaef442d5a1",
     }
@@ -103,7 +103,7 @@ def test_archive_validation_rejects_partial_corrupt_or_reordered_revisions(
         publishing._validate_history_archive(history, expected_dates=dates)
 
 
-def test_stage_bundle_contains_only_the_minimal_v41_runtime(
+def test_stage_bundle_contains_only_the_minimal_v5_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -111,10 +111,10 @@ def test_stage_bundle_contains_only_the_minimal_v41_runtime(
     project.mkdir()
     for name in publishing.RUNTIME_FILES:
         (project / name).write_text(f"{name}\n", encoding="utf-8")
-    (project / "rebirth").mkdir()
-    (project / "rebirth" / "__init__.py").write_text("", encoding="utf-8")
-    (project / "rebirth" / "__pycache__").mkdir()
-    (project / "rebirth" / "__pycache__" / "stale.pyc").write_bytes(b"stale")
+    (project / "cube").mkdir()
+    (project / "cube" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "cube" / "__pycache__").mkdir()
+    (project / "cube" / "__pycache__" / "stale.pyc").write_bytes(b"stale")
     (project / "assets").mkdir()
     (project / "assets" / "ui.js").write_text("// ui\n", encoding="utf-8")
     (project / "data").mkdir()
@@ -187,7 +187,7 @@ def test_cloud_optimization_preserves_source_rows_and_updates_staged_hashes(
     assert not list(optimized_leaf.glob(".*.cloud.tmp"))
 
 
-def test_publish_uses_native_v41_entrypoint_discovery(
+def test_publish_uses_native_v5_entrypoint_discovery(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -195,7 +195,7 @@ def test_publish_uses_native_v41_entrypoint_discovery(
     project = tmp_path / "project"
     project.mkdir()
     config = project / "plotly-cloud.toml"
-    config.write_text('name = "rebirth-v4-1"\n', encoding="utf-8")
+    config.write_text('name = "rebirth-v5"\n', encoding="utf-8")
 
     def stage(destination: Path) -> Path:
         destination.mkdir(parents=True)
@@ -216,7 +216,7 @@ def test_publish_uses_native_v41_entrypoint_discovery(
 
     command = captured["command"]
     assert isinstance(command, list)
-    assert command[command.index("--name") + 1] == "rebirth-v4-1"
+    assert command[command.index("--name") + 1] == "rebirth-v5"
     assert command[command.index("--project-path") + 1] == str(captured["optimized"])
     assert "--entrypoint-module" not in command
     assert captured["cwd"] == project

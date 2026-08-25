@@ -1,13 +1,13 @@
-# Rebirth V4.1
+# Rebirth V5
 
-Rebirth V4.1 is the page-owned rebuild of the Cube risk application. It keeps
+Rebirth V5 is the page-owned rebuild of the Cube risk application. It keeps
 the financial content carried forward from V1 while making cold start,
 historical reads, promotions, saved filters, and refresh ownership explicit.
 It is a Dash 4.4 application backed by pandas/NumPy for current snapshots and
 PyArrow/DuckDB for lazy Parquet history.
 
 > **Demonstration data only.** The checked-in connectors and 262-day archive
-> are deterministic synthetic fixtures marked `FAKE_REPLACE_ME`. The example
+> are deterministic synthetic fixtures presented as `TEMP_REPLACE_ME`. The example
 > send functions are not production integrations. Replace those boundaries
 > and complete the relevant control review before using this application for
 > financial decisions.
@@ -80,6 +80,13 @@ normal Data controls again.
 The Risk Explorer has only **Cross** and **SplitVA** tabs. Both expose their
 Risk Type/Greek families as expandable, chevron-driven financial hierarchies;
 Credit also retains its Single/Multi presentation.
+Its action row is four columns: Split; Underlying ordering by Risk/dRisk/P&L;
+one Region/Promotion/Reduced tenor checklist; and the current promotion level
+with its recompute/reset actions. Reduced tenor is immediate and reversible.
+For catalogue matches in `data/s11_matrix.csv`, the selected matrix is applied
+after P&L to additive Risk, dRisk, and P&L vectors. Unmatched identities pass
+through unchanged. Market quotes are never multiplied: an exact reduced-tenor
+label reuses the matching full-tenor quote and otherwise remains blank.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
 baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
 Category, and Sub Category, with explicit include/exclude semantics. Saved
@@ -164,8 +171,9 @@ most the eight most recently used date comparisons in process memory.
 
 ### Statics
 
-Statics has **Read** and **Write** tabs. Read can inspect all approved
-`data/s01_*.csv` through `data/s09_*.csv` files in a bounded filterable table.
+Statics has **Read** and **Write** tabs. Read can inspect the approved
+`data/s01_readiness.csv` through `data/s09_reported.csv` sequence plus the
+read-only `data/s11_matrix.csv` catalogue in a bounded filterable table.
 Write is intentionally limited to:
 
 - `s06_portfolios.csv`
@@ -208,10 +216,32 @@ source work happens outside the reader lock, so every reader sees the previous
 immutable revision until the whole replacement is ready. A failed refresh is
 rejected transactionally: the UI keeps the last successful snapshot, reports
 one bounded warning, and offers retry. A watchdog can report a stalled attempt
-but never starts a duplicate writer. This is fail-closed at the financial
-boundary without closing or blanking the working application.
+but never starts a duplicate writer.
+
+Cold-start market fan-out is deliberately conservative: one market request is
+in flight by default and there are no automatic retries. Every callable
+connector boundary has a 15-second caller-side deadline, while one refresh may
+spend at most 120 seconds waiting on all external calls combined. A bounded
+daemon gate retains at most eight calls that ignored their deadline and never
+starts a second copy of the same still-running call. The first operational
+Market failure opens a refresh-local circuit: all remaining Underlying, leg,
+and product requests are skipped and represented by shaped missing quotes.
+Schema/type failures still reject the candidate.
+FX Delta can instead supply one bulk Open hook and one bulk Current hook, each
+receiving the complete ordered Underlying scope. Open-only or Current-only
+quotes copy across to preserve continuity; when both are absent the quote stays
+blank. Cold checker or Risk availability failures can commit a valid partial
+snapshot; optional overlays simply remain empty. Warm transactional failures
+retain the prior committed revision. Browser-local automatic ticks within 14
+minutes of another automatic attempt are coalesced, preventing several open
+sessions from replaying the same refresh sequentially.
+
+The manager's deadline stops waiting; it cannot kill arbitrary Python code.
+Real connector clients should also set finite native connect/read deadlines so
+the abandoned I/O and its daemon thread eventually terminate.
 `CUBE_STARTUP_TIMEOUT_SECONDS` changes that reporting threshold from its
-2,400-second default; it does not kill the connector call or start a replacement.
+2,400-second default; it remains a UI watchdog rather than the connector
+deadline or refresh budget.
 
 On Plotly Starter, an inactive container can sleep. The platform wake-up is
 outside the Dash process and can make the first request look like a crash even
@@ -245,8 +275,12 @@ This checkout contains 262 weekday leaves from 2025-08-21 through 2026-08-21.
 Each deterministic day has 10,000 risk rows and 5,000 rows each for Colossus,
 Market, and Stock. `_SUCCESS` records schema version 4, date, revision, source
 dates, columns, row counts, SHA-256 hashes, and the immutable fixture identifier
-`deterministic-rebirth-v4`. V4.1 is the application release; schema version 4
+`deterministic-rebirth-v4`. V5 is the application release; schema version 4
 and that fixture identifier intentionally do not change.
+The raw v4 Parquet identity strings also remain byte-stable so the governed
+files and recorded digests are not rewritten for terminology alone. Every V5
+archive read boundary translates those legacy identities to the current
+`TEMP_REPLACE_ME` contract before returning data to application code or UI.
 
 Parquet is authoritative. DuckDB is an embedded query engine here, not a
 server: no service, credentials, or persistent database file are required.
@@ -272,7 +306,7 @@ The checked-in files document the live connector boundaries:
 | File | Exact boundary |
 |---|---|
 | `s01_readiness.csv` | Risk Type, Risk Greek, Age |
-| `s02_checker.csv` | Risk Type, Risk Greek, MMMFile, Product |
+| `s02_checker.csv` | Risk Type, Risk Greek, MRX File, Product; the identifier is nonblank text and has no required suffix |
 | `s03_risk.csv` | Source Type, identity/tenors, Portfolio, Group, connector-owned Vol Score, and governed Risk/dRisk measure pairs |
 | `s04_open.csv` | Source Type, identity/tenors and tenor order, Open |
 | `s05_current.csv` | Source Type, identity/tenors and tenor order, Current |
@@ -280,6 +314,7 @@ The checked-in files document the live connector boundaries:
 | `s07_thresholds.csv` | unique Risk Type + Risk Greek with positive P&L, Risk, and dRisk thresholds |
 | `s08_concerto.csv` | unique Risk Type + Risk Greek to ConcertoField |
 | `s09_reported.csv` | unique Risk Type + Risk Greek + Underlying to Reported Underlying |
+| `s11_matrix.csv` | unique Risk Type + Risk Greek + Underlying to reduced-tenor MatrixName |
 
 The Stock connector returns exactly `CRDS, CPTY, Portfolio, Instrument,
 Currency, Quantity, Market Value`. Colossus history returns exactly `Portfolio,
@@ -317,7 +352,7 @@ to have one important responsibility, while a page keeps its layout, callbacks,
 and page-only helpers together.
 
 ```text
-rebirth/
+cube/
 ├── adapters/
 │   ├── s01_common.py          strict frame validation
 │   ├── s02_ir.py              IR products
@@ -345,7 +380,8 @@ rebirth/
 │   ├── s07_governance.py      mapping and threshold validation
 │   ├── s08_pnl.py             P&L mapping/send/adjustment rules
 │   ├── s09_stock.py           Stock comparison and mapping
-│   └── s10_search.py          exact Quick identity catalogue
+│   ├── s10_search.py          exact Quick identity catalogue
+│   └── s11_tenorreduction.py  post-P&L reduced-tenor transform
 ├── history/
 │   ├── s01_models.py          Data requests and canonical bundles
 │   ├── s02_contracts.py       archive schemas and manifests
@@ -405,7 +441,8 @@ rebirth/
 │   ├── s03_adjustments.py     validated local P&L adjustment CSVs
 │   ├── s04_savedviews.py      atomic shared saved-view JSON
 │   ├── s05_sources.py         source wiring and fixture connectors
-│   └── s06_refresh.py         refresh orchestration
+│   ├── s06_refresh.py         refresh orchestration
+│   └── s07_tenorreduction.py  matrix provider composition boundary
 └── ui/
     ├── s01_constants.py       shared field/hierarchy registry
     ├── s02_aggregation.py     shared financial aggregation
@@ -420,13 +457,15 @@ The other ordered owners are:
 - `assets/s09_playback.js` through `s14_pnl.js`: Data playback, theme/Plotly,
   table interaction, refresh lifecycle, Risk interaction, and P&L cell
   selection.
-- `data/s01_readiness.csv` through `s09_reported.csv`: the connector and
-  governance sequence documented above.
+- `data/s01_readiness.csv` through `s09_reported.csv`, plus
+  `data/s11_matrix.csv`: the connector, governance, and tenor-reduction
+  sequence documented above.
 - `jobs/s01_archive.ipynb`, `s02_explore.ipynb`: scheduled archive and ad-hoc
   DuckDB exploration.
 - `tools/s01_fixtures.py`, `s02_archive.py`, `s03_benchmark.py`: deterministic
   data, official archiving, and regression budgets.
-- `tests/s01_schema.py` through `s42_statics.py`: domain, integration, startup,
+- `tests/s01_schema.py` through `s44_tenorreductionsource.py`: domain,
+  integration, startup,
   publishing, UI, history, observability, architecture, assets, and Statics
   contracts. Tests do not count against the production ownership budget.
 
@@ -478,7 +517,7 @@ archive validation out of the browser cold-start path.
 The S3 prefix must preserve this exact date-folder layout:
 
 ```text
-s3://YOUR-BUCKET/rebirth/histo/
+s3://YOUR-BUCKET/cube/histo/
 └── YYYY-MM-DD/
     ├── risk.parquet
     ├── colossus.parquet
@@ -505,7 +544,7 @@ Install and authenticate the AWS CLI outside the repository, then run:
 ```powershell
 aws --version
 aws sts get-caller-identity
-$S3HistoryUri = "s3://YOUR-BUCKET/rebirth/histo"
+$S3HistoryUri = "s3://YOUR-BUCKET/cube/histo"
 aws s3 ls $S3HistoryUri
 ```
 
@@ -528,7 +567,7 @@ $env:PL_HISTORICAL_PATH = $HistoryRoot
 the old name does not mean it is limited to P&L. Set it in the same process
 environment that will launch the application. `private_data/` is ignored by
 Git, so this choice also keeps real financial history separate from the
-versioned fake fixture under `data/histo/`.
+versioned temporary-data fixture under `data/histo/`.
 
 #### 4. Preview the download
 
@@ -579,11 +618,11 @@ import subprocess
 project_root = next(
     path.resolve()
     for path in (Path.cwd(), *Path.cwd().parents)
-    if (path / "rebirth").is_dir()
+    if (path / "cube").is_dir()
 )
 history_root = project_root / "private_data" / "histo"
 history_root.mkdir(parents=True, exist_ok=True)
-s3_history_uri = "s3://YOUR-BUCKET/rebirth/histo"
+s3_history_uri = "s3://YOUR-BUCKET/cube/histo"
 
 command = [
     "aws", "s3", "sync", s3_history_uri, str(history_root),
@@ -609,7 +648,7 @@ and SHA-256 hashes before DuckDB is opened:
 ```python
 from pathlib import Path
 import os
-from rebirth.history import list_completed_v4_archive_days
+from cube.history import list_completed_v4_archive_days
 
 history_root = Path(os.environ["PL_HISTORICAL_PATH"])
 days = list_completed_v4_archive_days(history_root)
@@ -626,7 +665,7 @@ print(f"Latest Market rows: {days[-1].market_rows:,}")
 Then make one small SQL check without loading every row into pandas:
 
 ```python
-from rebirth.history import open_history_database
+from cube.history import open_history_database
 
 db = open_history_database(history_root)
 try:
@@ -665,7 +704,7 @@ new archive generation. The current Plotly publisher does not bundle
 `private_data/`; a hosted deployment needs its own approved pre-start download
 or an explicitly reviewed history bundle. Its release validator is also
 fixture-specific today, so it must be generalized before publishing real
-history in place of the checked-in 262-day fake archive.
+history in place of the checked-in 262-day temporary-data archive.
 
 #### File contracts
 
@@ -702,7 +741,7 @@ archive writer instead of inventing `_SUCCESS` or renaming columns by hand.
 Skip this section when S3 already contains complete archive leaves. To fetch
 one new day from the configured Risk and Market connectors and write its
 Parquet leaf, first replace the production boundaries in
-`rebirth/services/s05_sources.py`: `get_risk`, `get_market_open`,
+`cube/services/s05_sources.py`: `get_risk`, `get_market_open`,
 `get_market_status`, and `get_market_state`. The archive also requires a real
 Colossus loader returning the five-column contract above.
 
@@ -786,11 +825,11 @@ boundary.
 
 ## GitHub and Plotly release
 
-This checkout publishes to the private `streamlitdash/Rebirth-V4.1` repository
-through the `rebirth-v4-1` remote and updates the existing Rebirth V4.1 Plotly
+This checkout publishes to the private `streamlitdash/Rebirth-V5` repository
+through the `rebirth-v5` remote and updates the existing Rebirth V5 Plotly
 application. Run the full gate, push the reviewed commit, then publish:
 
-- [GitHub repository](https://github.com/streamlitdash/Rebirth-V4.1)
+- [GitHub repository](https://github.com/streamlitdash/Rebirth-V5)
 - [Live Plotly application](https://8d1e8451-d8ed-4e0b-ba89-bdaef442d5a1.plotly.app)
 
 ```powershell
@@ -801,7 +840,7 @@ application. Run the full gate, push the reviewed commit, then publish:
 ```
 
 `publish.py` validates the exact 262-day archive, stages only `app.py`,
-`gunicorn.conf.py`, `requirements.txt`, `rebirth/`, `assets/`, and `data/`, then
+`gunicorn.conf.py`, `requirements.txt`, `cube/`, `assets/`, and `data/`, then
 recompresses only the staged Parquet copy before publishing. The governed
 source archive is never modified. Use `--keep-bundle <directory>` only when you
 also intend to publish and retain the staged runtime for inspection; it is not

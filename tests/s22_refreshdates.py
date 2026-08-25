@@ -9,15 +9,15 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import html
 
-from rebirth.domain.s03_calculations import (
+from cube.domain.s03_calculations import (
     checker_date_for,
     market_date_for,
     risk_date_for,
 )
-from rebirth.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
-from rebirth.services.s06_refresh import RiskRefreshManager
+from cube.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
+from cube.services.s06_refresh import RiskRefreshManager
 from tools.s01_fixtures import build_datasets, validate_datasets
-from rebirth.pages.risk.s16_view import build_risk_date_editor
+from cube.pages.risk.s16_view import build_risk_date_editor
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -102,7 +102,7 @@ def test_readiness_fallback_label_explains_why_age_zero_was_synthesised() -> Non
     )
 
 
-def test_fake_readiness_explicitly_reports_fx_gamma_age_zero() -> None:
+def test_temp_readiness_explicitly_reports_fx_gamma_age_zero() -> None:
     datasets = build_datasets()
     validate_datasets(datasets)
     rows = datasets["s01_readiness.csv"]
@@ -119,7 +119,7 @@ def test_fake_readiness_explicitly_reports_fx_gamma_age_zero() -> None:
     assert bool(fx_gamma["Age Defaulted"]) is False
 
 
-def test_fake_readiness_age_is_applied_after_the_weekend_aware_t_minus_one_base() -> (
+def test_temp_readiness_age_is_applied_after_the_weekend_aware_t_minus_one_base() -> (
     None
 ):
     readiness = pd.DataFrame(build_datasets()["s01_readiness.csv"])

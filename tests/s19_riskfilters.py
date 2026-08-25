@@ -9,36 +9,36 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import dcc, html, no_update
 
-from rebirth.services.s04_savedviews import SavedFilterView
-from rebirth.domain.s10_search import MARKET_RESULT_COLUMNS, SearchCatalog
-from rebirth.pages.risk import s07_explorer as events_module
-from rebirth.ui.s01_constants import (
+from cube.services.s04_savedviews import SavedFilterView
+from cube.domain.s10_search import MARKET_RESULT_COLUMNS, SearchCatalog
+from cube.pages.risk import s07_explorer as events_module
+from cube.ui.s01_constants import (
     DEFAULT_VIEW_DIMENSION,
     DIMENSION_FILTER_IDS,
     FILTER_DIMENSION_FIELDS,
     VIEW_DIMENSION_FIELDS,
 )
-from rebirth.ui.s02_aggregation import (
+from cube.ui.s02_aggregation import (
     apply_filters,
     dimension_title,
     prepare_risk_data,
     selected_dimension,
 )
-from rebirth.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
-from rebirth.pages.risk.s11_promotion import (
+from cube.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
+from cube.pages.risk.s11_promotion import (
     PromotionBasis,
     calculate_current_view_promotion,
 )
-from rebirth.pages.risk.s16_view import build_layout
-from rebirth.ui.s04_components import build_aggregate_pl_table
-from rebirth.app.s07_factory import build_app
-from rebirth.pages.risk.s10_search import _render_quick_search_pivot
-from rebirth.pages.risk.s02_state import (
+from cube.pages.risk.s16_view import build_layout
+from cube.ui.s04_components import build_aggregate_pl_table
+from cube.app.s07_factory import build_app
+from cube.pages.risk.s10_search import _render_quick_search_pivot
+from cube.pages.risk.s02_state import (
     _RiskDataCache,
     _top_book_action_view_token,
     filter_unmapped_portfolios,
 )
-from rebirth.ui.s03_filters import saved_view_apply_request
+from cube.ui.s03_filters import saved_view_apply_request
 
 
 def _raw_risk_frame() -> pd.DataFrame:
@@ -86,6 +86,50 @@ def _raw_risk_frame() -> pd.DataFrame:
     )
 
 
+def _reducible_raw_frame() -> pd.DataFrame:
+    base = _raw_risk_frame().iloc[0].to_dict()
+    rows: list[dict[str, object]] = []
+    for portfolio, risks in (("BOOK-A", (10.0, 20.0)), ("BOOK-B", (4.0, 5.0))):
+        for order, tenor in enumerate(("1Y", "2Y")):
+            rows.append(
+                {
+                    **base,
+                    "Portfolio": portfolio,
+                    "Tenor Swap": tenor,
+                    "Tenor Swap Order": order,
+                    "Risk": risks[order],
+                    "dRisk": risks[order] / 10.0,
+                    "PL": risks[order] * 2.0,
+                    "Open": float(order + 1),
+                    "Current": float(order + 2),
+                    "Market Available": True,
+                    "Market Data Status": "Available",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _reduced_tenor_catalog() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Risk Type": "IR",
+                "Risk Greek": "Delta",
+                "Underlying": "USD-SOFR",
+                "MatrixName": "IR_STANDARD",
+            }
+        ]
+    )
+
+
+def _reduced_tenor_matrix() -> pd.DataFrame:
+    return pd.DataFrame(
+        [[0.0, 1.0], [1.0, 1.0]],
+        index=["2Y", "Long"],
+        columns=["1Y", "2Y"],
+    )
+
+
 def _walk(component: object) -> Iterable[object]:
     yield component
     children = getattr(component, "children", None)
@@ -125,13 +169,22 @@ def _snapshot() -> SimpleNamespace:
         commodity_market_enabled=False,
         risk_checker_enabled=True,
         dashboard_frame=_raw_risk_frame(),
+        market_frame=_raw_risk_frame(),
     )
 
 
 def _warm_manager() -> SimpleNamespace:
     snapshot = _snapshot()
+
+    def read_frame(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            revision=snapshot.revision, frame=getattr(snapshot, name)
+        )
+
     return SimpleNamespace(
         snapshot=snapshot,
+        control_snapshot=snapshot,
+        read_frame=read_frame,
         stage_delays={},
         health=SimpleNamespace(
             revision=1,
@@ -305,6 +358,139 @@ def test_clear_cache_drops_only_reconstructable_risk_views() -> None:
     assert cache.filtered(None, "IR", None, ["Risk"], selected) is not filtered
     assert cache.rendered("risk-table", build_rendered) is not rendered
     assert builds == [1, 2]
+
+
+def test_full_tenor_mode_does_not_read_catalog_or_call_matrix_provider() -> None:
+    prepared = prepare_risk_data(_reducible_raw_frame())
+    calls: list[str] = []
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        # Deliberately absent: construction and a full-tenor read must not try
+        # to open this production-style Path source before first paint.
+        reduced_tenor_catalog="catalog-must-stay-lazy.csv",
+        matrix_provider=lambda name: calls.append(name) or _reduced_tenor_matrix(),
+    )
+
+    full = cache.filtered(None, "IR", "delta", ["Risk"], {})
+
+    assert len(full) == 4
+    assert calls == []
+
+
+def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
+    prepared = prepare_risk_data(_reducible_raw_frame())
+    calls: list[str] = []
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda name: calls.append(name) or _reduced_tenor_matrix(),
+    )
+
+    full = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"portfolio": ["BOOK-A"]},
+    )
+    assert calls == []
+    assert full["tenor swap"].tolist() == ["1Y", "2Y"]
+
+    reduced = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"portfolio": ["BOOK-A"]},
+        reduced_tenor=True,
+    )
+    assert calls == ["IR_STANDARD"]
+    assert reduced["portfolio"].tolist() == ["BOOK-A", "BOOK-A"]
+    assert reduced["tenor swap"].tolist() == ["2Y", "Long"]
+    assert reduced["risk"].tolist() == [20.0, 30.0]
+    assert reduced["risk expo"].tolist() == [20.0, 30.0]
+    assert reduced["open"].iloc[0] == 2.0
+    assert pd.isna(reduced["open"].iloc[1])
+    assert reduced["market available"].tolist() == [True, False]
+    assert reduced["market data status"].tolist() == ["Available", ""]
+    assert "Source Type" not in reduced
+    assert "source type" in reduced
+    assert (
+        cache.filtered(
+            None,
+            "IR",
+            "delta",
+            ["Risk"],
+            {"portfolio": ["BOOK-A"]},
+            reduced_tenor=True,
+        )
+        is reduced
+    )
+
+
+def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> None:
+    raw = _reducible_raw_frame()
+    prepared = prepare_risk_data(raw)
+    calls: list[str] = []
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda name: calls.append(name) or _reduced_tenor_matrix(),
+    )
+    health = SimpleNamespace(revision=7)
+    reads: list[tuple[str, int]] = []
+
+    def market_for_revision(revision: int) -> pd.DataFrame:
+        open_2y = 200.0 if revision == 7 else 300.0
+        return pd.DataFrame(
+            {
+                "Source Type": ["ir/delta", "ir/delta"],
+                "Underlying": ["USD-SOFR", "USD-SOFR"],
+                "Tenor Swap": ["1Y", "2Y"],
+                "Open": [100.0, open_2y],
+                "Current": [101.0, open_2y + 2.0],
+                "Move": [1.0, 2.0],
+                "Market Available": [True, True],
+                "Market Data Status": ["Available", "Available"],
+            }
+        )
+
+    def read_frame(name: str) -> SimpleNamespace:
+        reads.append((name, health.revision))
+        return SimpleNamespace(
+            revision=health.revision,
+            frame=market_for_revision(health.revision),
+        )
+
+    manager = SimpleNamespace(health=health, read_frame=read_frame)
+    global_view = cache.filtered(
+        manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True
+    )
+    book_view = cache.filtered(
+        manager,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"portfolio": ["BOOK-A"]},
+        reduced_tenor=True,
+    )
+    assert global_view.loc[global_view["tenor swap"].eq("2Y"), "open"].eq(200).all()
+    assert book_view.loc[book_view["tenor swap"].eq("2Y"), "open"].eq(200).all()
+    assert reads == [("market_frame", 7)]
+    assert calls == ["IR_STANDARD"]
+
+    cache.clear_reconstructable()
+    cache.filtered(manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True)
+    assert reads == [("market_frame", 7), ("market_frame", 7)]
+
+    health.revision = 8
+    cache.replace_frame(raw, revision=8)
+    revised = cache.filtered(manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True)
+    assert revised.loc[revised["tenor swap"].eq("2Y"), "open"].eq(300).all()
+    assert reads[-1] == ("market_frame", 8)
 
 
 def test_risk_promotion_changes_only_after_explicit_generation() -> None:

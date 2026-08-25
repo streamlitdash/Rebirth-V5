@@ -6,12 +6,12 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from rebirth.domain.s07_governance import apply_baseline_promotions, apply_thresholds
-from rebirth.domain.s10_search import (
+from cube.domain.s07_governance import apply_baseline_promotions, apply_thresholds
+from cube.domain.s10_search import (
     MARKET_RESULT_COLUMNS,
     SearchCatalog,
 )
-from rebirth.domain.s06_reporting import (
+from cube.domain.s06_reporting import (
     REPORTED_UNDERLYING,
     REPORTED_UNDERLYING_COLUMNS,
     attach_reported_underlying,
@@ -235,7 +235,7 @@ def test_baseline_promotion_scopes_calculation_without_dropping_rows() -> None:
                 "CHF",
                 "Unmapped",
                 False,
-                "FAKE_REPLACE_ME - Activity 1",
+                "TEMP_REPLACE_ME - Activity 1",
                 1_000.0,
             ],
         ],

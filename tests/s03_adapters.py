@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from rebirth.adapters.s02_ir import (
+from cube.adapters.s02_ir import (
     IR_DELTA_CURRENT,
     IR_DELTA_OPEN,
     IR_DELTA_RISK,
@@ -17,13 +17,13 @@ from rebirth.adapters.s02_ir import (
     IR_DELTAVEGA_RISK,
     build_ir_adapters,
 )
-from rebirth.adapters.s05_commodities import (
+from cube.adapters.s05_commodities import (
     COMMO_DELTA_CURRENT,
     COMMO_DELTA_OPEN,
     COMMO_DELTA_RISK,
     build_commo_adapter,
 )
-from rebirth.adapters.s04_credit import (
+from cube.adapters.s04_credit import (
     CREDIT_DELTA_CURRENT,
     CREDIT_DELTA_OPEN,
     CREDIT_DELTA_RISK,
@@ -31,17 +31,17 @@ from rebirth.adapters.s04_credit import (
     CREDIT_DELTA_RISK_REGION_BASE,
     build_credit_adapter,
 )
-from rebirth.domain.s03_calculations import (
+from cube.domain.s03_calculations import (
     get_product_market_status,
     get_product_risk,
 )
-from rebirth.domain.s02_products import MARKET_STATUS, OFFICIAL, PRODUCT_SPECS
+from cube.domain.s02_products import MARKET_STATUS, OFFICIAL, PRODUCT_SPECS
 
 
-ADAPTERS = Path(__file__).resolve().parents[1] / "rebirth" / "adapters"
+ADAPTERS = Path(__file__).resolve().parents[1] / "cube" / "adapters"
 
 
-def test_v41_adapter_modules_have_ordered_single_owners() -> None:
+def test_v5_adapter_modules_have_ordered_single_owners() -> None:
     expected = [
         "s01_common.py",
         "s02_ir.py",
@@ -88,7 +88,7 @@ def test_ir_delta_adapter_passes_dates_underlying_and_dynamic_status() -> None:
                 "USD-SOFR",
                 "10Y",
                 "BOOK_A",
-                "FAKE_REPLACE_ME - Custom Desk Group",
+                "TEMP_REPLACE_ME - Custom Desk Group",
                 12.0,
                 2.0,
                 42.5,
@@ -133,7 +133,7 @@ def test_ir_delta_adapter_passes_dates_underlying_and_dynamic_status() -> None:
     assert validated_risk[["Underlying", "Tenor Swap"]].values.tolist() == [
         ["USD-SOFR", "10Y"]
     ]
-    assert validated_risk["Group"].tolist() == ["FAKE_REPLACE_ME - Custom Desk Group"]
+    assert validated_risk["Group"].tolist() == ["TEMP_REPLACE_ME - Custom Desk Group"]
     assert validated_status[MARKET_STATUS].eq(OFFICIAL).all()
 
 

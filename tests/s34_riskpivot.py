@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import dcc
 
-from rebirth.pages.risk.s16_view import build_layout
-from rebirth.ui.s02_aggregation import prepare_risk_data
+from cube.pages.risk.s16_view import build_layout
+from cube.ui.s02_aggregation import prepare_risk_data
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -108,20 +108,38 @@ def test_risk_explorer_keeps_only_cross_and_splitva_with_inline_actions() -> Non
     }
     assert not any("custom" in component_id for component_id in component_ids)
 
-    actions = next(
+    options = next(
         item
         for item in components
-        if "risk-explorer-actions" in set(str(getattr(item, "className", "")).split())
+        if getattr(item, "id", None) == "risk-explorer-options"
     )
-    action_ids = {
-        component_id
-        for item in _walk(actions)
-        if isinstance((component_id := getattr(item, "id", None)), str)
-    }
+    assert options.value == ["promotion"]
+    assert [option["value"] for option in options.options] == [
+        "region",
+        "promotion",
+        "reduced-tenor",
+    ]
     assert {
-        "promotion-toggle",
-        "region-toggle",
+        "split-filter",
+        "underlying-sort-metric",
+        "risk-explorer-options",
         "promotion-recalculate-current-view",
         "promotion-reset-baseline",
         "promotion-generation-status",
-    } <= action_ids
+    } <= component_ids
+    explorer_fields = [
+        item
+        for item in components
+        if "control-field" in set(str(getattr(item, "className", "")).split())
+        and any(
+            getattr(child, "id", None)
+            in {
+                "split-filter",
+                "underlying-sort-metric",
+                "risk-explorer-options",
+                "promotion-recalculate-current-view",
+            }
+            for child in _walk(item)
+        )
+    ]
+    assert len(explorer_fields) == 4

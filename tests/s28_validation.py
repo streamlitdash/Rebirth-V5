@@ -13,17 +13,17 @@ import pytest
 from dash import Dash, dcc, html
 from dash.exceptions import PreventUpdate
 
-from rebirth.history import archive_official_snapshot
-from rebirth.domain.s08_pnl import HISTORY_MAPPING_STATUS
-from rebirth.domain.s01_schema import UNMAPPED_VALUE
-from rebirth.pages.pnl import s06_validation as validate_pl_module
-from rebirth.pages.pnl.s01_common import (
+from cube.history import archive_official_snapshot
+from cube.domain.s08_pnl import HISTORY_MAPPING_STATUS
+from cube.domain.s01_schema import UNMAPPED_VALUE
+from cube.pages.pnl import s06_validation as validate_pl_module
+from cube.pages.pnl.s01_common import (
     PL_FILTER_FIELDS,
     PL_SAVED_VIEW_CONTROLS,
     apply_pl_filters,
     pl_external_filter_map,
 )
-from rebirth.pages.pnl.s06_validation import (
+from cube.pages.pnl.s06_validation import (
     VALIDATE_PL_CHILD_LIMIT,
     build_validate_pl_comparison,
     build_validate_pl_table,
@@ -31,8 +31,8 @@ from rebirth.pages.pnl.s06_validation import (
     normalize_validate_pl_open_paths,
     register_validate_pl_callbacks,
 )
-from rebirth.pages.pnl.s07_view import build_pl_filter_bar, build_pl_send_sections
-from tools.s01_fixtures import FAKE_NOTICE, HISTORICAL_MARKET_DATES, HISTORY_END_DATE
+from cube.pages.pnl.s07_view import build_pl_filter_bar, build_pl_send_sections
+from tools.s01_fixtures import HISTORICAL_MARKET_DATES, HISTORY_END_DATE
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -615,7 +615,7 @@ def test_checked_in_annual_archive_is_discoverable_and_renders_validate_pl() -> 
         and getattr(component, "className", None) == "row-label-text"
     ]
     assert labels[0] == "TOTAL"
-    assert any(FAKE_NOTICE in str(label) for label in labels[1:])
+    assert any("TEMP_REPLACE_ME" in str(label) for label in labels[1:])
 
 
 def test_validate_callback_uses_committed_page_filter(tmp_path) -> None:

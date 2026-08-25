@@ -1,4 +1,4 @@
-"""Structured V4 performance logging contracts."""
+"""Structured V5 performance logging contracts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rebirth.app.s03_logging import (
+from cube.app.s03_logging import (
     configure_runtime_logging,
     perf_span,
     reset_performance_warnings,

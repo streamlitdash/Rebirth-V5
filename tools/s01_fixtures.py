@@ -1,7 +1,7 @@
 """Generate deterministic connectors and streamed realistic history fixtures.
 
-The small connector CSVs remain deliberately visible fake data. The annual
-archive is a larger, realistic but still fake Parquet demonstration: every
+The small connector CSVs remain deliberately visible temporary data. The annual
+archive is a larger, realistic but still temporary Parquet demonstration: every
 daily leaf is generated, validated, written, and released before the next date
 is built, so a full second annual tree or 262 object-heavy frames never exists.
 
@@ -32,13 +32,18 @@ import numpy as np
 import pandas as pd
 
 
-FAKE_NOTICE = "FAKE_REPLACE_ME"
+TEMP_NOTICE = "TEMP_REPLACE_ME"
+# V4 numeric fixtures were seeded with this persisted marker. Normalize only
+# the hash input so the terminology migration does not silently change every
+# risk/quote value or invalidate the fixed new-trade scenarios. Output data is
+# always written with ``TEMP_NOTICE``.
+_LEGACY_SEED_NOTICE = "FAKE_REPLACE_ME"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIRECTORY = PROJECT_ROOT / "data"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rebirth.domain.s01_schema import (  # noqa: E402 - support execution from any directory
+from cube.domain.s01_schema import (  # noqa: E402 - support execution from any directory
     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
     PORTFOLIO_FIELD_BY_KEY,
     TENOR_COLUMNS,
@@ -48,7 +53,7 @@ from rebirth.domain.s01_schema import (  # noqa: E402 - support execution from a
     TENOR_SWAP,
     TENOR_SWAP_ORDER,
 )
-from rebirth.domain.s02_products import (  # noqa: E402 - support execution from any directory
+from cube.domain.s02_products import (  # noqa: E402 - support execution from any directory
     CREDIT_MEASURE_COLUMNS,
     CROSS_GAMMA_INPUT_RISK_PAIRS,
     CURRENT,
@@ -64,10 +69,10 @@ from rebirth.domain.s02_products import (  # noqa: E402 - support execution from
     SOURCE_TYPE,
     VOL_SCORE,
 )
-from rebirth.domain.s06_reporting import (  # noqa: E402 - support execution from any directory
+from cube.domain.s06_reporting import (  # noqa: E402 - support execution from any directory
     load_reported_underlying_mapping,
 )
-from rebirth.history import (  # noqa: E402 - support execution from any directory
+from cube.history import (  # noqa: E402 - support execution from any directory
     ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_COLUMNS,
     MARKET_ARCHIVE_COLUMNS,
@@ -78,7 +83,7 @@ from rebirth.history import (  # noqa: E402 - support execution from any directo
     validate_market_archive_frame,
     validate_risk_archive_frame,
 )
-from rebirth.domain.s09_stock import (  # noqa: E402 - support execution from any directory
+from cube.domain.s09_stock import (  # noqa: E402 - support execution from any directory
     STOCK_COLUMNS,
     STOCK_IDENTITY_COLUMNS,
     STOCK_NUMERIC_COLUMNS,
@@ -290,7 +295,7 @@ RISK_PORTFOLIOS = tuple(
 HISTORY_PORTFOLIO_COUNT = 640
 STOCK_PORTFOLIO_COUNT = 500
 
-# Deliberate stale-readiness examples. Every other fake source is Age 0 and
+# Deliberate stale-readiness examples. Every other temporary source is Age 0 and
 # therefore uses the centralized Market Date - BDay(1) base; these governed
 # Age-1 signals move one additional pandas business day back.
 AGE_ONE_SOURCE_TYPES = frozenset({"ir/inflationvega", "credit/vega", "commo/vega"})
@@ -305,7 +310,7 @@ CREDIT_FACTORS = {
 
 SCHEMAS = {
     "s01_readiness.csv": ("Risk Type", "Risk Greek", "Age"),
-    "s02_checker.csv": ("Risk Type", "Risk Greek", "MMMFile", "Product"),
+    "s02_checker.csv": ("Risk Type", "Risk Greek", "MRX File", "Product"),
     "s03_risk.csv": (
         "Source Type",
         "Underlying",
@@ -340,8 +345,8 @@ class FixtureValidationError(RuntimeError):
     """Raised when generated or checked fixture data violates its contract."""
 
 
-def _fake(value: str) -> str:
-    return f"{FAKE_NOTICE} - {value}"
+def _temp(value: str) -> str:
+    return f"{TEMP_NOTICE} - {value}"
 
 
 def _history_portfolio_config_rows() -> list[dict[str, str]]:
@@ -355,11 +360,11 @@ def _history_portfolio_config_rows() -> list[dict[str, str]]:
                 zip(
                     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
                     (
-                        _fake(f"BOOK-{number + 1:04d} · TRADER-{slot % 160 + 1:03d}"),
+                        _temp(f"BOOK-{number + 1:04d} · TRADER-{slot % 160 + 1:03d}"),
                         "XVA" if leg == 0 else "Hedges",
-                        _fake(f"Activity {slot % 24 + 1}"),
-                        _fake(f"SOG-{slot % 80 + 1:03d}"),
-                        _fake(f"Business {slot % 18 + 1:02d}"),
+                        _temp(f"Activity {slot % 24 + 1}"),
+                        _temp(f"SOG-{slot % 80 + 1:03d}"),
+                        _temp(f"Business {slot % 18 + 1:02d}"),
                     ),
                     strict=True,
                 )
@@ -369,7 +374,9 @@ def _history_portfolio_config_rows() -> list[dict[str, str]]:
 
 
 def _stable_int(*parts: object) -> int:
-    payload = "|".join(str(part) for part in parts).encode("utf-8")
+    payload = "|".join(
+        str(part).replace(TEMP_NOTICE, _LEGACY_SEED_NOTICE) for part in parts
+    ).encode("utf-8")
     return int(hashlib.sha256(payload).hexdigest()[:16], 16)
 
 
@@ -405,17 +412,17 @@ def _market_keys(source_type: str, *, risk_only: bool) -> list[tuple[str, ...]]:
     )
     keys: list[tuple[str, ...]] = []
     for raw_underlying in fixture.underlyings:
-        underlying = _fake(raw_underlying)
+        underlying = _temp(raw_underlying)
         if not spec.axes:
             keys.append((underlying,))
         elif len(spec.axes) == 1:
             keys.extend(
-                (underlying, _fake(tenor)) for tenor in axes[spec.axes[0].column]
+                (underlying, _temp(tenor)) for tenor in axes[spec.axes[0].column]
             )
         elif len(spec.axes) == 2:
             first, second = spec.axes
             keys.extend(
-                (underlying, _fake(first_value), _fake(second_value))
+                (underlying, _temp(first_value), _temp(second_value))
                 for first_value in axes[first.column]
                 for second_value in axes[second.column]
             )
@@ -451,7 +458,7 @@ def _vol_score(
     market_key: tuple[str, ...],
     portfolio: str,
 ) -> float:
-    """Return one stable connector-owned fake percentile-style score."""
+    """Return one stable connector-owned temporary percentile-style score."""
 
     seed = _stable_int(source_type, *market_key, portfolio, "vol-score")
     return 5.0 + (seed % 95_001) / 1_000.0
@@ -462,7 +469,7 @@ def _fixture_group(source_type: str, underlying: str) -> str:
 
     fixture = SOURCE_BY_TYPE[source_type]
     groups_by_underlying = {
-        _fake(raw_underlying): group
+        _temp(raw_underlying): group
         for raw_underlying, group in zip(fixture.underlyings, fixture.groups)
     }
     return groups_by_underlying[underlying]
@@ -516,7 +523,7 @@ def _build_risk_rows() -> list[dict[str, str]]:
             {
                 "Source Type": source_type,
                 **_key_fields(source_type, market_key),
-                "Portfolio": _fake(raw_portfolio),
+                "Portfolio": _temp(raw_portfolio),
                 "Group": _fixture_group(source_type, market_key[0]),
                 "Risk": _number(risk, 2),
                 "dRisk": _number(drisk, 2),
@@ -543,7 +550,7 @@ def _build_market_rows(value_column: str) -> list[dict[str, str]]:
         for axis in product.axes:
             configured = _full_axis_values(source_type)[axis.column]
             axis_orders[axis.column] = {
-                (_fake(underlying), _fake(tenor)): rank
+                (_temp(underlying), _temp(tenor)): rank
                 for underlying in SOURCE_BY_TYPE[source_type].underlyings
                 for rank, tenor in enumerate(configured)
             }
@@ -576,8 +583,8 @@ def build_datasets() -> dict[str, list[dict[str, str]]]:
         {
             "Risk Type": product.risk_type,
             "Risk Greek": product.risk_greek,
-            "MMMFile": _fake(
-                f"{product.source_type.replace('/', '_')}_{position.casefold()}.mmm"
+            "MRX File": _temp(
+                f"{product.source_type.replace('/', '_')}_{position.casefold()}"
             ),
             "Product": position,
         }
@@ -589,11 +596,11 @@ def build_datasets() -> dict[str, list[dict[str, str]]]:
             zip(
                 PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
                 (
-                    _fake(portfolio),
+                    _temp(portfolio),
                     product,
-                    _fake(activity),
-                    _fake(signoff_group),
-                    _fake(category),
+                    _temp(activity),
+                    _temp(signoff_group),
+                    _temp(category),
                 ),
                 strict=True,
             )
@@ -728,7 +735,7 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
 
     checker = datasets["s02_checker.csv"]
     checker_keys = [
-        (row["Risk Type"], row["Risk Greek"], row["MMMFile"], row["Product"])
+        (row["Risk Type"], row["Risk Greek"], row["MRX File"], row["Product"])
         for row in checker
     ]
     _require(len(checker_keys) == len(set(checker_keys)), "Checker rows must be unique")
@@ -739,8 +746,10 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
     checker_products: dict[tuple[str, str], set[str]] = defaultdict(set)
     for row in checker:
         checker_products[(row["Risk Type"], row["Risk Greek"])].add(row["Product"])
-        _require(FAKE_NOTICE in row["MMMFile"], "MMMFile must retain fake notice")
-        _require(row["MMMFile"].endswith(".mmm"), "MMMFile must use .mmm")
+        _require(
+            TEMP_NOTICE in row["MRX File"],
+            "MRX File must retain the temporary marker",
+        )
     _require(
         all(products == {"XVA", "Hedges"} for products in checker_products.values()),
         "Every checker pair must cover XVA and Hedges",
@@ -753,7 +762,7 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
     _require(len(risk) == CURRENT_RISK_ROWS, "Risk must contain 10,000 positions")
     _require(
         {row["Portfolio"] for row in risk}
-        == {_fake(portfolio) for portfolio in RISK_PORTFOLIOS},
+        == {_temp(portfolio) for portfolio in RISK_PORTFOLIOS},
         "Risk must exercise exactly 500 governed Portfolios",
     )
     for label, rows in (
@@ -820,8 +829,8 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
         for row in risk_rows:
             for column in ("Underlying", *product.tenor_columns, "Portfolio"):
                 _require(
-                    FAKE_NOTICE in row[column],
-                    f"{source_type} Risk {column} lacks fake notice",
+                    TEMP_NOTICE in row[column],
+                    f"{source_type} Risk {column} lacks temporary marker",
                 )
             for column in set(all_axis_columns) - set(product.tenor_columns):
                 _require(row[column] == "", f"{source_type} must leave {column} blank")
@@ -851,8 +860,8 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
                 _finite_numeric(row[value_column], label=f"{source_type} {label}")
                 for column in ("Underlying", *product.tenor_columns):
                     _require(
-                        FAKE_NOTICE in row[column],
-                        f"{source_type} {label} {column} lacks fake notice",
+                        TEMP_NOTICE in row[column],
+                        f"{source_type} {label} {column} lacks temporary marker",
                     )
                 for column in set(all_axis_columns) - set(product.tenor_columns):
                     _require(
@@ -866,7 +875,7 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
                     )
             for axis in product.axes:
                 expected_order = {
-                    _fake(tenor): rank
+                    _temp(tenor): rank
                     for rank, tenor in enumerate(
                         _full_axis_values(source_type)[axis.column]
                     )
@@ -899,7 +908,8 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
         for column in PORTFOLIO_CONFIG_REQUIRED_COLUMNS:
             if column != product_column:
                 _require(
-                    FAKE_NOTICE in row[column], f"Config {column} lacks fake notice"
+                    TEMP_NOTICE in row[column],
+                    f"Config {column} lacks temporary marker",
                 )
 
     thresholds = datasets["s07_thresholds.csv"]
@@ -1095,7 +1105,7 @@ def _history_quote_catalog() -> pd.DataFrame:
             # Family zero is the exact live connector identity.  Extra Series
             # identities provide realistic archive scale without disconnecting
             # Quick Risk/Market from history.
-            underlying = _fake(
+            underlying = _temp(
                 base_underlying
                 if family_index == 0
                 else f"{base_underlying} · Series {family_index:03d}"
@@ -1288,22 +1298,22 @@ def _build_history_risk(
     frame["Product"] = np.where(legs == 0, "XVA", "Hedges")
     book_slots = (source_index * 53 + underlying_index * 7) % 320
     portfolio_numbers = book_slots * 2 + legs
-    frame["Activity"] = [_fake(f"Activity {value % 24 + 1}") for value in book_slots]
+    frame["Activity"] = [_temp(f"Activity {value % 24 + 1}") for value in book_slots]
     frame["Display Bucket"] = np.where(
         np.abs(risk) >= 2_500_000.0,
         "Promoted",
         "Other",
     )
     frame["Portfolio"] = [
-        _fake(f"BOOK-{number + 1:04d} · TRADER-{slot % 160 + 1:03d}")
+        _temp(f"BOOK-{number + 1:04d} · TRADER-{slot % 160 + 1:03d}")
         for number, slot in zip(portfolio_numbers, book_slots, strict=True)
     ]
-    frame["SignoffGroup"] = [_fake(f"SOG-{value % 80 + 1:03d}") for value in book_slots]
+    frame["SignoffGroup"] = [_temp(f"SOG-{value % 80 + 1:03d}") for value in book_slots]
     frame["Category"] = [
-        _fake(f"Business {value % 18 + 1:02d}") for value in book_slots
+        _temp(f"Business {value % 18 + 1:02d}") for value in book_slots
     ]
     frame["Sub Category"] = [
-        _fake(f"Strategy {(value * 7 + leg) % 42 + 1:02d}")
+        _temp(f"Strategy {(value * 7 + leg) % 42 + 1:02d}")
         for value, leg in zip(book_slots, legs, strict=True)
     ]
     frame["Portfolio Mapped"] = True
@@ -1376,7 +1386,7 @@ def _build_history_colossus(
         {
             "Portfolio": selected_authority["Portfolio"].to_numpy(),
             "Underlying": [
-                _fake(f"Colossus-only adjustment {value + 1:04d}")
+                _temp(f"Colossus-only adjustment {value + 1:04d}")
                 for value in only_index
             ],
             "Risk Type": selected_authority["Risk Type"].to_numpy(),
@@ -1418,17 +1428,17 @@ def _build_stock_history_frame(date_index: int) -> pd.DataFrame:
     )
     frame = pd.DataFrame(
         {
-            "CRDS": [_fake(f"CRDS-{value:06d}") for value in identities],
-            "CPTY": [_fake(f"CPTY-{value % 800 + 1:04d}") for value in identities],
+            "CRDS": [_temp(f"CRDS-{value:06d}") for value in identities],
+            "CPTY": [_temp(f"CPTY-{value % 800 + 1:04d}") for value in identities],
             "Portfolio": [
-                _fake(
+                _temp(
                     f"BOOK-{value % STOCK_PORTFOLIO_COUNT + 1:04d} · "
                     f"TRADER-{(value % STOCK_PORTFOLIO_COUNT) // 2 % 160 + 1:03d}"
                 )
                 for value in identities
             ],
             "Instrument": [
-                _fake(instruments[value % len(instruments)]) for value in identities
+                _temp(instruments[value % len(instruments)]) for value in identities
             ],
             "Currency": [
                 _STOCK_CURRENCIES[value % len(_STOCK_CURRENCIES)]
@@ -1491,7 +1501,7 @@ def validate_official_history_fixture(
     *,
     date_index: int,
 ) -> None:
-    """Validate exact counts, grains, diversity, axes, and fake boundaries."""
+    """Validate exact counts, grains, diversity, axes, and temporary boundaries."""
 
     _require(
         fixture.market_date == HISTORICAL_MARKET_DATES[date_index],
@@ -1534,7 +1544,7 @@ def validate_official_history_fixture(
             else (spec.risk_greek,)
         )
         live_underlyings = {
-            _fake(value) for value in SOURCE_BY_TYPE[identity_source].underlyings
+            _temp(value) for value in SOURCE_BY_TYPE[identity_source].underlyings
         }
         archived_market_underlyings = set(
             market.loc[market[SOURCE_TYPE].eq(source_type), "Underlying"]
@@ -1656,10 +1666,10 @@ def validate_official_history_fixture(
     ):
         _require(
             all(
-                frame[column].str.contains(FAKE_NOTICE, regex=False).all()
+                frame[column].str.contains(TEMP_NOTICE, regex=False).all()
                 for column in columns
             ),
-            f"{label} identities must retain the fake marker",
+            f"{label} identities must retain the temporary marker",
         )
     for frame, columns, label in (
         (risk, (RISK, DRISK, PL, OPEN, CURRENT, MARKET_MOVE), "Risk"),
@@ -1761,6 +1771,46 @@ def _materialize_history_leaf(
         "Archive writer must retain the deterministic schema-v4 fixture tag",
     )
     return result.path
+
+
+def _persisted_archive_fixture(
+    fixture: OfficialHistoryFixture,
+) -> OfficialHistoryFixture:
+    """Retain byte-stable v4 archive identities while current CSVs use temp.
+
+    The 262 checked-in leaves are immutable release evidence. Rewriting their
+    identity strings would replace roughly 250 MiB of otherwise unchanged
+    Parquet and every recorded digest. V5 read boundaries translate those
+    legacy identities to ``TEMP_NOTICE`` before returning them to the app.
+    """
+
+    def persisted(frame: pd.DataFrame) -> pd.DataFrame:
+        result = frame.copy()
+        for column in result.columns:
+            values = result[column]
+            if not (
+                pd.api.types.is_object_dtype(values.dtype)
+                or isinstance(values.dtype, pd.StringDtype)
+            ):
+                continue
+            result[column] = values.map(
+                lambda value: (
+                    value.replace(TEMP_NOTICE, _LEGACY_SEED_NOTICE)
+                    if isinstance(value, str)
+                    else value
+                )
+            )
+        return result
+
+    return OfficialHistoryFixture(
+        market_date=fixture.market_date,
+        revision=fixture.revision,
+        risk_dates=fixture.risk_dates,
+        risk=persisted(fixture.risk),
+        colossus=persisted(fixture.colossus),
+        market=persisted(fixture.market),
+        stock=persisted(fixture.stock),
+    )
 
 
 def _require_direct_child(root: Path, leaf: Path) -> None:
@@ -1893,6 +1943,8 @@ def _stream_sha256(path: Path) -> str:
 
 
 def _compare_leaf_bytes(expected: Path, actual: Path) -> None:
+    """Compare deterministic content across compatible Parquet writer versions."""
+
     _require(
         actual.is_dir(),
         f"Missing generated fixture leaf {actual}",
@@ -1902,6 +1954,7 @@ def _compare_leaf_bytes(expected: Path, actual: Path) -> None:
         f"Generated fixture leaf has unexpected entries: {actual}",
     )
     marker = _read_leaf_marker(actual)
+    expected_marker = _read_leaf_marker(expected)
     _require(
         marker.get("schema_version") == 4
         and marker.get("fixture") == FIXTURE_TAG
@@ -1909,10 +1962,35 @@ def _compare_leaf_bytes(expected: Path, actual: Path) -> None:
         and marker.get("stock_date") == actual.name,
         f"Checked-in fixture marker is not governed schema-v4: {actual}",
     )
+    actual_contract = dict(marker)
+    expected_contract = dict(expected_marker)
+    actual_digests = actual_contract.pop("sha256", None)
+    expected_digests = expected_contract.pop("sha256", None)
+    _require(
+        actual_contract == expected_contract,
+        f"Checked-in fixture marker differs from deterministic output: {actual}",
+    )
+    _require(
+        isinstance(actual_digests, dict) and isinstance(expected_digests, dict),
+        f"Checked-in fixture marker has invalid digests: {actual}",
+    )
     for file_name in STOCK_ARCHIVE_FILE_NAMES:
+        if file_name == "_SUCCESS":
+            continue
         _require(
-            _stream_sha256(actual / file_name) == _stream_sha256(expected / file_name),
-            f"Checked-in fixture differs from deterministic output: "
+            actual_digests.get(file_name) == _stream_sha256(actual / file_name),
+            f"Checked-in fixture digest is stale: {actual / file_name}",
+        )
+        _require(
+            expected_digests.get(file_name) == _stream_sha256(expected / file_name),
+            f"Generated fixture digest is stale: {expected / file_name}",
+        )
+        actual_frame = pd.read_parquet(actual / file_name)
+        expected_frame = pd.read_parquet(expected / file_name)
+        _require(
+            actual_frame.equals(expected_frame)
+            and actual_frame.dtypes.equals(expected_frame.dtypes),
+            "Checked-in fixture differs logically from deterministic output: "
             f"{actual / file_name}",
         )
 
@@ -1921,10 +1999,12 @@ def _write_history_archives() -> None:
     _preflight_history_destination()
     for fixture in iter_official_history_fixtures():
         staging_root = Path(
-            tempfile.mkdtemp(prefix=".rebirth-v4-stage-", dir=RISK_ARCHIVE_DIRECTORY)
+            tempfile.mkdtemp(prefix=".cube-v5-stage-", dir=RISK_ARCHIVE_DIRECTORY)
         )
         try:
-            staged = _materialize_history_leaf(fixture, staging_root)
+            staged = _materialize_history_leaf(
+                _persisted_archive_fixture(fixture), staging_root
+            )
             _install_history_leaf(staged)
         finally:
             if staging_root.exists():
@@ -1933,8 +2013,10 @@ def _write_history_archives() -> None:
 
 def _check_history_archives() -> None:
     for fixture in iter_official_history_fixtures():
-        with tempfile.TemporaryDirectory(prefix="rebirth-v4-check-") as temporary:
-            expected = _materialize_history_leaf(fixture, Path(temporary))
+        with tempfile.TemporaryDirectory(prefix="cube-v5-check-") as temporary:
+            expected = _materialize_history_leaf(
+                _persisted_archive_fixture(fixture), Path(temporary)
+            )
             actual = RISK_ARCHIVE_DIRECTORY / fixture.market_date
             _compare_leaf_bytes(expected, actual)
 
@@ -1943,8 +2025,8 @@ def probe_representative_history_leaf() -> dict[str, int]:
     """Materialize one middle date and return compressed byte sizes."""
 
     market_date = HISTORICAL_MARKET_DATES[len(HISTORICAL_MARKET_DATES) // 2]
-    fixture = build_official_history_fixture(market_date)
-    with tempfile.TemporaryDirectory(prefix="rebirth-v4-probe-") as temporary:
+    fixture = _persisted_archive_fixture(build_official_history_fixture(market_date))
+    with tempfile.TemporaryDirectory(prefix="cube-v5-probe-") as temporary:
         leaf = _materialize_history_leaf(fixture, Path(temporary))
         sizes = {
             file_name: (leaf / file_name).stat().st_size
@@ -1996,7 +2078,7 @@ def _print_report(
     checked_only: bool,
 ) -> None:
     action = "Checked" if checked_only else "Generated and checked"
-    print(f"{action} {len(datasets)} deterministic FAKE_ONLY connector CSVs.")
+    print(f"{action} {len(datasets)} deterministic TEMP_ONLY connector CSVs.")
     for filename in SCHEMAS:
         path = DATA_DIRECTORY / filename
         digest = _stream_sha256(path)[:12]

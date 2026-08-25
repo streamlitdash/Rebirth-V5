@@ -13,8 +13,8 @@ import pandas as pd
 import pytest
 from dash import dcc, no_update
 
-from rebirth.history import s06_repository as history_module
-from rebirth.history import (
+from cube.history import s06_repository as history_module
+from cube.history import (
     HISTORY_CANONICAL_CELL_BUDGET,
     HISTORY_HANDOFF_SCHEMA_VERSION,
     HISTORY_RAW_ROW_BUDGET,
@@ -31,28 +31,28 @@ from rebirth.history import (
     HistoryValidationError,
     RiskFilterView,
 )
-from rebirth.domain.s10_search import ResolvedHistoryIdentity
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.data.s03_callbacks import (
+from cube.domain.s10_search import ResolvedHistoryIdentity
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.data.s03_callbacks import (
     history_request_payload,
     load_archive_catalog,
     poll_archive_generation,
     query_history_bundle,
     serialize_history_bundle,
 )
-from rebirth.pages.data import s03_callbacks as data_callbacks_module
-from rebirth.pages.risk import s04_handoff as handoff_callbacks_module
-from rebirth.pages.data.s01_selection import (
+from cube.pages.data import s03_callbacks as data_callbacks_module
+from cube.pages.risk import s04_handoff as handoff_callbacks_module
+from cube.pages.data.s01_selection import (
     catalog_key_for_handoff,
     direct_history_handoff,
     risk_greek_options,
     risk_type_options,
     underlying_options,
 )
-from rebirth.pages.data.s02_view import build_data_page
-from rebirth.pages.risk.s04_handoff import _handoff_payload, build_history_handoff
-from rebirth.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
-from rebirth.app.s07_factory import build_app
+from cube.pages.data.s02_view import build_data_page
+from cube.pages.risk.s04_handoff import _handoff_payload, build_history_handoff
+from cube.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from cube.app.s07_factory import build_app
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -347,7 +347,7 @@ def test_real_fx_quick_handoff_resolves_and_loads_checked_in_history() -> None:
         reason="quick-history-integration",
         copy_result=False,
     )
-    selected = "FX | Delta | FAKE_REPLACE_ME - G10 FX"
+    selected = "FX | Delta | TEMP_REPLACE_ME - G10 FX"
     assert selected in manager.combine_udl_options(identity_mode="reported")
     handoff = build_history_handoff(
         manager,
@@ -358,7 +358,7 @@ def test_real_fx_quick_handoff_resolves_and_loads_checked_in_history() -> None:
         dimension_values=[[] for _field in FILTER_DIMENSION_FIELDS],
     )
     assert handoff.identity.source_types == ("fx/delta", "fx/gamma")
-    assert handoff.identity.underlying == "FAKE_REPLACE_ME - G10 FX"
+    assert handoff.identity.underlying == "TEMP_REPLACE_ME - G10 FX"
 
     history_root = Path(__file__).resolve().parents[1] / "data" / "histo"
     repository = ArchiveHistoryRepository(history_root)
@@ -391,7 +391,7 @@ def test_real_fx_quick_handoff_resolves_and_loads_checked_in_history() -> None:
     assert payload is not None
     assert payload["dates"] == ["2026-08-21"]
     assert payload["values"]
-    assert payload["handoff"]["identity"]["underlying"] == ("FAKE_REPLACE_ME - G10 FX")
+    assert payload["handoff"]["identity"]["underlying"] == ("TEMP_REPLACE_ME - G10 FX")
     assert "Loaded 1 dates" in status
 
 

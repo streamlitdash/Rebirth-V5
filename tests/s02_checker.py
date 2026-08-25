@@ -5,21 +5,21 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rebirth.domain.s03_calculations import (
+from cube.domain.s03_calculations import (
     checker_date_for,
     market_date_for,
     risk_date_for,
 )
-from rebirth.domain.s02_products import (
+from cube.domain.s02_products import (
     AGE,
     AGE_DEFAULTED,
-    MMM_FILE,
+    MRX_FILE,
     PRODUCT_SPECS,
     RISK_GREEK,
     RISK_TYPE,
     SOURCE_TYPE,
 )
-from rebirth.services.s06_refresh import RiskRefreshManager
+from cube.services.s06_refresh import RiskRefreshManager
 
 
 @pytest.mark.parametrize(
@@ -116,19 +116,70 @@ def test_readiness_rejects_invalid_values(row: dict[str, object], message: str) 
         RiskRefreshManager._validate_risk_readiness(frame)
 
 
-def test_checker_inventory_is_partial_and_uses_mmm_files() -> None:
+def test_checker_inventory_is_partial_and_uses_mrx_file_identifiers() -> None:
     raw = pd.DataFrame(
         [
-            ["IR", "Delta", "usd_delta.mmm", "XVA"],
-            ["Credit", "Vega", "credit_vega.MMM", "Hedges"],
+            ["IR", "Delta", "usd_delta", "XVA"],
+            ["Credit", "Vega", "credit_vega.csv", "Hedges"],
         ],
-        columns=[RISK_TYPE, RISK_GREEK, MMM_FILE, "Product"],
+        columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
     )
 
     result = RiskRefreshManager._validate_risk_checker(raw)
 
     assert len(result) == 2
-    assert set(result[MMM_FILE]) == {"usd_delta.mmm", "credit_vega.MMM"}
+    assert set(result[MRX_FILE]) == {"usd_delta", "credit_vega.csv"}
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "ir_delta_primary",
+        "ir_delta.csv",
+        "desk/risk/live/ir_delta.snapshot-v2",
+    ],
+)
+def test_checker_accepts_any_nonblank_mrx_file_identifier(identifier: str) -> None:
+    raw = pd.DataFrame(
+        [["IR", "Delta", identifier, "XVA"]],
+        columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
+    )
+
+    result = RiskRefreshManager._validate_risk_checker(raw)
+
+    assert result.at[0, MRX_FILE] == identifier
+
+
+@pytest.mark.parametrize("identifier", [None, "", "  \t  "])
+def test_checker_rejects_blank_mrx_file_identifiers(identifier: object) -> None:
+    raw = pd.DataFrame(
+        [["IR", "Delta", identifier, "XVA"]],
+        columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
+    )
+
+    with pytest.raises(ValueError, match="MRX File.*null or blank"):
+        RiskRefreshManager._validate_risk_checker(raw)
+
+
+def test_checker_still_rejects_duplicate_inventory_rows() -> None:
+    row = ["IR", "Delta", "ir_delta_primary", "XVA"]
+    raw = pd.DataFrame(
+        [row, row],
+        columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
+    )
+
+    with pytest.raises(ValueError, match="duplicate inventory rows"):
+        RiskRefreshManager._validate_risk_checker(raw)
+
+
+def test_checker_still_rejects_unknown_risk_pairs() -> None:
+    raw = pd.DataFrame(
+        [["IR", "MadeUp", "ir_unknown", "XVA"]],
+        columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
+    )
+
+    with pytest.raises(ValueError, match="unknown Risk Type/Risk Greek pairs"):
+        RiskRefreshManager._validate_risk_checker(raw)
 
 
 @pytest.mark.parametrize(
@@ -137,21 +188,14 @@ def test_checker_inventory_is_partial_and_uses_mmm_files() -> None:
         (
             pd.DataFrame(
                 [["IR", "Delta", "wrong.ext", "XVA"]],
-                columns=[RISK_TYPE, RISK_GREEK, "Wrong File", "Product"],
+                columns=[RISK_TYPE, RISK_GREEK, "MMMFile", "Product"],
             ),
             "columns must be exactly",
         ),
         (
             pd.DataFrame(
-                [["IR", "Delta", "usd.csv", "XVA"]],
-                columns=[RISK_TYPE, RISK_GREEK, MMM_FILE, "Product"],
-            ),
-            r"\.mmm",
-        ),
-        (
-            pd.DataFrame(
-                [["IR", "Delta", "usd.mmm", "Unknown"]],
-                columns=[RISK_TYPE, RISK_GREEK, MMM_FILE, "Product"],
+                [["IR", "Delta", "usd", "Unknown"]],
+                columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
             ),
             "XVA.*Hedges",
         ),
@@ -175,8 +219,8 @@ def test_combined_checker_function_receives_the_authoritative_checker_date() -> 
             columns=[RISK_TYPE, RISK_GREEK, AGE],
         )
         inventory = pd.DataFrame(
-            [["IR", "Delta", "usd.mmm", "XVA"]],
-            columns=[RISK_TYPE, RISK_GREEK, MMM_FILE, "Product"],
+            [["IR", "Delta", "usd-primary", "XVA"]],
+            columns=[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"],
         )
         return readiness, inventory
 
@@ -201,8 +245,8 @@ def test_combined_checker_function_receives_the_authoritative_checker_date() -> 
 
     assert calls == [pd.Timestamp("2026-07-17")]
     assert len(readiness) == len(PRODUCT_SPECS)
-    assert inventory[[RISK_TYPE, RISK_GREEK, MMM_FILE, "Product"]].values.tolist() == [
-        ["IR", "Delta", "usd.mmm", "XVA"]
+    assert inventory[[RISK_TYPE, RISK_GREEK, MRX_FILE, "Product"]].values.tolist() == [
+        ["IR", "Delta", "usd-primary", "XVA"]
     ]
 
 

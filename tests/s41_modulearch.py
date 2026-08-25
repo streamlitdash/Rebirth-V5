@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-PAGES = PROJECT / "rebirth" / "pages"
+PAGES = PROJECT / "cube" / "pages"
 
 
 def _imports(path: Path) -> set[str]:

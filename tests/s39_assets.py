@@ -1,4 +1,4 @@
-"""Deterministic ownership and content integrity for V4.1 frontend assets."""
+"""Deterministic ownership and content integrity for V5 frontend assets."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _read(name: str) -> str:
     return (ASSETS / name).read_text(encoding="utf-8")
 
 
-def test_assets_have_one_clean_ordered_v41_manifest() -> None:
+def test_assets_have_one_clean_ordered_v5_manifest() -> None:
     assert tuple(path.name for path in sorted(ASSETS.glob("*.css"))) == CSS_FILES
     assert tuple(path.name for path in sorted(ASSETS.glob("*.js"))) == JS_FILES
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from rebirth.domain.s03_calculations import get_product_market
-from rebirth.domain.s02_products import (
+from cube.domain.s03_calculations import get_product_market
+from cube.domain.s02_products import (
     CURRENT,
     GROUP,
     MARKET_AVAILABLE,
@@ -24,7 +24,7 @@ from rebirth.domain.s02_products import (
     SPLIT,
     UNDERLYING,
 )
-from rebirth.domain.s05_newtrades import (
+from cube.domain.s05_newtrades import (
     CASHFLOW,
     CASH_FLOW,
     CASH_FLOW_MARKET_STATUS,
@@ -46,18 +46,18 @@ from rebirth.domain.s05_newtrades import (
     build_new_trade_rows,
     validate_new_trade_rows,
 )
-from rebirth.services.s05_sources import (
+from cube.services.s05_sources import (
     build_production_refresh_manager,
     get_new_trades,
     get_product_connector_adapters,
 )
-from rebirth.pages.risk.s13_workspacetables import new_trade_detail_frame
-from rebirth.ui.s02_aggregation import (
+from cube.pages.risk.s13_workspacetables import new_trade_detail_frame
+from cube.ui.s02_aggregation import (
     apply_credit_measure,
     credit_measure_available,
     prepare_risk_data,
 )
-from rebirth.pages.risk.s02_state import (
+from cube.pages.risk.s02_state import (
     _new_trade_detail_requested,
     _new_trade_details_for_selection,
 )
@@ -65,9 +65,9 @@ from rebirth.pages.risk.s02_state import (
 
 MARKET_DATE = pd.Timestamp("2026-08-14")
 CREDIT_SOURCE = "credit/delta"
-TRADED_CREDIT_ID = "FAKE - CREDIT-001"
-OPEN_CREDIT_ID = "FAKE - CREDIT-002"
-CASHFLOW_ID = "FAKE - CASHFLOW-001"
+TRADED_CREDIT_ID = "TEMP - CREDIT-001"
+OPEN_CREDIT_ID = "TEMP - CREDIT-002"
+CASHFLOW_ID = "TEMP - CASHFLOW-001"
 
 TRACE_COLUMNS = (
     ROW_TYPE,
@@ -87,7 +87,7 @@ TRACE_COLUMNS = (
 
 
 def _fixture_credit_market(raw: pd.DataFrame) -> pd.DataFrame:
-    """Build the validated Credit MarketBook for the fake New Trades scope."""
+    """Build the validated Credit MarketBook for the temp New Trades scope."""
 
     adapter = get_product_connector_adapters()[CREDIT_SOURCE]
     underlyings = (
@@ -125,7 +125,7 @@ def _fixture_credit_market(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 @pytest.fixture(scope="module")
-def released_fake_trades() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def released_temp_trades() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     raw = get_new_trades(MARKET_DATE)
     market = _fixture_credit_market(raw)
     released = build_new_trade_rows(raw, {CREDIT_SOURCE: market})
@@ -139,9 +139,9 @@ def _trade(frame: pd.DataFrame, trade_id: str) -> pd.Series:
 
 
 def test_traded_true_uses_row_local_level_and_preserves_official_open(
-    released_fake_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    released_temp_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
 ) -> None:
-    _raw, market, released = released_fake_trades
+    _raw, market, released = released_temp_trades
     market_before = market.copy(deep=True)
     row = _trade(released, TRADED_CREDIT_ID)
 
@@ -159,9 +159,9 @@ def test_traded_true_uses_row_local_level_and_preserves_official_open(
 
 
 def test_traded_false_falls_back_to_the_official_open(
-    released_fake_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    released_temp_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
 ) -> None:
-    _raw, _market, released = released_fake_trades
+    _raw, _market, released = released_temp_trades
     row = _trade(released, OPEN_CREDIT_ID)
 
     assert bool(row[TRADED_TRUE]) is False
@@ -203,10 +203,10 @@ def test_risk_is_required_and_notional_is_optional_metadata() -> None:
         validate_new_trade_rows(missing_risk)
 
 
-def test_fake_credit_metadata_and_cashflow_identity_are_released_exactly(
-    released_fake_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+def test_temp_credit_metadata_and_cashflow_identity_are_released_exactly(
+    released_temp_trades: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
 ) -> None:
-    _raw, _market, released = released_fake_trades
+    _raw, _market, released = released_temp_trades
     assert released[TRADE_ID].tolist() == [
         TRADED_CREDIT_ID,
         OPEN_CREDIT_ID,
@@ -221,7 +221,7 @@ def test_fake_credit_metadata_and_cashflow_identity_are_released_exactly(
     assert traded[RISK_GREEK] == "Delta"
     assert traded[SPLIT] == NEW_TRADES_SPLIT
     assert traded[GROUP] == "New Trades"
-    assert traded[PORTFOLIO] == "FAKE_REPLACE_ME - BOOK_C"
+    assert traded[PORTFOLIO] == "TEMP_REPLACE_ME - BOOK_C"
     assert traded[RISK] == 18_000.0
     assert traded[NOTIONAL] == 25_000_000.0
     assert traded[TRADE_TIME] == MARKET_DATE + pd.Timedelta(hours=9, minutes=42)
@@ -297,7 +297,7 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
         refreshed.combined_pl,
         {
             "risk greek": "Delta",
-            "display bucket": "FAKE_REPLACE_ME - CDX IG",
+            "display bucket": "TEMP_REPLACE_ME - CDX IG",
             "split": NEW_TRADES_SPLIT,
         },
         "Credit",
@@ -310,7 +310,7 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
         baseline_details,
         {
             "risk greek": "Delta",
-            "display bucket": "FAKE_REPLACE_ME - CDX IG",
+            "display bucket": "TEMP_REPLACE_ME - CDX IG",
             "split": NEW_TRADES_SPLIT,
         },
     )["trade id"].tolist() == [TRADED_CREDIT_ID]
@@ -319,7 +319,7 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
         refreshed.combined_pl,
         {
             "risk greek": "Delta",
-            "display bucket": "FAKE_REPLACE_ME - iTraxx Main",
+            "display bucket": "TEMP_REPLACE_ME - iTraxx Main",
             "split": NEW_TRADES_SPLIT,
         },
         "Credit",

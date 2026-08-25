@@ -1,4 +1,4 @@
-"""Ownership guards for the modular V4.1 Risk page."""
+"""Ownership guards for the modular V5 Risk page."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 
-RISK_PACKAGE = Path(__file__).resolve().parents[1] / "rebirth" / "pages" / "risk"
+RISK_PACKAGE = Path(__file__).resolve().parents[1] / "cube" / "pages" / "risk"
 CALLBACK_OWNERS = {
     "s15_refresh.py": ("refresh-commit-revision", "risk-date-editor"),
     "s14_workspacecallbacks.py": ("aggregate-pl-grid", "quick-market-results"),
@@ -86,8 +86,8 @@ def test_risk_modules_do_not_reach_into_other_pages_or_source_adapters() -> None
             module == "pages" or module.startswith("pages.") for module in imported
         )
         assert not any(
-            module.startswith("rebirth.pages.")
-            and not module.startswith("rebirth.pages.risk")
+            module.startswith("cube.pages.")
+            and not module.startswith("cube.pages.risk")
             for module in imported
         )
         assert not any(

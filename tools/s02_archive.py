@@ -7,14 +7,14 @@ import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from rebirth.history import (
+from cube.history import (
     ArchiveResult,
     ColossusLoader,
     archive_from_manager,
 )
 
 
-DEFAULT_COLOSSUS_LOADER = "rebirth.services.s05_sources:get_colossus_pl"
+DEFAULT_COLOSSUS_LOADER = "cube.services.s05_sources:get_colossus_pl"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARCHIVE_ROOT = PROJECT_ROOT / "data" / "histo"
 
@@ -49,7 +49,7 @@ def resolve_colossus_loader(
 
 
 def _default_manager_factory() -> object:
-    from rebirth.services.s05_sources import build_production_refresh_manager
+    from cube.services.s05_sources import build_production_refresh_manager
 
     return build_production_refresh_manager(stage_delays={})
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from rebirth.ui.s01_constants import ROW_TOGGLE_CLOSED_GLYPH, ROW_TOGGLE_OPEN_GLYPH
+from cube.ui.s01_constants import ROW_TOGGLE_CLOSED_GLYPH, ROW_TOGGLE_OPEN_GLYPH
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -23,9 +23,9 @@ def test_python_table_toggles_share_one_authoritative_glyph_contract() -> None:
     assert ROW_TOGGLE_CLOSED_GLYPH == "▸"
 
     for relative_path in (
-        Path("rebirth/pages/risk/s08_quickrisk.py"),
-        Path("rebirth/pages/risk/s06_explorertables.py"),
-        Path("rebirth/ui/s04_components.py"),
+        Path("cube/pages/risk/s08_quickrisk.py"),
+        Path("cube/pages/risk/s06_explorertables.py"),
+        Path("cube/ui/s04_components.py"),
     ):
         source = (_ROOT / relative_path).read_text(encoding="utf-8")
         assert "ROW_TOGGLE_OPEN_GLYPH" in source
@@ -70,7 +70,7 @@ def test_table_borders_are_solid_and_hierarchy_uses_width_for_emphasis() -> None
     stylesheet = _stylesheet()
     semantic_sources = "\n".join(
         path.read_text(encoding="utf-8")
-        for root in (_ROOT / "rebirth" / "pages", _ROOT / "pages", _ROOT / "shared")
+        for root in (_ROOT / "cube" / "pages", _ROOT / "pages", _ROOT / "shared")
         for path in sorted(root.rglob("*.py"))
     )
     border_pattern = re.compile(

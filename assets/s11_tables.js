@@ -2,7 +2,7 @@
 (() => {
   "use strict";
 
-  const app = window.__rebirthV4Assets = window.__rebirthV4Assets || {};
+  const app = window.__cubeV5Assets = window.__cubeV5Assets || {};
   const {
     applyTheme,
     registerCubeRollers,

@@ -1,13 +1,13 @@
-"""Final V4.1 pipeline ownership and legacy-boundary guards."""
+"""Final V5 pipeline ownership and legacy-boundary guards."""
 
 from pathlib import Path
 
-from rebirth.domain import (
+from cube.domain import (
     s03_calculations as calculations,
     s07_governance as governance,
     s02_products as products,
 )
-from rebirth.services import (
+from cube.services import (
     s06_refresh as refresh,
     s02_state as refresh_state,
     s01_snapshots as snapshots,
@@ -29,11 +29,11 @@ LEGACY_TOOL_FILES = (
 
 
 def test_pipeline_implementations_have_one_v4_owner() -> None:
-    assert products.ProductSpec.__module__ == "rebirth.domain.s02_products"
-    assert calculations.get_product_pl.__module__ == "rebirth.domain.s03_calculations"
-    assert governance.apply_thresholds.__module__ == "rebirth.domain.s07_governance"
-    assert snapshots.RefreshSnapshot.__module__ == "rebirth.services.s01_snapshots"
-    assert refresh.RiskRefreshManager.__module__ == "rebirth.services.s06_refresh"
+    assert products.ProductSpec.__module__ == "cube.domain.s02_products"
+    assert calculations.get_product_pl.__module__ == "cube.domain.s03_calculations"
+    assert governance.apply_thresholds.__module__ == "cube.domain.s07_governance"
+    assert snapshots.RefreshSnapshot.__module__ == "cube.services.s01_snapshots"
+    assert refresh.RiskRefreshManager.__module__ == "cube.services.s06_refresh"
     assert issubclass(refresh.RiskRefreshManager, refresh_state._RefreshStateMixin)
 
 

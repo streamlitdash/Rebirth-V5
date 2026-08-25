@@ -12,21 +12,21 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from rebirth.services.s04_savedviews import (
+from cube.services.s04_savedviews import (
     SHARED_SAVED_VIEW_SCOPE,
     SavedFilterViewRepository,
     SavedViewConflictError,
     SavedViewValidationError,
 )
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.pnl.s01_common import PL_SAVED_VIEW_CONTROLS
-from rebirth.pages.stock.s01_data import STOCK_SAVED_VIEW_CONTROLS
-from rebirth.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
-from rebirth.pages.risk.s03_defaults import DEFAULT_RISK_FILTER_LABEL
-from rebirth.app import s07_factory as factory_module
-from rebirth.ui import s03_filters as saved_views_module
-from rebirth.ui.s01_constants import FILTER_DIMENSION_FIELDS
-from rebirth.ui.s03_filters import (
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.pnl.s01_common import PL_SAVED_VIEW_CONTROLS
+from cube.pages.stock.s01_data import STOCK_SAVED_VIEW_CONTROLS
+from cube.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
+from cube.pages.risk.s03_defaults import DEFAULT_RISK_FILTER_LABEL
+from cube.app import s07_factory as factory_module
+from cube.ui import s03_filters as saved_views_module
+from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     BASE_SAVED_VIEW_LABEL,
     base_saved_filter_view,

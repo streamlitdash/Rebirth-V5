@@ -15,16 +15,16 @@ import pytest
 from dash import page_registry
 from dash.exceptions import UnsupportedRelativePath
 
-from rebirth.services.s05_sources import build_production_refresh_manager
-from rebirth.pages.static_data import (
+from cube.services.s05_sources import build_production_refresh_manager
+from cube.pages.static_data import (
     STATIC_FILE_OPTIONS,
     build_static_data_page,
     build_static_data_table,
 )
-from rebirth.app import s07_factory as factory
-from rebirth.app import s04_startup as events
-from rebirth.app.s07_factory import build_app
-from rebirth.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
+from cube.app import s07_factory as factory
+from cube.app import s04_startup as events
+from cube.app.s07_factory import build_app
+from cube.app.s04_startup import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -177,10 +177,10 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
         for item in base_components
         if getattr(item, "id", None) == "refresh-progress"
     )
-    refresh_function = next(
+    refresh_product = next(
         item
         for item in base_components
-        if getattr(item, "id", None) == "refresh-progress-function"
+        if getattr(item, "id", None) == "refresh-progress-product"
     )
     bootstrap_interval = next(
         item
@@ -200,13 +200,14 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
     assert {
         "_pages_location",
         "shared-refresh-shell",
-        "refresh-progress-function",
+        "refresh-progress-product",
     } <= base_ids
     assert "app-location" not in base_ids
     assert shared_shell.style == {"display": "none"}
     assert refresh_progress.hidden is False
     assert refresh_progress.to_plotly_json()["props"]["data-initial-load"] == "true"
-    assert refresh_function.children == "Waiting for the server-started refresh"
+    assert refresh_product.children == "Preparing the first validated snapshot"
+    assert "refresh-progress-function" not in base_ids
     # The router reveals this shell after resolving the URL. Its follower must
     # already be live so direct Data/Stock/Statics visits receive revision 1.
     assert bootstrap_interval.disabled is False
@@ -535,7 +536,7 @@ def test_composed_app_defaults_to_no_artificial_risk_product_hold(monkeypatch) -
 def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     monkeypatch,
 ) -> None:
-    from rebirth.history import s07_sql as archive_sql_module
+    from cube.history import s07_sql as archive_sql_module
     import app as app_module
 
     history_root = (Path(app_module.__file__).parent / "data" / "histo").resolve()
@@ -905,21 +906,20 @@ def test_repeated_apps_keep_native_page_services_isolated() -> None:
     )
 
     assert tuple(page_registry) == (
-        "rebirth.pages.risk",
-        "rebirth.pages.data",
-        "rebirth.pages.stock",
-        "rebirth.pages.pnl",
-        "rebirth.pages.static_data",
-        "rebirth.pages.not_found_404",
+        "cube.pages.risk",
+        "cube.pages.data",
+        "cube.pages.stock",
+        "cube.pages.pnl",
+        "cube.pages.static_data",
+        "cube.pages.not_found_404",
     )
-    assert page_registry["rebirth.pages.static_data"]["name"] == "Statics"
-    assert page_registry["rebirth.pages.static_data"]["title"] == "Cube — Statics"
-    assert page_registry["rebirth.pages.pnl"]["relative_path"] == "/warm/pnl"
-    assert page_registry["rebirth.pages.data"]["relative_path"] == "/warm/data"
-    assert page_registry["rebirth.pages.stock"]["relative_path"] == "/warm/stock"
+    assert page_registry["cube.pages.static_data"]["name"] == "Statics"
+    assert page_registry["cube.pages.static_data"]["title"] == "Cube — Statics"
+    assert page_registry["cube.pages.pnl"]["relative_path"] == "/warm/pnl"
+    assert page_registry["cube.pages.data"]["relative_path"] == "/warm/data"
+    assert page_registry["cube.pages.stock"]["relative_path"] == "/warm/stock"
     assert (
-        page_registry["rebirth.pages.static_data"]["relative_path"]
-        == "/warm/static-data"
+        page_registry["cube.pages.static_data"]["relative_path"] == "/warm/static-data"
     )
     assert cold_app.get_relative_path("/pnl") == "/cold/pnl"
     assert cold_app.get_relative_path("/data") == "/cold/data"
