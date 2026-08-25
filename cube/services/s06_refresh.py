@@ -122,6 +122,74 @@ _CONNECTOR_REFRESH_BUDGET_SECONDS = 120.0
 _CONNECTOR_MAX_OUTSTANDING_CALLS = 8
 _AUTOMATIC_REFRESH_MIN_AGE_SECONDS = 14 * 60.0
 _AUTOMATIC_REFRESH_REASON = "automatic 15-minute refresh"
+_FAILURE_REASON_LIMIT = 500
+_FAILURE_CONTEXT_VALUE_LIMIT = 120
+
+
+def _bounded_failure_reason(error: BaseException) -> str:
+    """Return the exception type and a bounded, single-line reason.
+
+    Failure logs deliberately include no pandas frames or connector return
+    values. The traceback is attached separately by ``LOGGER.exception`` so
+    operators can diagnose the failing code path without this summary expanding
+    into an unbounded log line.
+    """
+
+    detail = " ".join(str(error).split()) or "no detail"
+    if len(detail) > _FAILURE_REASON_LIMIT:
+        detail = f"{detail[: _FAILURE_REASON_LIMIT - 3]}..."
+    return f"{type(error).__name__}: {detail}"
+
+
+def _bounded_progress_value(value: object) -> str:
+    """Render one internal progress label without allowing multiline logs."""
+
+    text = " ".join(str(value).split())
+    if len(text) > _FAILURE_CONTEXT_VALUE_LIMIT:
+        text = f"{text[: _FAILURE_CONTEXT_VALUE_LIMIT - 3]}..."
+    return text
+
+
+def _failure_progress_context(progress: RefreshProgressSnapshot) -> str:
+    """Describe only the bounded operational context of a failed refresh."""
+
+    fields: list[str] = []
+    for name, value in (
+        ("stage", progress.stage),
+        ("function", progress.function_name),
+        ("source", progress.source_type),
+        ("underlying", progress.underlying),
+        ("product", progress.product_label),
+    ):
+        if value not in (None, ""):
+            fields.append(f"{name}={_bounded_progress_value(value)}")
+    if progress.product_index > 0 or progress.product_total > 0:
+        fields.append(
+            f"item={max(0, progress.product_index)}/{max(0, progress.product_total)}"
+        )
+    return " ".join(fields) or "unavailable"
+
+
+def _failure_ui_message(
+    error: BaseException,
+    *,
+    incident_id: str,
+    progress: RefreshProgressSnapshot,
+) -> str:
+    """Show bounded failure context without exposing raw connector text."""
+
+    labels: list[str] = []
+    if progress.stage not in (None, "", "idle", "starting"):
+        labels.append(_bounded_progress_value(progress.stage))
+    if progress.source_type not in (None, ""):
+        labels.append(_bounded_progress_value(progress.source_type))
+    if progress.product_label not in (None, ""):
+        labels.append(_bounded_progress_value(progress.product_label))
+    context = f" during {' / '.join(labels)}" if labels else ""
+    return (
+        f"Refresh failed{context} ({type(error).__name__}; incident {incident_id}). "
+        "Check the terminal for the exact reason."
+    )
 
 
 class ConnectorCallTimeoutError(TimeoutError):
@@ -842,6 +910,8 @@ class RiskRefreshManager(_RefreshStateMixin):
         spec: ProductSpec,
         risk_date: pd.Timestamp,
         *,
+        product_index: int = 0,
+        product_total: int = 0,
         budget: _ConnectorRefreshBudget | None = None,
     ) -> pd.DataFrame:
         # PRODUCTION INTEGRATION POINT: a per-source adapter wins; the generic
@@ -852,6 +922,9 @@ class RiskRefreshManager(_RefreshStateMixin):
             _callable_name(connector),
             "risk",
             source_type=spec.source_type,
+            product_label=_product_progress_label(spec),
+            product_index=product_index,
+            product_total=product_total,
             message="Loading connector risk.",
         )
         if adapter is not None:
@@ -913,6 +986,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     stage,
                     source_type=spec.source_type,
                     underlying=underlying,
+                    product_label=_product_progress_label(spec),
                     product_index=index,
                     product_total=len(underlyings),
                     message=f"Loading {label} for {underlying}.{retry_message}",
@@ -929,6 +1003,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                         stage,
                         source_type=spec.source_type,
                         underlying=underlying,
+                        product_label=_product_progress_label(spec),
+                        product_index=index,
+                        product_total=len(underlyings),
                         message=failure_message,
                     )
                     raise
@@ -949,6 +1026,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                             stage,
                             source_type=spec.source_type,
                             underlying=underlying,
+                            product_label=_product_progress_label(spec),
+                            product_index=index,
+                            product_total=len(underlyings),
                             message=failure_message,
                         )
                         return self._empty_market_leg(spec, stage)
@@ -959,6 +1039,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                             stage,
                             source_type=spec.source_type,
                             underlying=underlying,
+                            product_label=_product_progress_label(spec),
+                            product_index=index,
+                            product_total=len(underlyings),
                             message=failure_message,
                         )
                         return self._empty_market_leg(spec, stage)
@@ -1044,6 +1127,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 connector_name,
                 stage,
                 source_type=spec.source_type,
+                product_label=_product_progress_label(spec),
                 product_index=1,
                 product_total=1,
                 message=f"Loading bulk {label}.{retry_message}",
@@ -1059,6 +1143,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                     connector_name,
                     stage,
                     source_type=spec.source_type,
+                    product_label=_product_progress_label(spec),
+                    product_index=1,
+                    product_total=1,
                     message="Bulk market connector contract failed.",
                 )
                 raise
@@ -1078,6 +1165,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                         connector_name,
                         stage,
                         source_type=spec.source_type,
+                        product_label=_product_progress_label(spec),
+                        product_index=1,
+                        product_total=1,
                         message=(
                             "Bulk market connector unavailable; continuing with "
                             "missing data."
@@ -1091,6 +1181,9 @@ class RiskRefreshManager(_RefreshStateMixin):
                     connector_name,
                     stage,
                     source_type=spec.source_type,
+                    product_label=_product_progress_label(spec),
+                    product_index=1,
+                    product_total=1,
                     message=(
                         "Bulk market connector unavailable; continuing with "
                         "missing data."
@@ -1506,17 +1599,25 @@ class RiskRefreshManager(_RefreshStateMixin):
                 error_type = (
                     re.sub(r"[^A-Za-z0-9_.-]", "_", type(error).__name__) or "Exception"
                 )
+                failed_progress = self.progress
+                failure_reason = _bounded_failure_reason(error)
                 LOGGER.exception(
-                    "Portfolio mapping refresh failed; incident=%s type=%s location=%s",
+                    "Portfolio mapping refresh failed; incident=%s type=%s "
+                    "reason=%s context=[%s] location=%s",
                     incident_id,
                     error_type,
+                    failure_reason,
+                    _failure_progress_context(failed_progress),
                     _safe_failure_location(error),
                 )
-                safe_error = f"Refresh failed (incident {incident_id})."
-                failed_progress = self.progress
+                safe_error = _failure_ui_message(
+                    error,
+                    incident_id=incident_id,
+                    progress=failed_progress,
+                )
                 message = (
                     f"{attempted_at.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                    f"Refresh failed (incident {incident_id}); last successful data retained."
+                    f"{safe_error} Last successful data retained."
                 )
                 retained = replace(
                     base_snapshot,
@@ -1992,6 +2093,8 @@ class RiskRefreshManager(_RefreshStateMixin):
                         raw_risk = self._load_product_risk(
                             spec,
                             risk_date,
+                            product_index=product_index,
+                            product_total=len(risk_specs),
                             budget=connector_budget,
                         )
                     except Exception as error:
@@ -2537,14 +2640,22 @@ class RiskRefreshManager(_RefreshStateMixin):
                 error_type = (
                     re.sub(r"[^A-Za-z0-9_.-]", "_", type(error).__name__) or "Exception"
                 )
+                failed_progress = self.progress
+                failure_reason = _bounded_failure_reason(error)
                 LOGGER.exception(
-                    "Risk refresh failed; incident=%s type=%s location=%s",
+                    "Risk refresh failed; incident=%s type=%s reason=%s "
+                    "context=[%s] location=%s",
                     incident_id,
                     error_type,
+                    failure_reason,
+                    _failure_progress_context(failed_progress),
                     _safe_failure_location(error),
                 )
-                safe_error = f"Refresh failed (incident {incident_id})."
-                failed_progress = self.progress
+                safe_error = _failure_ui_message(
+                    error,
+                    incident_id=incident_id,
+                    progress=failed_progress,
+                )
                 if base_snapshot is None:
                     self._finish_progress(
                         error=safe_error,
@@ -2559,7 +2670,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     raise
                 message = (
                     f"{attempted_at.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
-                    f"Refresh failed (incident {incident_id}); last successful data retained."
+                    f"{safe_error} Last successful data retained."
                 )
                 snapshot = replace(
                     base_snapshot,

@@ -71,3 +71,11 @@ def test_configure_runtime_logging_defaults_invalid_level_to_info(
     monkeypatch.setenv("CUBE_LOG_LEVEL", "not-a-level")
 
     assert configure_runtime_logging() == logging.INFO
+
+
+def test_configure_runtime_logging_resolves_level_without_python_311_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUBE_LOG_LEVEL", "debug")
+
+    assert configure_runtime_logging() == logging.DEBUG

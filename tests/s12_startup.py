@@ -207,11 +207,23 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
     assert refresh_progress.hidden is False
     assert refresh_progress.to_plotly_json()["props"]["data-initial-load"] == "true"
     assert refresh_product.children == "Preparing the first validated snapshot"
-    assert "refresh-progress-function" not in base_ids
+    assert {
+        "refresh-progress-function",
+        "refresh-progress-source",
+        "refresh-progress-count",
+        "refresh-progress-hold",
+        "refresh-stage-readiness",
+        "refresh-stage-risk",
+        "refresh-stage-market",
+        "refresh-stage-pl",
+        "refresh-stage-final",
+    } <= base_ids
     # The router reveals this shell after resolving the URL. Its follower must
     # already be live so direct Data/Stock/Statics visits receive revision 1.
     assert bootstrap_interval.disabled is False
     assert {"cube-page-container", "initial-load-trigger"} <= risk_ids
+    # The factory-level shared shell owns the progress IDs; the cold Risk body
+    # must not mount a duplicate copy.
     assert "refresh-progress-function" not in risk_ids
     assert len(mounted_ids) == len(set(mounted_ids))
     assert manager.health.revision == 0
@@ -286,7 +298,8 @@ def test_startup_failure_is_visible_and_retryable() -> None:
 
     assert status.retryable is True
     assert "RuntimeError" in str(status.error)
-    assert "checker service unavailable" in str(status.error)
+    assert "Check the terminal for the exact reason" in str(status.error)
+    assert "checker service unavailable" not in str(status.error)
 
 
 def test_lightweight_endpoints_and_pages_stay_passive_until_financial_page(

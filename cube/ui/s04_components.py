@@ -670,65 +670,6 @@ def _build_refresh_progress(
         function_name = "Waiting for refresh request"
         class_name = "refresh-progress"
 
-    # Cold start shows only the information a user can act on: what is being
-    # loaded and how far it has progressed.  Per-function diagnostics and the
-    # five-stage explainer remain useful for an explicit warm refresh, but the
-    # browser helper treats those nodes as optional.
-    if initial_loading or initial_error:
-        return html.Div(
-            [
-                html.Div(
-                    [
-                        html.Div(
-                            [
-                                build_cube_loader("Loading Cube data", announce=False),
-                                html.Span(
-                                    title,
-                                    id="refresh-progress-title",
-                                    className="refresh-progress-title",
-                                ),
-                            ],
-                            className="refresh-progress-title-wrap",
-                        ),
-                        html.Span(
-                            "",
-                            id="refresh-progress-elapsed",
-                            className="refresh-progress-elapsed",
-                            **{"aria-hidden": "true"},
-                        ),
-                    ],
-                    className="refresh-progress-header",
-                ),
-                html.Div(
-                    [
-                        html.Strong(
-                            product,
-                            id="refresh-progress-product",
-                            className="refresh-product-name",
-                        ),
-                        html.Span(
-                            html.Span(
-                                id="refresh-progress-bar",
-                                className="refresh-progress-bar-fill",
-                            ),
-                            id="refresh-progress-bar-track",
-                            className="refresh-progress-bar-track",
-                        ),
-                    ],
-                    className="refresh-function-live refresh-product-card",
-                    role="status",
-                    **{"aria-live": "polite", "aria-atomic": "true"},
-                ),
-            ],
-            id="refresh-progress",
-            className=class_name,
-            hidden=not visible,
-            **{
-                "data-risk-product-delay": "0.0",
-                "data-initial-load": "true",
-            },
-        )
-
     return html.Div(
         [
             html.Div(
@@ -794,9 +735,13 @@ def _build_refresh_progress(
                 role="status",
                 **{"aria-live": "polite", "aria-atomic": "true"},
             ),
-            html.P(
-                "The current committed snapshot stays usable while a staged refresh runs; refresh controls are locked until it finishes.",
-                className="refresh-progress-note",
+            (
+                None
+                if initial_loading or initial_error
+                else html.P(
+                    "The current committed snapshot stays usable while a staged refresh runs; refresh controls are locked until it finishes.",
+                    className="refresh-progress-note",
+                )
             ),
             html.Ol(
                 [

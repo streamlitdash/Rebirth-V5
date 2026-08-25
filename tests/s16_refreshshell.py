@@ -103,6 +103,25 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
     assert "is-refreshing" in _by_id(loading, "refresh-status").className
     assert _by_id(loading, "refresh-progress").hidden is False
     assert _by_id(loading, "shared-refresh-bootstrap-interval").disabled is False
+    assert (
+        _by_id(loading, "refresh-progress-function").children
+        == "Waiting for the server-started refresh"
+    )
+    assert not any(
+        getattr(item, "className", None) == "refresh-progress-note"
+        for item in _walk(loading)
+    )
+    for component_id in (
+        "refresh-progress-source",
+        "refresh-progress-count",
+        "refresh-progress-hold",
+        "refresh-stage-readiness",
+        "refresh-stage-risk",
+        "refresh-stage-market",
+        "refresh-stage-pl",
+        "refresh-stage-final",
+    ):
+        assert _by_id(loading, component_id) is not None
 
     stalled = build_shared_refresh_shell(
         None,
@@ -111,6 +130,20 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
         keep_polling=True,
     )
     assert "is-error" in _by_id(stalled, "refresh-status").className
+    assert "is-error" in _by_id(stalled, "refresh-progress").className
+    assert _by_id(stalled, "refresh-progress-title").children == (
+        "Initial data load failed"
+    )
+    assert _by_id(stalled, "refresh-progress-product").children == (
+        "No financial snapshot was published"
+    )
+    assert _by_id(stalled, "refresh-progress-function").children == (
+        "Use Retry after checking the connector error"
+    )
+    assert not any(
+        getattr(item, "className", None) == "refresh-progress-note"
+        for item in _walk(stalled)
+    )
     assert _by_id(stalled, "error-log").children == "Connector is still running"
     assert _by_id(stalled, "shared-refresh-bootstrap-interval").disabled is False
 

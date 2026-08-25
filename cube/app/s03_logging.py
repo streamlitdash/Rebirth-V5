@@ -34,7 +34,11 @@ def configure_runtime_logging() -> int:
     """
 
     raw_level = os.getenv("CUBE_LOG_LEVEL", "INFO").strip().upper()
-    level = logging.getLevelNamesMapping().get(raw_level, logging.INFO)
+    # ``getLevelNamesMapping`` was added in Python 3.11.  ``getLevelName`` has
+    # accepted a level name since Python 3.4, so keep startup compatible with
+    # older deployment runtimes while retaining the same INFO fallback.
+    resolved_level = logging.getLevelName(raw_level)
+    level = resolved_level if isinstance(resolved_level, int) else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

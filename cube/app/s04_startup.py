@@ -74,11 +74,63 @@ class StartupCoordinator:
             return 0
 
     @staticmethod
-    def _error_text(error: BaseException) -> str:
-        detail = " ".join(str(error).splitlines()).strip()
-        if not detail:
-            detail = type(error).__name__
-        return f"Initial data load failed: {type(error).__name__}: {detail}"[:1_500]
+    def _bounded_value(value: object, *, limit: int = 120) -> str:
+        text = " ".join(str(value).split())
+        return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+    @classmethod
+    def _progress_context(cls, progress: object | None) -> str:
+        fields: list[str] = []
+        for name, value in (
+            ("stage", getattr(progress, "stage", None)),
+            ("function", getattr(progress, "function_name", None)),
+            ("source", getattr(progress, "source_type", None)),
+            ("underlying", getattr(progress, "underlying", None)),
+            ("product", getattr(progress, "product_label", None)),
+        ):
+            if name == "stage" and value == "error":
+                # The refresh manager uses ``error`` as a terminal UI state;
+                # it is not the financial stage where the exception occurred.
+                continue
+            if value not in (None, ""):
+                fields.append(f"{name}={cls._bounded_value(value)}")
+        product_index = int(getattr(progress, "product_index", 0) or 0)
+        product_total = int(getattr(progress, "product_total", 0) or 0)
+        if product_index > 0 or product_total > 0:
+            fields.append(f"item={max(0, product_index)}/{max(0, product_total)}")
+        return " ".join(fields)
+
+    @classmethod
+    def _error_reason(cls, error: BaseException) -> str:
+        detail = cls._bounded_value(error, limit=700) or "no detail"
+        return f"{type(error).__name__}: {detail}"
+
+    @classmethod
+    def _error_text(
+        cls,
+        error: BaseException,
+        *,
+        progress: object | None = None,
+    ) -> str:
+        progress_error = cls._bounded_value(
+            getattr(progress, "error", None) or "",
+            limit=1_250,
+        )
+        if progress_error:
+            return f"Initial data load failed. {progress_error}"[:1_500]
+        labels: list[str] = []
+        for value in (
+            getattr(progress, "stage", None),
+            getattr(progress, "source_type", None),
+            getattr(progress, "product_label", None),
+        ):
+            if value not in (None, "", "idle", "starting", "error"):
+                labels.append(cls._bounded_value(value))
+        context = f" during {' / '.join(labels)}" if labels else ""
+        return (
+            f"Initial data load failed{context}: {type(error).__name__}. "
+            "Check the terminal for the exact reason."
+        )[:1_500]
 
     def start(self, *, retry: bool = False) -> bool:
         """Start one writer, returning whether a new worker was launched."""
@@ -174,6 +226,19 @@ class StartupCoordinator:
                     f"watchdog.{active} The original connector call still owns the "
                     "writer; configure an I/O timeout in that connector."
                 )
+                if self._logger is not None:
+                    try:
+                        progress = self._manager.progress
+                    except Exception:
+                        progress = None
+                    self._logger.error(
+                        "Cube initial load stalled; boot=%s attempt=%s "
+                        "elapsed_seconds=%.3f context=[%s]",
+                        self._server_boot_id,
+                        self._attempt_id,
+                        elapsed,
+                        self._progress_context(progress) or "unavailable",
+                    )
             return StartupStatus(
                 phase=self._phase,
                 attempt=self._attempt,
@@ -200,16 +265,25 @@ class StartupCoordinator:
             )
 
     def _fail(self, attempt: int, error: BaseException) -> None:
-        message = self._error_text(error)
+        try:
+            failed_progress = self._manager.progress
+        except Exception:
+            failed_progress = None
+        message = self._error_text(error, progress=failed_progress)
         with self._lock:
             if attempt != self._attempt:
                 return
             self._phase = "failed"
             self._error = message
+            attempt_id = self._attempt_id
         if self._logger is not None:
             self._logger.error(
-                "Cube initial data load failed on attempt %s",
-                attempt,
+                "Cube initial data load failed; boot=%s attempt=%s reason=%s "
+                "context=[%s]",
+                self._server_boot_id,
+                attempt_id,
+                self._error_reason(error),
+                self._progress_context(failed_progress) or "unavailable",
                 exc_info=(type(error), error, error.__traceback__),
             )
 
