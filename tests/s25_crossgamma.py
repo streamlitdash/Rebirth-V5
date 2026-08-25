@@ -629,10 +629,10 @@ def test_manager_loads_raw_matrix_before_market_and_publishes_summed_xgamma() ->
     assert row[UNDERLYING] == XGAMMA_OUTPUT
     assert row[RISK] == pytest.approx(32.0)
     assert row["Risk SP01"] == pytest.approx(32.0)
-    assert pd.isna(row["dRisk SP01"])
+    assert row["dRisk SP01"] == 0.0
     assert row[SPLIT] == "XGAMMA"
     assert row[PL] == 0.0
-    assert pd.isna(row[DRISK])
+    assert row[DRISK] == 0.0
 
 
 def test_ir_xgamma_sources_are_last_in_delta_and_vega_families() -> None:
@@ -717,7 +717,7 @@ def test_credit_developed_output_keeps_ordinary_measure_handling() -> None:
     assert apply_credit_measure(developed, "SP01")["risk"].tolist() == pytest.approx(
         developed["risk sp01"].tolist()
     )
-    assert apply_credit_measure(developed, "PSP01")["risk"].isna().all()
+    assert apply_credit_measure(developed, "PSP01")["risk"].eq(0.0).all()
 
 
 def test_failed_xgamma_input_retains_last_good_snapshot_atomically() -> None:

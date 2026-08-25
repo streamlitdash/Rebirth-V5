@@ -16,6 +16,7 @@ CSS_FILES = (
     "s06_visuals.css",
     "s07_history.css",
     "s08_promotions.css",
+    "s14_app_logs.css",
 )
 JS_FILES = (
     "s09_playback.js",

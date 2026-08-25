@@ -95,6 +95,16 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
     assert _by_id(neutral, "clear-cache-complete-store").data == 0
     assert _by_id(neutral, "refresh-busy-store").data is False
 
+    composed = build_shared_refresh_shell(
+        None,
+        refresh_enabled=True,
+        initial_loading=True,
+        include_header_utilities=False,
+    )
+    composed_ids = {getattr(item, "id", None) for item in _walk(composed)}
+    assert "theme-toggle" not in composed_ids
+    assert "clear-cache-button" not in composed_ids
+
     loading = build_shared_refresh_shell(
         None,
         refresh_enabled=True,
@@ -440,9 +450,17 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         is False
     )
     assert (
-        refresh_registration["running"]["running"]["clear-cache-button.disabled"]
-        is True
+        "clear-cache-button.disabled" not in refresh_registration["running"]["running"]
     )
+    clear_cache_state = _callback_for_output(app, "clear-cache-button", "disabled")
+    assert {(item["id"], item["property"]) for item in clear_cache_state["inputs"]} == {
+        ("refresh-busy-store", "data"),
+        ("refresh-commit-revision", "children"),
+    }
+    sync_clear_cache = clear_cache_state["callback"].__wrapped__
+    assert sync_clear_cache(False, 0) is True
+    assert sync_clear_cache(True, 1) is True
+    assert sync_clear_cache(False, 1) is False
 
     draft_callback = _callback_for_output(app, "force-risk-draft-store", "data")
     draft_mount = next(

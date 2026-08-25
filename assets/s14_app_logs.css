@@ -1,0 +1,141 @@
+/* Shared header utilities and the bounded process-local application log drawer. */
+
+.cube-header-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.cube-header-utilities.header-utility-pair {
+  margin-left: 0;
+}
+
+.cube-header-utilities .clear-cache-button,
+.app-log-toggle,
+.app-log-action {
+  min-height: 36px;
+  padding: 8px 11px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cube-header-utilities .clear-cache-button:hover:not(:disabled),
+.app-log-toggle:hover,
+.app-log-action:hover {
+  border-color: var(--text);
+  background: var(--surface-soft);
+}
+
+.cube-header-utilities .clear-cache-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.app-log-toggle[aria-expanded="true"] {
+  border-color: var(--text);
+  background: var(--surface-muted);
+}
+
+.app-log-panel {
+  position: fixed;
+  top: 64px;
+  right: 14px;
+  z-index: 1400;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(780px, calc(100vw - 28px));
+  height: min(68vh, 680px);
+  padding: 14px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 20px 55px rgba(17, 17, 17, 0.22);
+}
+
+.app-log-panel[hidden] {
+  display: none !important;
+}
+
+.app-log-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 10px;
+}
+
+.app-log-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.app-log-note {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.app-log-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.app-log-content {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--outline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .cube-header-actions {
+    width: 100%;
+  }
+
+  .cube-header-actions .cube-nav {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+    overflow-x: auto;
+  }
+
+  .cube-header-utilities {
+    flex: 0 0 auto;
+  }
+
+  .app-log-panel {
+    top: 112px;
+    right: 8px;
+    width: calc(100vw - 16px);
+    height: min(72vh, 620px);
+    padding: 10px;
+  }
+
+  .app-log-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+}

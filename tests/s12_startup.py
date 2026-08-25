@@ -709,6 +709,13 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
         for item in _walk(app_layout)
         if getattr(item, "className", None) == "cube-nav"
     )
+    header_actions = next(
+        item
+        for item in _walk(app_layout)
+        if getattr(item, "className", None) == "cube-header-actions"
+    )
+    header_utilities = header_actions.children[0]
+    layout_ids = [getattr(item, "id", None) for item in _walk(app_layout)]
 
     assert [link.children for link in primary_navigation.children] == [
         "Risk",
@@ -718,6 +725,17 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
         "Statics",
     ]
     assert primary_navigation.children[-1].refresh is True
+    assert header_actions.children[1] is primary_navigation
+    assert [item.id for item in header_utilities.children] == [
+        "theme-toggle",
+        "clear-cache-button",
+        "app-log-toggle",
+    ]
+    assert layout_ids.count("theme-toggle") == 1
+    assert layout_ids.count("clear-cache-button") == 1
+    assert layout_ids.count("app-log-toggle") == 1
+    assert layout_ids.count("app-log-panel") == 1
+    assert app.logger.propagate is False
 
     static_page, metadata = _native_page(app, "/static-data")
     static_ids = {getattr(item, "id", None) for item in _walk(static_page)}

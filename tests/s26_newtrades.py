@@ -280,7 +280,7 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
     )
     credit_dashboard = dashboard.loc[dashboard[RISK_TYPE].eq("Credit")]
     assert credit_dashboard["Risk SP01"].tolist() == credit_dashboard[RISK].tolist()
-    assert credit_dashboard["dRisk SP01"].isna().all()
+    assert credit_dashboard["dRisk SP01"].eq(0.0).all()
     prepared_credit = prepare_risk_data(refreshed.dashboard_frame)
     prepared_credit = prepared_credit.loc[
         prepared_credit["risk type"].eq("Credit")
@@ -289,7 +289,7 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
     assert credit_measure_available(prepared_credit, "SP01")
     displayed_credit = apply_credit_measure(prepared_credit, "SP01")
     assert displayed_credit["risk"].tolist() == credit_dashboard[RISK].tolist()
-    assert displayed_credit["drisk"].isna().all()
+    assert displayed_credit["drisk"].eq(0.0).all()
     published_cashflow = _trade(trace, CASHFLOW_ID)
     assert published_cashflow[RISK] == published_cashflow[PL] == 50_000.0
 

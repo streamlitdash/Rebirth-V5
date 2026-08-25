@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import StringIO
 import logging
 import time
 from types import SimpleNamespace
@@ -232,3 +233,30 @@ def test_credit_delta_soft_failure_is_visible_and_keeps_startup_usable(
     assert children.open is True
     assert "Loaded with 1 data warning(s)" in str(children)
     assert "Credit Delta Risk/dRisk (credit/delta) unavailable" in str(children)
+
+
+def test_refresh_manager_can_route_exact_connector_traceback_to_preview_logger() -> (
+    None
+):
+    stream = StringIO()
+    handler = logging.StreamHandler(stream)
+    preview_logger = logging.Logger("dash.dash.preview-test", level=logging.INFO)
+    preview_logger.addHandler(handler)
+    manager = build_production_refresh_manager(logger=preview_logger)
+
+    try:
+        raise KeyError("credit delta mapping is absent")
+    except KeyError as error:
+        warning = manager._log_operational_failure(
+            boundary="Risk/dRisk",
+            error=error,
+            source_type="credit/delta",
+            product_label="Credit Delta",
+            stage="risk",
+        )
+
+    terminal = stream.getvalue()
+    assert "Credit Delta Risk/dRisk (credit/delta) unavailable" in warning
+    assert "Risk/dRisk connector unavailable for credit/delta" in terminal
+    assert "reason=KeyError: 'credit delta mapping is absent'" in terminal
+    assert "Traceback (most recent call last)" in terminal

@@ -27,6 +27,10 @@ from cube.domain.s06_reporting import (
     attach_reported_underlying,
     load_reported_underlying_mapping,
 )
+from cube.domain.s04_crossgamma import (
+    CROSS_GAMMA_SOURCE_SPLIT,
+    XGAMMA_SOURCE_RISK_GREEKS,
+)
 from cube.domain.s03_calculations import (
     _coerce_numeric,
     _require_columns,
@@ -80,6 +84,21 @@ BASELINE_PROMOTION_ACTIVITIES: Final = (
 # Explicit aliases retained by the current temporary-data fixtures.
 _BASELINE_PROMOTION_LEGACY_ALIASES: Final = ("Macro", "Credit", "Hedge")
 _TEMP_ACTIVITY_PREFIX: Final = "temp_replace_me - "
+_DASHBOARD_ZERO_TOKENS: Final = frozenset(
+    {
+        "na",
+        "n/a",
+        "nan",
+        "+nan",
+        "-nan",
+        "inf",
+        "+inf",
+        "-inf",
+        "infinity",
+        "+infinity",
+        "-infinity",
+    }
+)
 
 
 def _activity_key(value: object) -> str:
@@ -402,6 +421,54 @@ def merge_config(
     return _merge_validated_config(pl_frame, load_config(config))
 
 
+def _zero_fill_dashboard_metrics(frame: pd.DataFrame) -> None:
+    """Normalize present dashboard metrics without inventing absent columns.
+
+    Raw Risk, P&L, and MarketBook caches keep their authoritative availability
+    state.  The published dashboard is the one shared display/search boundary:
+    null, explicit NA/infinity tokens, and numeric infinities become zero here
+    so one incomplete value cannot blank an otherwise usable metric.  A truly
+    empty text cell remains missing, and Open/Current remain untouched so the
+    market availability/status fields continue to tell the truth.
+    """
+
+    columns = [
+        column
+        for column in (RISK, DRISK, PL, MARKET_MOVE, *CREDIT_MEASURE_COLUMNS)
+        if column in frame
+    ]
+    for column in columns:
+        values = frame[column]
+        boolean = values.map(lambda value: isinstance(value, (bool, np.bool_)))
+        text = values.astype("string").str.strip().str.casefold()
+        empty_text = values.notna() & text.eq("").fillna(False)
+        explicit_zero = text.isin(_DASHBOARD_ZERO_TOKENS).fillna(False)
+        numeric = pd.to_numeric(values, errors="coerce")
+        numeric_nonfinite = numeric.notna() & ~np.isfinite(numeric)
+        invalid_text = ~values.isna() & ~empty_text & numeric.isna() & ~explicit_zero
+        zero = values.isna() | explicit_zero | numeric_nonfinite
+        if column in CREDIT_MEASURE_COLUMNS:
+            # Cross-Gamma source sensitivities are inputs, not output positions;
+            # their optional connector measures are genuinely not applicable.
+            source_sensitivity = frame[RISK_GREEK].isin(
+                XGAMMA_SOURCE_RISK_GREEKS
+            ) & frame[SPLIT].eq(CROSS_GAMMA_SOURCE_SPLIT)
+            zero &= ~source_sensitivity
+
+        if boolean.any() or invalid_text.any():
+            # Preserve malformed values for the authoritative release validator,
+            # while still applying the requested normalization to unrelated rows.
+            normalized = values.copy()
+            normalized.loc[zero] = 0.0
+            frame[column] = normalized
+            continue
+
+        normalized = numeric.astype(float)
+        normalized.loc[zero] = 0.0
+        normalized.loc[empty_text] = np.nan
+        frame[column] = normalized
+
+
 def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
     # Ordinary product rows already passed the strict connector boundary.
@@ -444,6 +511,7 @@ def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ],
         "combined P&L",
     )
+    _zero_fill_dashboard_metrics(frame)
     columns = [
         SOURCE_TYPE,
         RISK_TYPE,
@@ -651,12 +719,17 @@ def _validate_dashboard_release(frame: pd.DataFrame) -> None:
         ),
         index=frame.index,
     )
-    invalid_move = complete_quotes & ~move_matches_quotes
+    # A missing/non-finite Move is deliberately published as zero. Do not let
+    # that fail the whole dashboard merely because usable quotes are present;
+    # still reject a genuinely supplied, non-zero Move that contradicts them.
+    published_move = converted[MARKET_MOVE]
+    move_requires_check = published_move.notna() & published_move.ne(0.0)
+    invalid_move = complete_quotes & move_requires_check & ~move_matches_quotes
     if invalid_move.any():
         rows = frame.index[invalid_move].tolist()[:5]
         raise ValueError(
-            "dashboard release Move must equal Current - Open where quotes exist; "
-            f"invalid rows {rows}"
+            "dashboard release non-zero Move must equal Current - Open where "
+            f"quotes exist; invalid rows {rows}"
         )
 
     market_status = frame[MARKET_DATA_STATUS]

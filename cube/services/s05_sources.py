@@ -6,6 +6,7 @@ preserving their exact parameters and ordered DataFrame schemas.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from datetime import datetime
@@ -736,7 +737,9 @@ def get_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
 
 
 def build_production_refresh_manager(
-    *, stage_delays: Mapping[str, float] | None = None
+    *,
+    stage_delays: Mapping[str, float] | None = None,
+    logger: logging.Logger | None = None,
 ) -> RiskRefreshManager:
     """Compose Cube from the explicit connector functions over temp datasets.
 
@@ -769,6 +772,7 @@ def build_production_refresh_manager(
         connector_adapters=get_product_connector_adapters(),
         stage_delays=stage_delays,
         trading_timezone=trading_timezone,
+        logger=logger,
     )
 
 

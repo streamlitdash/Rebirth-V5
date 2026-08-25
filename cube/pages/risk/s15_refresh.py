@@ -297,6 +297,9 @@ def register_refresh_callbacks(
             common_options = {
                 "refresh_enabled": True,
                 "stage_delays": refresh_manager.stage_delays,
+                # Cache/theme/log utilities live once in the persistent app
+                # header; shell hydration must never create duplicate IDs.
+                "include_header_utilities": False,
                 "reset_generation": int(
                     getattr(refresh_manager, "reset_generation", 0)
                 ),
@@ -361,6 +364,20 @@ def register_refresh_callbacks(
                     **common_options,
                 ).children
             raise PreventUpdate
+
+        @app.callback(
+            Output("clear-cache-button", "disabled"),
+            Input("refresh-busy-store", "data"),
+            Input("refresh-commit-revision", "children"),
+        )
+        def sync_clear_cache_disabled(refresh_busy, committed_revision):
+            """Enable the persistent header action only after revision 1 exists."""
+
+            try:
+                revision = int(committed_revision or 0)
+            except (TypeError, ValueError):
+                revision = 0
+            return bool(refresh_busy) or revision <= 0
 
         @app.callback(
             Output(AUTO_REFRESH_STORE_ID, "data"),
@@ -488,7 +505,6 @@ def register_refresh_callbacks(
                 (Output("refresh-portfolios-button", "disabled"), True, False),
                 (Output("refresh-pl-button", "disabled"), True, False),
                 (Output("reload-risk-button", "disabled"), True, False),
-                (Output("clear-cache-button", "disabled"), True, False),
                 (Output("auto-refresh-toggle", "disabled"), True, False),
                 (Output("commo-market-toggle", "disabled"), True, False),
                 (Output("risk-checker-toggle", "disabled"), True, False),

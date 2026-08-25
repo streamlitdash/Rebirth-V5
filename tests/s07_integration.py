@@ -792,6 +792,9 @@ def test_cold_start_commits_risk_when_market_status_resolver_blocks() -> None:
         ~snapshot.dashboard_frame["Source Type"].str.startswith("commo/")
     ]
     assert network_market_rows["Market Available"].eq(False).all()
+    assert network_market_rows[["Risk", "dRisk", "PL", "Move"]].notna().all().all()
+    assert network_market_rows[["PL", "Move"]].eq(0.0).all().all()
+    assert network_market_rows[["Open", "Current"]].isna().all().all()
 
 
 def test_sequential_browser_auto_ticks_coalesce_to_one_connector_refresh() -> None:

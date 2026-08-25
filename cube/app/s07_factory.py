@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from threading import Lock
@@ -51,6 +52,8 @@ from cube.pages.stock import (
 
 from cube.app.s05_progress import progress_payload
 from cube.app.s06_routing import register_native_pages
+from cube.app.s03_logging import attach_application_log_handler
+from cube.app.s08_applogs import build_app_log_panel, register_app_log_callbacks
 
 from cube.ui.s02_aggregation import prepare_risk_data
 from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
@@ -60,6 +63,7 @@ from cube.ui.s03_filters import (
     register_saved_filter_view_callbacks,
 )
 from cube.ui.s04_components import (
+    build_header_utilities,
     build_initial_load_layout,
     build_shared_refresh_shell,
 )
@@ -159,6 +163,14 @@ def build_app(
         assets_folder=str(PROJECT_ROOT / "assets"),
         **dash_options,
     )
+    # Dash's logger owns the stdout stream shown by Plotly Preview. Dash resets
+    # it to INFO during construction, so restore the configured runtime level
+    # before routing connector records through it. Keep it from duplicating the
+    # same record through the root stderr handler, and retain a bounded safe
+    # operator-event copy for the in-app drawer.
+    app.logger.setLevel(logging.getLogger().getEffectiveLevel())
+    app.logger.propagate = False
+    attach_application_log_handler(app.logger)
     app.title = "Cube"
     register_native_pages()
     app.server.config.setdefault(STARTUP_UI_ERROR_CONFIG_KEY, None)
@@ -483,46 +495,58 @@ def build_app(
                             className="cube-brand",
                             title="Cube Risk and PL home",
                         ),
-                        html.Nav(
+                        html.Div(
                             [
-                                dcc.Link(
-                                    "Risk",
-                                    href=cube_href,
-                                    id="cube-nav-link",
-                                    className="app-nav-link cube-nav-link is-active",
+                                build_header_utilities(
+                                    refresh_enabled=refresh_manager is not None,
+                                    cache_enabled=shared_snapshot is not None,
                                 ),
-                                dcc.Link(
-                                    "Data",
-                                    href=data_href,
-                                    id="data-nav-link",
-                                    className="app-nav-link cube-nav-link",
-                                ),
-                                dcc.Link(
-                                    "Stock",
-                                    href=stock_href,
-                                    id="stock-nav-link",
-                                    className="app-nav-link cube-nav-link",
-                                ),
-                                dcc.Link(
-                                    "P&L",
-                                    href=pnl_href,
-                                    id="pnl-nav-link",
-                                    className="app-nav-link cube-nav-link",
-                                ),
-                                dcc.Link(
-                                    "Statics",
-                                    href=static_data_href,
-                                    refresh=True,
-                                    id="static-data-nav-link",
-                                    className="app-nav-link cube-nav-link",
+                                html.Nav(
+                                    [
+                                        dcc.Link(
+                                            "Risk",
+                                            href=cube_href,
+                                            id="cube-nav-link",
+                                            className=(
+                                                "app-nav-link cube-nav-link is-active"
+                                            ),
+                                        ),
+                                        dcc.Link(
+                                            "Data",
+                                            href=data_href,
+                                            id="data-nav-link",
+                                            className="app-nav-link cube-nav-link",
+                                        ),
+                                        dcc.Link(
+                                            "Stock",
+                                            href=stock_href,
+                                            id="stock-nav-link",
+                                            className="app-nav-link cube-nav-link",
+                                        ),
+                                        dcc.Link(
+                                            "P&L",
+                                            href=pnl_href,
+                                            id="pnl-nav-link",
+                                            className="app-nav-link cube-nav-link",
+                                        ),
+                                        dcc.Link(
+                                            "Statics",
+                                            href=static_data_href,
+                                            refresh=True,
+                                            id="static-data-nav-link",
+                                            className="app-nav-link cube-nav-link",
+                                        ),
+                                    ],
+                                    className="cube-nav",
+                                    **{"aria-label": "Primary navigation"},
                                 ),
                             ],
-                            className="cube-nav",
-                            **{"aria-label": "Primary navigation"},
+                            className="cube-header-actions",
                         ),
                     ],
                     className="cube-app-header",
                 ),
+                build_app_log_panel(),
                 build_shared_refresh_shell(
                     shared_snapshot,
                     refresh_enabled=refresh_manager is not None,
@@ -534,6 +558,7 @@ def build_app(
                         else 0
                     ),
                     style={"display": "none"},
+                    include_header_utilities=False,
                 ),
                 html.Div(
                     id="global-warning-summary",
@@ -690,6 +715,7 @@ def build_app(
         saved_view_repository=saved_view_repository,
         stock_history_source=stock_history_source,
     )
+    register_app_log_callbacks(app)
     return app
 
 

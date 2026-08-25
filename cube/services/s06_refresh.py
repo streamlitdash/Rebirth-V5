@@ -130,7 +130,7 @@ def _bounded_failure_reason(error: BaseException) -> str:
     """Return the exception type and a bounded, single-line reason.
 
     Failure logs deliberately include no pandas frames or connector return
-    values. The traceback is attached separately by ``LOGGER.exception`` so
+    values. The traceback is attached separately by the configured logger so
     operators can diagnose the failing code path without this summary expanding
     into an unbounded log line.
     """
@@ -368,6 +368,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         connector_call_timeout_seconds: float = _CONNECTOR_CALL_TIMEOUT_SECONDS,
         connector_refresh_budget_seconds: float = _CONNECTOR_REFRESH_BUDGET_SECONDS,
         automatic_refresh_min_age_seconds: float = (_AUTOMATIC_REFRESH_MIN_AGE_SECONDS),
+        logger: logging.Logger | None = None,
     ) -> None:
         # Source-type keys here are the connector contracts (for example
         # ``fx/delta``), not dashboard product keys (for example ``fxdelta``).
@@ -563,6 +564,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         self._max_history_days = int(max_history_days)
         self._sleep = sleep
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._logger = logger or LOGGER
         if not isinstance(trading_timezone, str) or not trading_timezone.strip():
             raise TypeError("trading_timezone must be a nonblank IANA timezone name")
         self._trading_timezone_name = trading_timezone.strip()
@@ -713,7 +715,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         )
         with self._operational_warning_lock:
             self._operational_warnings.append(warning)
-        LOGGER.error(
+        self._logger.error(
             "%s connector unavailable%s; continuing with shaped missing data. "
             "incident=%s stage=%s product=%s reason=%s",
             boundary,
@@ -723,6 +725,17 @@ class RiskRefreshManager(_RefreshStateMixin):
             product_label or "unknown",
             _bounded_failure_reason(error),
             exc_info=(type(error), error, error.__traceback__),
+            extra={
+                "cube_operator_event": {
+                    "event": "Connector unavailable",
+                    "status": "degraded",
+                    "incident": incident_id,
+                    "stage": stage or "unknown",
+                    "source": source_type or "unknown",
+                    "product": product_label or boundary,
+                    "error_type": type(error).__name__,
+                }
+            },
         )
         return warning
 
@@ -1066,7 +1079,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                                 product_label=_product_progress_label(spec),
                                 stage=stage,
                             )
-                            LOGGER.warning(
+                            self._logger.warning(
                                 "Market circuit opened after %s %s failed; all "
                                 "remaining market calls in this refresh are skipped. %s",
                                 spec.source_type,
@@ -1113,7 +1126,7 @@ class RiskRefreshManager(_RefreshStateMixin):
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 frames = list(executor.map(load_with_retry, items))
         if failure_count:
-            LOGGER.warning(
+            self._logger.warning(
                 "Market connector unavailable for %d of %d %s %s calls; "
                 "missing legs retained. First error: %s",
                 failure_count,
@@ -1217,7 +1230,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                             product_label=_product_progress_label(spec),
                             stage=stage,
                         )
-                        LOGGER.warning(
+                        self._logger.warning(
                             "Market circuit opened after bulk %s %s failed; all "
                             "remaining market calls in this refresh are skipped. %s",
                             spec.source_type,
@@ -1252,7 +1265,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         "missing data."
                     ),
                 )
-                LOGGER.warning(
+                self._logger.warning(
                     "Bulk market connector unavailable for %s %s; missing leg "
                     "retained. First error: %s",
                     spec.source_type,
@@ -1664,7 +1677,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 )
                 failed_progress = self.progress
                 failure_reason = _bounded_failure_reason(error)
-                LOGGER.exception(
+                self._logger.exception(
                     "Portfolio mapping refresh failed; incident=%s type=%s "
                     "reason=%s context=[%s] location=%s",
                     incident_id,
@@ -1672,6 +1685,18 @@ class RiskRefreshManager(_RefreshStateMixin):
                     failure_reason,
                     _failure_progress_context(failed_progress),
                     _safe_failure_location(error),
+                    extra={
+                        "cube_operator_event": {
+                            "event": "Portfolio refresh failed",
+                            "status": "failed",
+                            "incident": incident_id,
+                            "stage": failed_progress.stage,
+                            "source": failed_progress.source_type,
+                            "product": failed_progress.product_label,
+                            "function": failed_progress.function_name,
+                            "error_type": error_type,
+                        }
+                    },
                 )
                 safe_error = _failure_ui_message(
                     error,
@@ -1753,7 +1778,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     )
                     < self._automatic_refresh_min_age_seconds
                 ):
-                    LOGGER.info(
+                    self._logger.info(
                         "Coalesced automatic refresh onto committed revision %d.",
                         base_snapshot.revision,
                     )
@@ -2140,7 +2165,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                             error=budget_error,
                             stage="risk",
                         )
-                        LOGGER.warning(
+                        self._logger.warning(
                             "Connector elapsed-time budget exhausted; all remaining "
                             "risk and market network calls are skipped."
                         )
@@ -2342,7 +2367,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         error=budget_error,
                         stage="market",
                     )
-                    LOGGER.warning(
+                    self._logger.warning(
                         "Connector elapsed-time budget exhausted; all remaining "
                         "risk and market network calls are skipped."
                     )
@@ -2721,7 +2746,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 )
                 failed_progress = self.progress
                 failure_reason = _bounded_failure_reason(error)
-                LOGGER.exception(
+                self._logger.exception(
                     "Risk refresh failed; incident=%s type=%s reason=%s "
                     "context=[%s] location=%s",
                     incident_id,
@@ -2729,6 +2754,18 @@ class RiskRefreshManager(_RefreshStateMixin):
                     failure_reason,
                     _failure_progress_context(failed_progress),
                     _safe_failure_location(error),
+                    extra={
+                        "cube_operator_event": {
+                            "event": "Risk refresh failed",
+                            "status": "failed",
+                            "incident": incident_id,
+                            "stage": failed_progress.stage,
+                            "source": failed_progress.source_type,
+                            "product": failed_progress.product_label,
+                            "function": failed_progress.function_name,
+                            "error_type": error_type,
+                        }
+                    },
                 )
                 safe_error = _failure_ui_message(
                     error,

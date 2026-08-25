@@ -167,6 +167,13 @@ class StartupCoordinator:
                     "Cube initial load started; boot=%s attempt=%s.",
                     self._server_boot_id,
                     self._attempt_id,
+                    extra={
+                        "cube_operator_event": {
+                            "event": "Initial load started",
+                            "status": "running",
+                            "attempt": self._attempt,
+                        }
+                    },
                 )
             return True
 
@@ -238,6 +245,18 @@ class StartupCoordinator:
                         self._attempt_id,
                         elapsed,
                         self._progress_context(progress) or "unavailable",
+                        extra={
+                            "cube_operator_event": {
+                                "event": "Initial load stalled",
+                                "status": "stalled",
+                                "stage": getattr(progress, "stage", None),
+                                "source": getattr(progress, "source_type", None),
+                                "product": getattr(progress, "product_label", None),
+                                "function": getattr(progress, "function_name", None),
+                                "attempt": self._attempt,
+                                "elapsed_seconds": round(elapsed, 3),
+                            }
+                        },
                     )
             return StartupStatus(
                 phase=self._phase,
@@ -262,6 +281,13 @@ class StartupCoordinator:
                 "Cube initial load succeeded; boot=%s attempt=%s.",
                 self._server_boot_id,
                 attempt_id,
+                extra={
+                    "cube_operator_event": {
+                        "event": "Initial load succeeded",
+                        "status": "succeeded",
+                        "attempt": attempt,
+                    }
+                },
             )
 
     def _fail(self, attempt: int, error: BaseException) -> None:
@@ -285,6 +311,18 @@ class StartupCoordinator:
                 self._error_reason(error),
                 self._progress_context(failed_progress) or "unavailable",
                 exc_info=(type(error), error, error.__traceback__),
+                extra={
+                    "cube_operator_event": {
+                        "event": "Initial data load failed",
+                        "status": "failed",
+                        "stage": getattr(failed_progress, "stage", None),
+                        "source": getattr(failed_progress, "source_type", None),
+                        "product": getattr(failed_progress, "product_label", None),
+                        "function": getattr(failed_progress, "function_name", None),
+                        "error_type": type(error).__name__,
+                        "attempt": attempt,
+                    }
+                },
             )
 
     def _follow_existing_writer(self, attempt: int) -> None:

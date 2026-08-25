@@ -42,7 +42,11 @@ def create_app(settings: RuntimeSettings | None = None):
     manager = build_production_refresh_manager(
         stage_delays={
             "risk_product": float(os.getenv("RISK_PRODUCT_DELAY_SECONDS", "0")),
-        }
+        },
+        # Dash owns the stdout handler displayed by Plotly Preview. Routing the
+        # manager through the same logger keeps connector tracebacks beside the
+        # cold-start messages instead of sending them to an unseen stderr sink.
+        logger=logging.getLogger("dash.dash"),
     )
     project_root = Path(__file__).resolve().parent
     mapping_path = resolve_data_path(

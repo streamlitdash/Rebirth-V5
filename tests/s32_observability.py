@@ -8,8 +8,10 @@ from unittest.mock import Mock
 import pytest
 
 from cube.app.s03_logging import (
+    clear_application_logs,
     configure_runtime_logging,
     perf_span,
+    recent_application_log_text,
     reset_performance_warnings,
 )
 
@@ -79,3 +81,75 @@ def test_configure_runtime_logging_resolves_level_without_python_311_api(
     monkeypatch.setenv("CUBE_LOG_LEVEL", "debug")
 
     assert configure_runtime_logging() == logging.DEBUG
+
+
+def test_application_log_copy_exposes_only_safe_structured_events() -> None:
+    clear_application_logs()
+    configure_runtime_logging()
+    logger = logging.getLogger("cube.tests.browser_logs")
+
+    try:
+        raise KeyError("credit delta mapping is absent")
+    except KeyError:
+        logger.exception(
+            "password=not-for-browser %s",
+            {"Authorization": "Bearer also-not-for-browser", "token": "TOPSECRET"},
+            extra={
+                "cube_operator_event": {
+                    "event": "Connector unavailable",
+                    "status": "degraded",
+                    "incident": "abc123",
+                    "stage": "risk",
+                    "source": "credit/delta",
+                    "product": "Credit Delta",
+                    "error_type": "KeyError",
+                }
+            },
+        )
+    logging.getLogger("urllib3.connectionpool").error("third-party-noise")
+
+    rendered = recent_application_log_text()
+    assert "Connector unavailable" in rendered
+    assert "incident=abc123" in rendered
+    assert "source=credit/delta" in rendered
+    assert "product=Credit Delta" in rendered
+    assert "error_type=KeyError" in rendered
+    assert "credit delta mapping is absent" not in rendered
+    assert "Traceback (most recent call last)" not in rendered
+    assert "password" not in rendered
+    assert "Authorization" not in rendered
+    assert "not-for-browser" not in rendered
+    assert "TOPSECRET" not in rendered
+    assert "third-party-noise" not in rendered
+    clear_application_logs()
+
+
+def test_application_log_handler_is_idempotent_and_response_bounded() -> None:
+    clear_application_logs()
+    configure_runtime_logging()
+    configure_runtime_logging()
+    logger = logging.getLogger("cube.tests.browser_logs")
+
+    logger.error(
+        "raw-idempotent-message",
+        extra={"cube_operator_event": {"event": "one-idempotent-record"}},
+    )
+    assert recent_application_log_text().count("one-idempotent-record") == 1
+    assert "raw-idempotent-message" not in recent_application_log_text()
+    for index in range(230):
+        logger.info(
+            "raw bounded payload %s",
+            "x" * 500,
+            extra={
+                "cube_operator_event": {
+                    "event": f"bounded-record-{index:03d}",
+                    "revision": index,
+                }
+            },
+        )
+
+    rendered = recent_application_log_text()
+    assert "bounded-record-229" in rendered
+    assert "earlier application log record(s) omitted" in rendered
+    assert len(rendered) <= 64_000
+    clear_application_logs()

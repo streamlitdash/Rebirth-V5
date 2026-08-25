@@ -288,6 +288,48 @@ def _build_theme_toggle() -> html.Button:
     )
 
 
+def build_header_utilities(
+    *,
+    refresh_enabled: bool,
+    cache_enabled: bool,
+    include_app_logs: bool = True,
+) -> html.Div:
+    """Return the single shared cache, display, and operator-log controls."""
+
+    children: list = [
+        _build_theme_toggle(),
+        html.Button(
+            "Clear Cache",
+            id="clear-cache-button",
+            n_clicks=0,
+            disabled=not (refresh_enabled and cache_enabled),
+            className="refresh-pl-button clear-cache-button header-clear-cache-button",
+            title="Ready · Clear cached views and reload Risk and P&L",
+            type="button",
+        ),
+    ]
+    if include_app_logs:
+        children.append(
+            html.Button(
+                "App Logs",
+                id="app-log-toggle",
+                n_clicks=0,
+                className="app-log-toggle",
+                title="Show recent application logs from this server process",
+                type="button",
+                **{
+                    "aria-controls": "app-log-panel",
+                    "aria-expanded": "false",
+                },
+            )
+        )
+    return html.Div(
+        children,
+        className="header-utility-pair cube-header-utilities",
+        **{"aria-label": "Cache, display, and application log controls"},
+    )
+
+
 def build_operating_date_content(
     snapshot: ControlSnapshotProtocol | RefreshSnapshotProtocol | None,
 ) -> list[html.Div]:
@@ -355,16 +397,21 @@ def _build_refresh_controls(
     initial_loading: bool = False,
     initial_error: bool = False,
     id_prefix: str = "",
+    include_header_utilities: bool = True,
 ) -> html.Div:
     """Build the stable dashboard control strip for startup and operation."""
-    theme_toggle = _build_theme_toggle()
+    header_utilities = (
+        build_header_utilities(
+            refresh_enabled=refresh_enabled,
+            cache_enabled=initial_snapshot is not None,
+            include_app_logs=False,
+        )
+        if include_header_utilities
+        else None
+    )
     if not refresh_enabled:
         return html.Div(
-            html.Div(
-                theme_toggle,
-                className="refresh-control-actions",
-                **{"aria-label": "Display controls"},
-            ),
+            header_utilities,
             className="refresh-controls",
         )
 
@@ -388,11 +435,7 @@ def _build_refresh_controls(
             status_class = "refresh-status"
         return html.Div(
             [
-                html.Div(
-                    theme_toggle,
-                    className="refresh-control-actions",
-                    **{"aria-label": "Display controls"},
-                ),
+                header_utilities,
                 html.Div(
                     status_text,
                     id=f"{id_prefix}refresh-status",
@@ -428,11 +471,6 @@ def _build_refresh_controls(
                         ),
                         html.Button(
                             id=f"{id_prefix}auto-refresh-toggle",
-                            n_clicks=0,
-                            disabled=True,
-                        ),
-                        html.Button(
-                            id=f"{id_prefix}clear-cache-button",
                             n_clicks=0,
                             disabled=True,
                         ),
@@ -587,26 +625,7 @@ def _build_refresh_controls(
                                 role="status",
                                 **{"aria-live": "polite"},
                             ),
-                            html.Div(
-                                [
-                                    html.Button(
-                                        "Clear Cache",
-                                        id=f"{id_prefix}clear-cache-button",
-                                        n_clicks=0,
-                                        disabled=controls_disabled,
-                                        className=(
-                                            "refresh-pl-button clear-cache-button"
-                                        ),
-                                        title=(
-                                            "Ready · Clear cached views and reload Risk and P&L"
-                                        ),
-                                        type="button",
-                                    ),
-                                    theme_toggle,
-                                ],
-                                className="header-utility-pair",
-                                **{"aria-label": "Cache and display controls"},
-                            ),
+                            header_utilities,
                         ],
                         className="refresh-control-actions",
                         role="group",
@@ -834,6 +853,7 @@ def build_shared_refresh_shell(
     data_revision: int | None = None,
     reset_generation: int = 0,
     style: Mapping[str, str] | None = None,
+    include_header_utilities: bool = True,
 ) -> html.Div:
     """Build the one persistent refresh lifecycle mounted above Dash Pages."""
     # The router initially hides this persistent shell and reveals it after
@@ -923,6 +943,7 @@ def build_shared_refresh_shell(
                     refresh_enabled=refresh_enabled,
                     initial_loading=initial_loading,
                     initial_error=bool(error),
+                    include_header_utilities=include_header_utilities,
                 ),
                 id="refresh-control-strip",
                 className="cube-refresh-strip",
@@ -1013,6 +1034,7 @@ def build_initial_load_layout(
 __all__ = [
     "build_aggregate_pl_table",
     "build_cube_loader",
+    "build_header_utilities",
     "build_initial_load_layout",
     "build_operating_date_content",
     "build_shared_refresh_shell",

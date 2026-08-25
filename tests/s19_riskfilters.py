@@ -7,9 +7,14 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from dash import dcc, html, no_update
 
 from cube.services.s04_savedviews import SavedFilterView
+from cube.domain.s07_governance import (
+    _validate_dashboard_release,
+    to_dashboard_frame,
+)
 from cube.domain.s10_search import MARKET_RESULT_COLUMNS, SearchCatalog
 from cube.pages.risk import s07_explorer as events_module
 from cube.ui.s01_constants import (
@@ -20,6 +25,7 @@ from cube.ui.s01_constants import (
 )
 from cube.ui.s02_aggregation import (
     apply_filters,
+    credit_measure_values,
     dimension_title,
     prepare_risk_data,
     selected_dimension,
@@ -266,6 +272,95 @@ def test_prepare_retains_real_portfolio_and_filter_modes_use_position_grain() ->
     # Exclusion is AND across the per-dimension complements.
     assert excluded["portfolio"].tolist() == ["BOOK-B"]
     assert unrestricted["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
+
+
+def test_dashboard_release_zero_fills_one_missing_metric_without_blanking_view() -> (
+    None
+):
+    source = _raw_risk_frame().assign(
+        **{
+            "Portfolio Mapped": True,
+            "Tenor Swap Order": 0,
+            "Tenor Option Order": 0,
+            "Promotion Reason": "",
+            "Promotion Score": 0.0,
+            "Vol Score": 0.0,
+            "Risk": [10.0, float("inf")],
+            "dRisk": [1.0, pd.NA],
+            "PL": [4.0, "N/A"],
+            "Open": [3.0, pd.NA],
+            "Current": [4.0, pd.NA],
+            "Move": [1.0, "-inf"],
+            "Market Available": [True, False],
+            "Market Data Status": ["Available", "Missing Open and Current"],
+            "Risk SP01": [10.0, 20.0],
+            "dRisk SP01": [1.0, pd.NA],
+        }
+    )
+
+    released = to_dashboard_frame(source)
+    prepared = prepare_risk_data(released)
+
+    assert released.loc[1, ["Risk", "dRisk", "PL", "Move", "dRisk SP01"]].eq(0.0).all()
+    assert released.loc[1, ["Open", "Current"]].isna().all()
+    assert "dRisk PSP01" not in released
+    assert prepared.loc[1, ["risk", "risk expo", "risk hedges"]].eq(0.0).all()
+    assert prepared.loc[1, ["drisk", "drisk expo", "drisk hedges"]].eq(0.0).all()
+    assert prepared.loc[1, ["pl", "pl expo", "pl hedges", "move"]].eq(0.0).all()
+    assert credit_measure_values(prepared, "drisk", "SP01").tolist() == [1.0, 0.0]
+
+
+def test_dashboard_release_accepts_zero_filled_move_with_available_quotes() -> None:
+    source = _raw_risk_frame().assign(
+        **{
+            "Portfolio Mapped": True,
+            "Tenor Swap Order": 0,
+            "Tenor Option Order": 0,
+            "Promotion Reason": "",
+            "Promotion Score": 0.0,
+            "Vol Score": 0.0,
+            "Risk": [10.0, 20.0],
+            "dRisk": [1.0, 2.0],
+            "PL": [4.0, 5.0],
+            "Open": [3.0, 10.0],
+            "Current": [4.0, 12.0],
+            "Move": [1.0, pd.NA],
+            "Market Available": [True, True],
+            "Market Data Status": ["Available", "Available"],
+        }
+    )
+
+    released = to_dashboard_frame(source)
+    _validate_dashboard_release(released)
+
+    assert released.loc[1, "Move"] == 0.0
+    assert released.loc[1, ["Open", "Current"]].tolist() == [10.0, 12.0]
+
+
+def test_dashboard_release_rejects_supplied_nonzero_move_quote_mismatch() -> None:
+    source = _raw_risk_frame().assign(
+        **{
+            "Portfolio Mapped": True,
+            "Tenor Swap Order": 0,
+            "Tenor Option Order": 0,
+            "Promotion Reason": "",
+            "Promotion Score": 0.0,
+            "Vol Score": 0.0,
+            "Risk": [10.0, 20.0],
+            "dRisk": [1.0, 2.0],
+            "PL": [4.0, 5.0],
+            "Open": [3.0, 10.0],
+            "Current": [4.0, 12.0],
+            "Move": [1.0, 99.0],
+            "Market Available": [True, True],
+            "Market Data Status": ["Available", "Available"],
+        }
+    )
+
+    released = to_dashboard_frame(source)
+
+    with pytest.raises(ValueError, match="non-zero Move must equal"):
+        _validate_dashboard_release(released)
 
 
 def test_include_and_exclude_modes_have_explicit_boolean_semantics() -> None:

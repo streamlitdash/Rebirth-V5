@@ -107,7 +107,7 @@ def test_manager_releases_raw_supplemental_rows_and_positive_thresholds() -> Non
     assert len(cashflow) == 1
     assert cashflow.iloc[0][RISK] == cashflow.iloc[0][PL] == 50_000.0
     assert pd.isna(cashflow.iloc[0][OPEN])
-    assert pd.isna(cashflow.iloc[0][MARKET_MOVE])
+    assert cashflow.iloc[0][MARKET_MOVE] == 0.0
     identity = "Cash Flow | New | Cash Flow"
     assert manager.search_combine_udl_options("cAsH fLoW") == (identity,)
     assert manager.search_market_udl_options("cash flow") == ()

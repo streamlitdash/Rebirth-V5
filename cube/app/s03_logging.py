@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import logging
 import os
+import re
+from threading import RLock
 from time import perf_counter
 from typing import Any, Iterator, MutableMapping
 
@@ -23,6 +27,164 @@ _SAFE_FIELDS = frozenset(
     }
 )
 _warned: set[tuple[str, object]] = set()
+
+_APPLICATION_LOG_RECORD_LIMIT = 200
+_APPLICATION_LOG_RECORD_CHAR_LIMIT = 1_000
+_APPLICATION_LOG_SNAPSHOT_LIMIT = 100
+_APPLICATION_LOG_SNAPSHOT_CHAR_LIMIT = 64_000
+_APPLICATION_LOG_NAMES = ("cube", "app", "__main__", "dash.dash")
+_OPERATOR_EVENT_FIELDS = (
+    "status",
+    "incident",
+    "stage",
+    "source",
+    "product",
+    "function",
+    "error_type",
+    "revision",
+    "attempt",
+    "elapsed_seconds",
+    "duration_ms",
+    "rows",
+    "calls",
+)
+_OPERATOR_VALUE_PATTERN = re.compile(r"[^A-Za-z0-9 _./:+-]")
+
+
+def _safe_operator_value(value: object, *, limit: int = 100) -> str:
+    """Return one short identifier/count value, never arbitrary log text."""
+
+    if isinstance(value, bool):
+        rendered = str(value).lower()
+    elif isinstance(value, (int, float)):
+        rendered = str(value)
+    else:
+        rendered = _OPERATOR_VALUE_PATTERN.sub("_", str(value).replace("\n", " "))
+    return rendered[:limit] or "unknown"
+
+
+def _render_operator_record(record: logging.LogRecord) -> str | None:
+    """Render only explicitly allowlisted metadata for the browser drawer.
+
+    The normal terminal handler still formats the complete record and traceback.
+    This separate representation deliberately never calls ``record.getMessage``
+    and never formats ``exc_info``, because connector exception strings can hold
+    credentials, query text, or financial data that must not be copied into a
+    browser response.
+    """
+
+    raw_event = getattr(record, "cube_operator_event", None)
+    if not isinstance(raw_event, dict):
+        return None
+    event = _safe_operator_value(raw_event.get("event", "Application event"))
+    fields = [
+        f"{field}={_safe_operator_value(raw_event[field])}"
+        for field in _OPERATOR_EVENT_FIELDS
+        if raw_event.get(field) is not None
+    ]
+    timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+    suffix = f" | {' '.join(fields)}" if fields else ""
+    return f"{timestamp} {record.levelname} {event}{suffix}"
+
+
+class _BoundedApplicationLogHandler(logging.Handler):
+    """Keep a small process-local copy of safe structured operator events."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.NOTSET)
+        self._entries: deque[str] = deque(maxlen=_APPLICATION_LOG_RECORD_LIMIT)
+        self._entries_lock = RLock()
+
+    @staticmethod
+    def _accepts(record: logging.LogRecord) -> bool:
+        name = str(record.name)
+        return any(
+            name == prefix or name.startswith(f"{prefix}.")
+            for prefix in _APPLICATION_LOG_NAMES
+        )
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self._accepts(record):
+            return
+        try:
+            rendered = _render_operator_record(record)
+            if rendered is None:
+                return
+            if len(rendered) > _APPLICATION_LOG_RECORD_CHAR_LIMIT:
+                # Preserve both identity/context at the start and the final
+                # diagnostic fields at the end if this limit is ever reached.
+                half = (_APPLICATION_LOG_RECORD_CHAR_LIMIT - 28) // 2
+                rendered = f"{rendered[:half]} ... [truncated] ... {rendered[-half:]}"
+            with self._entries_lock:
+                self._entries.append(rendered)
+        except Exception:
+            self.handleError(record)
+
+    def clear_entries(self) -> None:
+        with self._entries_lock:
+            self._entries.clear()
+
+    def snapshot(
+        self,
+        *,
+        limit: int = _APPLICATION_LOG_SNAPSHOT_LIMIT,
+        max_chars: int = _APPLICATION_LOG_SNAPSHOT_CHAR_LIMIT,
+    ) -> tuple[str, ...]:
+        """Return the newest complete records within both response bounds."""
+
+        bounded_limit = max(1, min(int(limit), _APPLICATION_LOG_RECORD_LIMIT))
+        bounded_chars = max(
+            1, min(int(max_chars), _APPLICATION_LOG_SNAPSHOT_CHAR_LIMIT)
+        )
+        with self._entries_lock:
+            all_entries = list(self._entries)
+        candidates = all_entries[-bounded_limit:]
+        selected: list[str] = []
+        used = 0
+        # Reserve enough room for the bounded omission notice whenever the
+        # response may need one. This keeps the final joined text below the
+        # network cap without cutting a structured event in the middle.
+        entry_budget = max(1, bounded_chars - (80 if len(all_entries) > 1 else 0))
+        for entry in reversed(candidates):
+            cost = len(entry) + (2 if selected else 0)
+            if used + cost > entry_budget:
+                break
+            selected.append(entry)
+            used += cost
+        selected.reverse()
+        omitted = len(all_entries) - len(selected)
+        if omitted:
+            selected.insert(
+                0, f"... {omitted} earlier application log record(s) omitted ..."
+            )
+        return tuple(selected)
+
+
+_APPLICATION_LOG_HANDLER = _BoundedApplicationLogHandler()
+
+
+def attach_application_log_handler(logger: logging.Logger) -> None:
+    """Attach the shared safe-event handler to one application logger."""
+
+    if _APPLICATION_LOG_HANDLER not in logger.handlers:
+        logger.addHandler(_APPLICATION_LOG_HANDLER)
+
+
+def recent_application_log_text() -> str:
+    """Return a bounded browser-safe snapshot of structured operator events."""
+
+    entries = _APPLICATION_LOG_HANDLER.snapshot()
+    return (
+        "\n\n".join(entries) if entries else "No application log entries captured yet."
+    )
+
+
+def clear_application_logs() -> None:
+    """Clear only the bounded operator copy; normal terminal logs are untouched."""
+
+    _APPLICATION_LOG_HANDLER.clear_entries()
 
 
 def configure_runtime_logging() -> int:
@@ -43,7 +205,10 @@ def configure_runtime_logging() -> int:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    logging.getLogger().setLevel(level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    _APPLICATION_LOG_HANDLER.setLevel(level)
+    attach_application_log_handler(root_logger)
     return level
 
 
@@ -93,18 +258,31 @@ def perf_span(
         }
         over_budget = budget_ms is not None and elapsed_ms > float(budget_ms)
         warning_key = (label, payload.get("revision"))
+        operator_event = {
+            "event": f"Performance {label}",
+            "status": payload.get("status"),
+            "duration_ms": duration_ms,
+            "revision": payload.get("revision"),
+            "rows": payload.get("rows"),
+        }
         if over_budget and warning_key not in _warned:
             _warned.add(warning_key)
             logger.warning(
                 "Cube performance budget exceeded: %s",
                 payload,
-                extra={"cube_performance": payload},
+                extra={
+                    "cube_performance": payload,
+                    "cube_operator_event": operator_event,
+                },
             )
         else:
             logger.info(
                 "Cube performance: %s",
                 payload,
-                extra={"cube_performance": payload},
+                extra={
+                    "cube_performance": payload,
+                    "cube_operator_event": operator_event,
+                },
             )
 
 
@@ -115,7 +293,10 @@ def reset_performance_warnings() -> None:
 
 
 __all__ = [
+    "attach_application_log_handler",
+    "clear_application_logs",
     "configure_runtime_logging",
     "perf_span",
+    "recent_application_log_text",
     "reset_performance_warnings",
 ]
