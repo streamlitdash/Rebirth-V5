@@ -353,7 +353,7 @@
     const refreshTrigger = event.target.closest(
       "#refresh-portfolios-button, #refresh-pl-button, #reload-risk-button, "
       + "#commo-market-toggle, #risk-checker-toggle, #force-risk-apply-button, "
-      + "#clear-cache-button, #initial-load-retry"
+      + "#clear-cache-button, #initial-load-retry, #pnl-initial-load-retry"
     );
     if (refreshTrigger) {
       const mode = refreshTrigger.id === "reload-risk-button"
@@ -363,7 +363,8 @@
         : refreshTrigger.id === "risk-checker-toggle" ? "checker"
         : refreshTrigger.id === "force-risk-apply-button" ? "dates"
         : refreshTrigger.id === "clear-cache-button" ? "reset"
-        : refreshTrigger.id === "initial-load-retry" ? "bootstrap" : "pl";
+        : ["initial-load-retry", "pnl-initial-load-retry"].includes(refreshTrigger.id)
+          ? "bootstrap" : "pl";
       if (mode === "commo" || mode === "checker") {
         const setProps = window.dash_clientside?.set_props;
         if (typeof setProps === "function") {

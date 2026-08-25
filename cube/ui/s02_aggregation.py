@@ -59,6 +59,16 @@ def tenor_sort_key(value: object) -> tuple[int, float, str]:
     return (1, float("inf"), upper)
 
 
+def _boolean_value_mask(values: pd.Series) -> pd.Series:
+    """Detect booleans without scanning numeric non-boolean columns."""
+
+    if pd.api.types.is_bool_dtype(values.dtype):
+        return pd.Series(True, index=values.index)
+    if pd.api.types.is_numeric_dtype(values.dtype):
+        return pd.Series(False, index=values.index)
+    return values.map(lambda value: isinstance(value, (bool, np.bool_)))
+
+
 def _resolved_tenor_orders(
     frame: pd.DataFrame,
     *,
@@ -75,9 +85,11 @@ def _resolved_tenor_orders(
     """
     if order_column in frame:
         raw = frame[order_column]
-        boolean = raw.map(lambda value: isinstance(value, (bool, np.bool_)))
+        boolean = _boolean_value_mask(raw)
         numeric = pd.to_numeric(raw, errors="coerce")
-        blank = raw.isna() | raw.astype(str).str.strip().eq("")
+        blank = raw.isna()
+        if not pd.api.types.is_numeric_dtype(raw.dtype):
+            blank |= raw.astype(str).str.strip().eq("")
         invalid = boolean | (~blank & numeric.isna())
         invalid |= numeric.notna() & (
             (numeric < 0)
@@ -360,6 +372,13 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
             frame[column] = "Unspecified"
         else:
             frame[column] = frame[column].fillna("Unspecified").astype(str)
+    # Portfolio remains part of the prepared position data for P&L, Stock,
+    # history, and diagnostics even though Risk has no Portfolio filter or
+    # grouping. Keep its historical string contract (including named books).
+    if "portfolio" not in frame:
+        frame["portfolio"] = "Unspecified"
+    else:
+        frame["portfolio"] = frame["portfolio"].fillna("Unspecified").astype(str)
     for column in META_COLUMNS:
         frame[column] = frame[column].fillna("").astype(str)
 
@@ -388,10 +407,17 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
         *optional_credit_columns,
     }
     for column in {*NUMERIC_COLUMNS, *optional_credit_columns}:
-        if frame[column].map(lambda value: isinstance(value, (bool, np.bool_))).any():
+        raw_values = frame[column]
+        # Committed dashboard releases already carry numeric dtypes. Avoid a
+        # Python callback for every cell in every metric column on the startup
+        # handoff, while retaining the exact mixed-object boolean guard for
+        # direct/raw callers.
+        if _boolean_value_mask(raw_values).any():
             raise ValueError(f"Column {column!r} must not contain booleans")
-        converted = pd.to_numeric(frame[column], errors="coerce")
-        blank = frame[column].isna() | frame[column].astype(str).str.strip().eq("")
+        converted = pd.to_numeric(raw_values, errors="coerce")
+        blank = raw_values.isna()
+        if not pd.api.types.is_numeric_dtype(raw_values.dtype):
+            blank |= raw_values.astype(str).str.strip().eq("")
         invalid = (~blank & converted.isna()) | (
             converted.notna() & ~np.isfinite(converted)
         )
@@ -430,6 +456,10 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
             *(["source type"] if "source type" in frame else []),
             "risk type",
             *ALT_GROUPS,
+            # P&L and history reuse this prepared frame and still require the
+            # position identity. Risk has no Portfolio control or grouping,
+            # so its table group-bys aggregate across this retained column.
+            "portfolio",
             *VIEW_DIMENSIONS,
             *META_COLUMNS,
             *NUMERIC_COLUMNS,

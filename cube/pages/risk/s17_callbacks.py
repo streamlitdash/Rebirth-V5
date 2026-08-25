@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 import pandas as pd
 from dash import Dash
 
@@ -11,7 +13,10 @@ from cube.app.s02_contracts import (
     RefreshManagerProtocol,
     RefreshSnapshotProtocol,
 )
-from cube.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import (
+    DIMENSION_FILTER_IDS,
+    RISK_FILTER_DIMENSION_FIELDS,
+)
 from cube.app.s04_startup import StartupCoordinator
 
 from .s07_explorer import register_explorer_callbacks
@@ -29,6 +34,7 @@ def register_callbacks(
     *,
     route_prefix: str = "/",
     startup_coordinator: StartupCoordinator | None = None,
+    prepared_frame_loader: Callable[..., pd.DataFrame | None] | None = None,
     reduced_tenor_catalog: CatalogSource | None = None,
     matrix_provider: MatrixProviderLike | None = None,
 ) -> None:
@@ -37,11 +43,12 @@ def register_callbacks(
     cache = _RiskDataCache(
         risk_data,
         initial_snapshot.revision if initial_snapshot is not None else 0,
+        prepared_frame_loader=prepared_frame_loader,
         reduced_tenor_catalog=reduced_tenor_catalog,
         matrix_provider=matrix_provider,
     )
     dimension_filter_ids = [
-        DIMENSION_FILTER_IDS[field.key] for field in FILTER_DIMENSION_FIELDS
+        DIMENSION_FILTER_IDS[field.key] for field in RISK_FILTER_DIMENSION_FIELDS
     ]
     register_promotion_callbacks(
         app,

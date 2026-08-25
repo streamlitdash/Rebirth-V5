@@ -93,6 +93,19 @@ def register_pl_aggregate_callbacks(
 ) -> None:
     """Register the P&L page's filters and independent historical hierarchy."""
 
+    app.clientside_callback(
+        """
+        function (retryEnabled, pnlPageId) {
+            const visible = Boolean(retryEnabled && pnlPageId === "pnl-page");
+            return [!visible, !visible];
+        }
+        """,
+        Output("pnl-initial-load-retry", "hidden"),
+        Output("pnl-initial-load-retry", "disabled"),
+        Input("pnl-initial-retry-enabled-store", "data"),
+        Input("pnl-page", "id", allow_optional=True),
+    )
+
     cache_lock = RLock()
     cached_revision = -1
     cached_frame: pd.DataFrame | None = None

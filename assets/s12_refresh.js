@@ -13,6 +13,7 @@
     let backendProgressNextPoll = 0;
     let backendProgressAvailable = null;
     let lastBackendProgress = null;
+    let previousBackendProgress = null;
     let backendProgressFailures = 0;
     let backendProgressLastError = "";
     let backendProgressLastSuccessAt = 0;
@@ -278,6 +279,7 @@
           backendProgressLastError = "";
           backendProgressLastSuccessAt = Date.now();
           backendProgressNextPoll = Date.now() + BACKEND_PROGRESS_POLL_MS;
+          previousBackendProgress = lastBackendProgress;
           lastBackendProgress = progress;
           syncCommittedDataRevision(progress);
           return progress;
@@ -506,8 +508,15 @@
         || refreshProgressState.mode !== "bootstrap"
         || Number(progress?.revision || 0) < 1
       ) return false;
-      if (refreshProgressState.reloadRequested) return true;
       const state = refreshProgressState;
+      if (state.serverReplaced) {
+        // The replacement process has now published a valid revision. The
+        // restart remains diagnostic history, not a terminal dashboard error.
+        state.serverReplaced = false;
+        state.backendError = "";
+        state.backendErrorStage = null;
+      }
+      if (refreshProgressState.reloadRequested) return true;
       state.reloadRequested = true;
       const title = document.getElementById("refresh-progress-title");
       if (title) title.textContent = "Opening validated dashboard";
@@ -667,6 +676,7 @@
           : null,
         baselineAttemptId: null,
         serverBootId: null,
+        serverReplaced: false,
         reloadRequested: false,
         transportLostAt: null,
         backendError: "",
@@ -803,7 +813,9 @@
     setProgressDetail(
       "refresh-progress-product",
       hasNewError
-        ? (state.mode === "bootstrap" ? "No financial snapshot was published" : "Previous validated snapshot retained")
+        ? state.serverReplaced
+          ? "Server process changed; reload this page to reconnect before using refreshed data"
+          : (state.mode === "bootstrap" ? "No financial snapshot was published" : "Previous validated snapshot retained")
         : "Validated snapshot is live",
     );
     setProgressDetail("refresh-progress-hold", "");
@@ -816,7 +828,7 @@
     // With no last-good snapshot, the startup incident and its
     // failed stage stay visible beside Retry. Later refresh errors
     // still collapse back to the usable committed dashboard.
-    if (!(hasNewError && state.mode === "bootstrap")) {
+    if (!(hasNewError && (state.mode === "bootstrap" || state.serverReplaced))) {
       setTimeout(() => {
         if (!refreshProgressState && panel) panel.hidden = true;
       }, hasNewError ? 5000 : 300);
@@ -966,12 +978,44 @@
         );
         refreshProgressState.serverBootId = progress.server_boot_id || previousBootId;
         if (serverWasReplaced) {
+          const previous = previousBackendProgress || {};
+          const previousContext = [
+            previous.stage,
+            previous.source_type,
+            previous.product_label || previous.underlying,
+          ].filter(Boolean).join(" · ");
           refreshProgressState.sawBackendRunning = false;
           refreshProgressState.sawBackendAttempt = false;
+          refreshProgressState.sawRunning = false;
           refreshProgressState.baselineProgressKey = null;
           refreshProgressState.baselineRefreshAttemptId = null;
           refreshProgressState.baselineRevision = null;
           refreshProgressState.baselineAttemptId = null;
+          refreshProgressState.backendError = (
+            "Server process restarted; the previous attempt ended before Python could report an error."
+          );
+          refreshProgressState.serverReplaced = true;
+          const title = document.getElementById("refresh-progress-title");
+          if (title) title.textContent = "Server process restarted during refresh";
+          setProgressDetail(
+            "refresh-progress-function",
+            previousContext
+              ? `Last confirmed work: ${previousContext}`
+              : "No final Python error was available from the previous process",
+          );
+          setProgressDetail(
+            "refresh-progress-product",
+            refreshProgressState.mode === "bootstrap"
+              ? "Automatic recovery will start one new process-owned attempt"
+              : "Reload this page to reconnect to the replacement server process",
+          );
+          document.getElementById("refresh-progress")?.classList.add("is-error");
+          if (refreshProgressState.mode === "bootstrap") {
+            void requestBackendStart();
+          }
+          // Do not let the old DOM's running marker finish the newly reset
+          // follower in this same tick. The next response owns recovery.
+          return;
         }
         if (recoverReadyBootstrap(progress)) return;
         if (

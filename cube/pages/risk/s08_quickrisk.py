@@ -24,7 +24,6 @@ _QUICK_SEARCH_IDENTITY_OPTIONS = (
     ("Underlying", "Underlying"),
     ("Tenor Swap", "Tenor Swap"),
     ("Tenor Option", "Tenor Option"),
-    ("Portfolio", "Portfolio"),
 )
 QUICK_SEARCH_INDEX_OPTIONS = (
     *_QUICK_SEARCH_IDENTITY_OPTIONS,

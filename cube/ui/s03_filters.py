@@ -542,10 +542,34 @@ def register_saved_filter_view_callbacks(
     """Register one independent saved-view workflow for a Dash page."""
 
     field_keys = tuple(field.key for field in controls.fields)
-    if repository.filter_keys != field_keys:
-        raise ValueError(
-            "Saved view repository filter keys must match the configured UI fields"
+    if not set(field_keys).issubset(repository.filter_keys):
+        raise ValueError("Saved view repository must cover the configured UI fields")
+
+    def page_view(view: SavedFilterView) -> SavedFilterView:
+        """Project the shared catalogue onto this page's visible fields."""
+
+        return SavedFilterView(
+            identifier=view.identifier,
+            scope=view.scope,
+            name=view.name,
+            filters={key: view.filters[key] for key in field_keys},
+            exclude_selected=view.exclude_selected,
         )
+
+    def repository_filters(
+        filters: Mapping[str, Sequence[str] | None],
+        *,
+        current: SavedFilterView | None = None,
+    ) -> dict[str, Sequence[str] | None]:
+        """Expand page fields without erasing another page's extra fields."""
+
+        expanded: dict[str, Sequence[str] | None] = {
+            key: () for key in repository.filter_keys
+        }
+        if current is not None:
+            expanded.update(current.filters)
+        expanded.update(filters)
+        return expanded
 
     @app.callback(
         Output(controls.current_label_id, "children"),
@@ -607,16 +631,17 @@ def register_saved_filter_view_callbacks(
                     view = repository.save_new(
                         controls.scope,
                         requested_name,
-                        filters,
+                        repository_filters(filters),
                         exclude_selected=exclude_selected,
                     )
                     status = f"Saved new view: {view.name}."
                     name_update = ""
                 else:
+                    current = repository.get(controls.scope, selected_identifier)
                     view = repository.update(
                         controls.scope,
                         selected_identifier,
-                        filters,
+                        repository_filters(filters, current=current),
                         exclude_selected=exclude_selected,
                     )
                     status = f"Updated view: {view.name}."
@@ -718,7 +743,7 @@ def register_saved_filter_view_callbacks(
             view = base_saved_filter_view(controls)
         else:
             try:
-                view = repository.get(controls.scope, selected_identifier)
+                view = page_view(repository.get(controls.scope, selected_identifier))
             except (OSError, ValueError) as error:
                 raise PreventUpdate from error
         return saved_view_apply_request(

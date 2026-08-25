@@ -9,7 +9,7 @@ from typing import Protocol
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, no_update
 
-from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import RISK_FILTER_DIMENSION_FIELDS
 from cube.app.s02_contracts import RefreshManagerProtocol
 
 from .s11_promotion import (
@@ -98,12 +98,12 @@ def register_promotion_callbacks(
     ):
         revision = int(data_revision or cache.revision)
         applied_filter_values = filter_values or [
-            [] for _field in FILTER_DIMENSION_FIELDS
+            [] for _field in RISK_FILTER_DIMENSION_FIELDS
         ]
         filters = {
             field.key: list(selected or [])
             for field, selected in zip(
-                FILTER_DIMENSION_FIELDS,
+                RISK_FILTER_DIMENSION_FIELDS,
                 applied_filter_values,
                 strict=True,
             )

@@ -624,6 +624,7 @@ class _RiskDataCache:
         risk_data: pd.DataFrame,
         revision: int,
         *,
+        prepared_frame_loader: Callable[..., pd.DataFrame | None] | None = None,
         reduced_tenor_catalog: CatalogSource | None = None,
         matrix_provider: MatrixProviderLike | None = None,
     ) -> None:
@@ -633,10 +634,12 @@ class _RiskDataCache:
             )
         self._lock = RLock()
         self._filter_compute_lock = RLock()
+        self._render_compute_lock = RLock()
         self._market_load_lock = RLock()
         self._reducer_load_lock = RLock()
         self._revision = int(revision)
         self._frame = risk_data
+        self._prepared_frame_loader = prepared_frame_loader
         self._reduced_tenor_catalog = reduced_tenor_catalog
         self._matrix_provider = matrix_provider
         self._tenor_reducer: ReducedTenorReducer | None = None
@@ -669,7 +672,15 @@ class _RiskDataCache:
         with self._lock:
             if int(revision) <= self._revision:
                 return self._frame
-        prepared = prepare_risk_data(frame)
+        if self._prepared_frame_loader is None:
+            prepared = prepare_risk_data(frame)
+        else:
+            prepared = self._prepared_frame_loader(
+                revision=int(revision),
+                frame=frame,
+            )
+            if prepared is None:
+                raise RuntimeError("Committed dashboard frame is unavailable")
         with self._market_load_lock:
             with self._lock:
                 if int(revision) <= self._revision:
@@ -970,16 +981,21 @@ class _RiskDataCache:
             if cached is not _UNSET:
                 self._rendered.move_to_end(key)
                 return cached
-        component = build()
-        with self._lock:
-            existing = self._rendered.get(key, _UNSET)
-            if existing is not _UNSET:
-                self._rendered.move_to_end(key)
-                return existing
-            self._rendered[key] = component
-            while len(self._rendered) > 24:
-                self._rendered.popitem(last=False)
-            return component
+        # Large hierarchy/table builds release the GIL inside pandas. Keep
+        # them one-at-a-time so Dash request threads cannot consume two cores
+        # and allocate duplicate component trees during the initial mount.
+        with self._render_compute_lock:
+            with self._lock:
+                existing = self._rendered.get(key, _UNSET)
+                if existing is not _UNSET:
+                    self._rendered.move_to_end(key)
+                    return existing
+            component = build()
+            with self._lock:
+                self._rendered[key] = component
+                while len(self._rendered) > 24:
+                    self._rendered.popitem(last=False)
+                return component
 
 
 def _next_counter(value: Any) -> int:

@@ -113,6 +113,28 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
     assert "is-refreshing" in _by_id(loading, "refresh-status").className
     assert _by_id(loading, "refresh-progress").hidden is False
     assert _by_id(loading, "shared-refresh-bootstrap-interval").disabled is False
+    assert _by_id(loading, "pnl-initial-load-retry").hidden is True
+    assert _by_id(loading, "pnl-initial-retry-enabled-store").data is False
+
+    failed = build_shared_refresh_shell(
+        None,
+        refresh_enabled=True,
+        initial_error="connector failed",
+    )
+    assert _by_id(failed, "pnl-initial-load-retry").hidden is True
+    assert _by_id(failed, "pnl-initial-load-retry").disabled is True
+    assert _by_id(failed, "pnl-initial-retry-enabled-store").data is True
+
+    stalled = build_shared_refresh_shell(
+        None,
+        refresh_enabled=True,
+        initial_error="connector has not returned",
+        keep_polling=True,
+    )
+    assert _by_id(stalled, "pnl-initial-load-retry").hidden is True
+    assert _by_id(stalled, "pnl-initial-load-retry").disabled is True
+    assert _by_id(stalled, "pnl-initial-retry-enabled-store").data is False
+    assert _by_id(loading, "shared-refresh-bootstrap-interval").interval == 2_000
     assert (
         _by_id(loading, "refresh-progress-function").children
         == "Waiting for the server-started refresh"
@@ -379,6 +401,8 @@ def test_cold_risk_body_can_exclude_every_shared_lifecycle_id() -> None:
         "initial-load-retry",
         "initial-load-message",
     } <= page_ids
+    assert _by_id(page, "initial-load-trigger").interval == 2_000
+    assert _by_id(page, "initial-load-trigger").max_intervals == -1
     assert {
         "shared-refresh-shell",
         "data-revision-store",
@@ -397,12 +421,19 @@ def test_cold_risk_body_can_exclude_every_shared_lifecycle_id() -> None:
     standalone_ids = [getattr(item, "id", None) for item in _walk(standalone)]
     assert standalone_ids.count("shared-refresh-shell") == 1
     assert standalone_ids.count("refresh-progress") == 1
+    assert standalone_ids.count("initial-load-retry") == 1
+    assert standalone_ids.count("pnl-initial-load-retry") == 1
 
 
 def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     page_callback = _callback_for_output(app, "cube-page-container", "children")
     shell_callback = _callback_for_output(app, "shared-refresh-shell", "children")
+    pnl_retry_callback = _callback_for_output(
+        app,
+        "pnl-initial-load-retry",
+        "hidden",
+    )
     refresh_callback = _callback_for_output(app, "refresh-commit-revision", "children")
     refresh_registration = next(
         registration
@@ -415,6 +446,18 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         (output.component_id, output.component_property)
         for output in _callback_outputs(page_callback)
     ] == [("cube-page-container", "children")]
+    page_registration = next(
+        registration
+        for registration in app._callback_list
+        if registration["output"] == "cube-page-container.children"
+    )
+    assert (
+        page_registration["running"]["running"]["initial-load-trigger.disabled"] is True
+    )
+    assert (
+        page_registration["running"]["runningOff"]["initial-load-trigger.disabled"]
+        is False
+    )
     assert [
         (output.component_id, output.component_property)
         for output in _callback_outputs(shell_callback)
@@ -423,6 +466,7 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         ("initial-load-trigger", "n_intervals"),
         ("initial-load-retry", "n_clicks"),
         ("pnl-initial-load-trigger", "n_intervals"),
+        ("pnl-initial-load-retry", "n_clicks"),
         ("shared-refresh-bootstrap-interval", "n_intervals"),
     }
     assert all(
@@ -433,8 +477,17 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
             "initial-load-trigger",
             "initial-load-retry",
             "pnl-initial-load-trigger",
+            "pnl-initial-load-retry",
         }
     )
+    shell_states = {(item["id"], item["property"]) for item in shell_callback["state"]}
+    assert ("pnl-page", "id") in shell_states
+    assert {
+        (item["id"], item["property"]) for item in pnl_retry_callback["inputs"]
+    } == {
+        ("pnl-initial-retry-enabled-store", "data"),
+        ("pnl-page", "id"),
+    }
     force_apply = next(
         item
         for item in refresh_callback["inputs"]
@@ -495,10 +548,54 @@ def test_financial_page_tick_hands_polling_to_the_persistent_shell(monkeypatch) 
         "children",
     )["callback"].__wrapped__
 
-    children = callback(1, 0, 0, 0, "refresh-status is-refreshing", "", 0)
+    children = callback(
+        1,
+        0,
+        0,
+        0,
+        0,
+        "refresh-status is-refreshing",
+        "",
+        0,
+        None,
+    )
     shell = SimpleNamespace(children=children)
 
     assert _by_id(shell, "shared-refresh-bootstrap-interval").disabled is False
+
+
+def test_cold_pnl_server_follower_releases_the_committed_revision(
+    monkeypatch,
+) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    monkeypatch.setattr(
+        risk_callbacks,
+        "ctx",
+        SimpleNamespace(triggered_id="shared-refresh-bootstrap-interval"),
+    )
+    callback = _callback_for_output(
+        app,
+        "shared-refresh-shell",
+        "children",
+    )["callback"].__wrapped__
+
+    children = callback(
+        0,
+        0,
+        1,
+        0,
+        1,
+        "refresh-status is-refreshing",
+        "",
+        0,
+        "pnl-page",
+    )
+    shell = SimpleNamespace(children=children)
+
+    assert _by_id(shell, "data-revision-store").data == manager.health.revision
+    assert _by_id(shell, "shared-refresh-bootstrap-interval").disabled is True
 
 
 def test_force_actions_disable_for_busy_and_clean_states() -> None:

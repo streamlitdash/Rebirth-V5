@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable
+from threading import Event, Lock
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from dash import dcc, html, no_update
+from dash.exceptions import PreventUpdate
 
 from cube.services.s04_savedviews import SavedFilterView
 from cube.domain.s07_governance import (
@@ -17,10 +20,12 @@ from cube.domain.s07_governance import (
 )
 from cube.domain.s10_search import MARKET_RESULT_COLUMNS, SearchCatalog
 from cube.pages.risk import s07_explorer as events_module
+from cube.pages.risk import s14_workspacecallbacks as workspace_callbacks
 from cube.ui.s01_constants import (
     DEFAULT_VIEW_DIMENSION,
     DIMENSION_FILTER_IDS,
-    FILTER_DIMENSION_FIELDS,
+    FILTER_DIMENSION_FIELDS as SHARED_FILTER_DIMENSION_FIELDS,
+    RISK_FILTER_DIMENSION_FIELDS,
     VIEW_DIMENSION_FIELDS,
 )
 from cube.ui.s02_aggregation import (
@@ -45,6 +50,9 @@ from cube.pages.risk.s02_state import (
     filter_unmapped_portfolios,
 )
 from cube.ui.s03_filters import saved_view_apply_request
+
+
+FILTER_DIMENSION_FIELDS = RISK_FILTER_DIMENSION_FIELDS
 
 
 def _raw_risk_frame() -> pd.DataFrame:
@@ -101,6 +109,7 @@ def _reducible_raw_frame() -> pd.DataFrame:
                 {
                     **base,
                     "Portfolio": portfolio,
+                    "Category": "Core" if portfolio == "BOOK-A" else "Hedge",
                     "Tenor Swap": tenor,
                     "Tenor Swap Order": order,
                     "Risk": risks[order],
@@ -221,29 +230,34 @@ def _callback_inputs_for_output(
     return {(item["id"], item["property"]) for item in metadata["inputs"]}
 
 
-def test_portfolio_is_a_ui_view_and_filter_without_changing_the_core_registry() -> None:
-    assert [field.key for field in FILTER_DIMENSION_FIELDS] == [
+def test_portfolio_is_internal_but_not_a_risk_filter_or_view() -> None:
+    assert [field.key for field in SHARED_FILTER_DIMENSION_FIELDS] == [
         "activity",
         "signoffgroup",
         "portfolio",
         "category",
         "subcategory",
     ]
+    assert [field.key for field in FILTER_DIMENSION_FIELDS] == [
+        "activity",
+        "signoffgroup",
+        "category",
+        "subcategory",
+    ]
     assert [field.key for field in VIEW_DIMENSION_FIELDS] == [
-        "portfolio",
         "product",
         "activity",
         "signoffgroup",
         "category",
         "subcategory",
     ]
-    assert DIMENSION_FILTER_IDS["portfolio"] == "portfolio-filter"
+    assert "portfolio" not in DIMENSION_FILTER_IDS
     assert DEFAULT_VIEW_DIMENSION == "activity"
-    assert selected_dimension("portfolio") == "portfolio"
-    assert dimension_title("portfolio") == "Portfolio"
+    assert selected_dimension("portfolio") == "activity"
+    assert dimension_title("portfolio") == "Activity"
 
 
-def test_prepare_retains_real_portfolio_and_filter_modes_use_position_grain() -> None:
+def test_prepare_retains_portfolio_but_risk_filters_use_reporting_fields() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
 
     assert prepared["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
@@ -251,20 +265,20 @@ def test_prepare_retains_real_portfolio_and_filter_modes_use_position_grain() ->
         prepared,
         ["IR"],
         ["Risk"],
-        {"portfolio": ["BOOK-A"], "activity": ["1111"]},
+        {"category": ["Core"], "activity": ["1111"]},
     )
     excluded = apply_filters(
         prepared,
         ["IR"],
         ["Risk"],
-        {"portfolio": ["BOOK-A"], "category": ["Core"]},
+        {"category": ["Core"]},
         exclude_selected=True,
     )
     unrestricted = apply_filters(
         prepared,
         ["IR"],
         ["Risk"],
-        {"portfolio": [], "category": None},
+        {"category": None},
         exclude_selected=True,
     )
 
@@ -272,6 +286,32 @@ def test_prepare_retains_real_portfolio_and_filter_modes_use_position_grain() ->
     # Exclusion is AND across the per-dimension complements.
     assert excluded["portfolio"].tolist() == ["BOOK-B"]
     assert unrestricted["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
+
+
+def test_prepare_keeps_numeric_and_named_portfolios_as_internal_text() -> None:
+    mixed = _raw_risk_frame()
+    mixed["Portfolio"] = [20222, "DLCDA"]
+
+    prepared = prepare_risk_data(mixed)
+    missing_value = prepare_risk_data(
+        _raw_risk_frame().assign(Portfolio=[pd.NA, "DLCDA"])
+    )
+    absent_column = prepare_risk_data(_raw_risk_frame().drop(columns="Portfolio"))
+
+    assert prepared["portfolio"].tolist() == ["20222", "DLCDA"]
+    assert missing_value["portfolio"].tolist() == ["Unspecified", "DLCDA"]
+    assert absent_column["portfolio"].eq("Unspecified").all()
+
+
+@pytest.mark.parametrize("values", ([True, False], [10.0, True]))
+def test_prepare_rejects_boolean_numeric_values_for_native_and_mixed_dtypes(
+    values,
+) -> None:
+    raw = _raw_risk_frame()
+    raw["Risk"] = values
+
+    with pytest.raises(ValueError, match="must not contain booleans"):
+        prepare_risk_data(raw)
 
 
 def test_dashboard_release_zero_fills_one_missing_metric_without_blanking_view() -> (
@@ -380,7 +420,8 @@ def test_include_and_exclude_modes_have_explicit_boolean_semantics() -> None:
             "pl": [1.0] * 5,
         }
     )
-    selections = {"activity": ["Credit"], "portfolio": ["B", "D"]}
+    frame["category"] = frame["portfolio"]
+    selections = {"activity": ["Credit"], "category": ["B", "D"]}
 
     included = apply_filters(frame, None, None, selections)
     excluded = apply_filters(
@@ -416,7 +457,7 @@ def test_ir_family_tabs_keep_xgamma_sources_inside_delta_and_vega() -> None:
 def test_filtered_cache_distinguishes_include_and_exclude_generations() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     cache = _RiskDataCache(prepared, revision=7)
-    selected = {"portfolio": ["BOOK-A"]}
+    selected = {"category": ["Core"]}
 
     included = cache.filtered(None, "IR", None, ["Risk"], selected)
     excluded = cache.filtered(
@@ -435,7 +476,7 @@ def test_filtered_cache_distinguishes_include_and_exclude_generations() -> None:
 def test_clear_cache_drops_only_reconstructable_risk_views() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     cache = _RiskDataCache(prepared, revision=7)
-    selected = {"portfolio": ["BOOK-A"]}
+    selected = {"category": ["Core"]}
     filtered = cache.filtered(None, "IR", None, ["Risk"], selected)
     builds: list[int] = []
 
@@ -453,6 +494,40 @@ def test_clear_cache_drops_only_reconstructable_risk_views() -> None:
     assert cache.filtered(None, "IR", None, ["Risk"], selected) is not filtered
     assert cache.rendered("risk-table", build_rendered) is not rendered
     assert builds == [1, 2]
+
+
+def test_render_cache_serializes_and_deduplicates_concurrent_builds() -> None:
+    cache = _RiskDataCache(prepare_risk_data(_raw_risk_frame()), revision=7)
+    entered = Event()
+    release = Event()
+    counts_lock = Lock()
+    builds = 0
+    active = 0
+    max_active = 0
+
+    def build_rendered() -> object:
+        nonlocal active, builds, max_active
+        with counts_lock:
+            builds += 1
+            active += 1
+            max_active = max(max_active, active)
+        entered.set()
+        assert release.wait(timeout=2.0)
+        with counts_lock:
+            active -= 1
+        return object()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(cache.rendered, "same-table", build_rendered)
+        assert entered.wait(timeout=2.0)
+        second = executor.submit(cache.rendered, "same-table", build_rendered)
+        release.set()
+        first_result = first.result(timeout=2.0)
+        second_result = second.result(timeout=2.0)
+
+    assert first_result is second_result
+    assert builds == 1
+    assert max_active == 1
 
 
 def test_full_tenor_mode_does_not_read_catalog_or_call_matrix_provider() -> None:
@@ -488,7 +563,7 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
         "IR",
         "delta",
         ["Risk"],
-        {"portfolio": ["BOOK-A"]},
+        {"category": ["Core"]},
     )
     assert calls == []
     assert full["tenor swap"].tolist() == ["1Y", "2Y"]
@@ -498,7 +573,7 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
         "IR",
         "delta",
         ["Risk"],
-        {"portfolio": ["BOOK-A"]},
+        {"category": ["Core"]},
         reduced_tenor=True,
     )
     assert calls == ["IR_STANDARD"]
@@ -518,7 +593,7 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
             "IR",
             "delta",
             ["Risk"],
-            {"portfolio": ["BOOK-A"]},
+            {"category": ["Core"]},
             reduced_tenor=True,
         )
         is reduced
@@ -569,7 +644,7 @@ def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> No
         "IR",
         "delta",
         ["Risk"],
-        {"portfolio": ["BOOK-A"]},
+        {"category": ["Core"]},
         reduced_tenor=True,
     )
     assert global_view.loc[global_view["tenor swap"].eq("2Y"), "open"].eq(200).all()
@@ -603,7 +678,7 @@ def test_risk_promotion_changes_only_after_explicit_generation() -> None:
         "IR",
         "delta",
         ["Risk"],
-        {"portfolio": ["BOOK-A"]},
+        {"category": ["Core"]},
     )
 
     assert global_view["risk"].sum() == 1_200.0
@@ -637,7 +712,7 @@ def test_risk_promotion_changes_only_after_explicit_generation() -> None:
         "IR",
         "delta",
         ["Risk"],
-        {"portfolio": ["BOOK-A"]},
+        {"category": ["Core"]},
         promotion_generation=generation_store,
     )
 
@@ -673,7 +748,6 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         filters={
             "activity": ("1111",),
             "signoffgroup": ("SOG-A",),
-            "portfolio": ("BOOK-A",),
             "category": ("Core",),
             "subcategory": ("Rates",),
         },
@@ -700,10 +774,9 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         False,
     )
 
-    assert result[1::2][:5] == (
+    assert result[1::2][:4] == (
         ["1111"],
         ["SOG-A"],
-        ["BOOK-A"],
         ["Core"],
         ["Rates"],
     )
@@ -726,13 +799,13 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         None,
         True,
     )
-    assert coalesced[1::2][:5] == result[1::2][:5]
+    assert coalesced[1::2][:4] == result[1::2][:4]
     assert coalesced[-1] == ["exclude"]
 
     manual = [[] for _field in FILTER_DIMENSION_FIELDS]
-    manual[2] = ["BOOK-B"]
+    manual[2] = ["Hedge"]
     superseded = callback(3, request, None, *manual, [], None, True)
-    assert superseded[5] == ["BOOK-B"]
+    assert superseded[5] == ["Hedge"]
     assert superseded[-1] == []
 
     acknowledged = callback(
@@ -744,7 +817,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         request["request_id"],
         True,
     )
-    assert acknowledged[1::2][:5] == ([], [], [], [], [])
+    assert acknowledged[1::2][:4] == ([], [], [], [])
     assert acknowledged[-1] == []
 
 
@@ -804,7 +877,7 @@ def test_risk_clear_cache_preserves_the_committed_filter_draft(monkeypatch) -> N
         )
     )
     owner = metadata["callback"].__wrapped__
-    selected = [["1111"], ["SOG-A"], ["BOOK-A"], ["Core"], ["Rates"]]
+    selected = [["1111"], ["SOG-A"], ["Core"], ["Rates"]]
     monkeypatch.setattr(
         events_module,
         "ctx",
@@ -813,7 +886,7 @@ def test_risk_clear_cache_preserves_the_committed_filter_draft(monkeypatch) -> N
 
     result = owner(2, None, 1, *selected, ["exclude"], None, True)
 
-    assert result[1::2][:5] == tuple(selected)
+    assert result[1::2][:4] == tuple(selected)
     assert result[-2] is True
     assert result[-1] == ["exclude"]
 
@@ -930,16 +1003,11 @@ def test_quick_risk_identity_choices_follow_the_governed_filter_view() -> None:
     )
 
 
-def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
+def test_portfolio_is_not_rendered_as_a_risk_filter_or_dimension() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
     components = list(_walk(layout))
 
-    portfolio_filter = next(
-        item
-        for item in components
-        if isinstance(item, dcc.Dropdown) and item.id == "portfolio-filter"
-    )
     exclude_mode = next(
         item
         for item in components
@@ -969,10 +1037,10 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         if isinstance(item, dcc.RadioItems) and item.id == "table-dimension"
     )
 
-    assert [option["value"] for option in portfolio_filter.options] == [
-        "BOOK-A",
-        "BOOK-B",
-    ]
+    assert not any(
+        isinstance(item, dcc.Dropdown) and item.id == "portfolio-filter"
+        for item in components
+    )
     assert exclude_mode.options == [
         {
             "label": "Exclude rows matching any selected value",
@@ -984,7 +1052,6 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
     assert [control.children[0].children for control in filter_fields] == [
         "Activity",
         "Signoff Group",
-        "Portfolio",
         "Category",
         "Sub Category",
     ]
@@ -997,14 +1064,14 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         and "saved-view-filter-note" in set(str(getattr(item, "className", "")).split())
     ]
     assert len(saved_view_notes) == 1
-    assert "Risk selections remain independent" in saved_view_notes[0].children
+    assert "Risk is aggregated across Portfolio" in saved_view_notes[0].children
     assert filter_row in list(_walk(saved_view_bar))
     for selector in (aggregate_dimension, table_dimension):
-        assert {option["value"] for option in selector.options} >= {"portfolio"}
+        assert "portfolio" not in {option["value"] for option in selector.options}
         assert selector.value == "activity"
 
 
-def test_warm_risk_layout_pre_renders_default_tables_and_filter_state() -> None:
+def test_warm_risk_layout_defers_tables_and_preserves_filter_state() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
     components = list(_walk(layout))
@@ -1020,10 +1087,20 @@ def test_warm_risk_layout_pre_renders_default_tables_and_filter_state() -> None:
         for item in components
         if getattr(item, "id", None) == "dimension-filter-values-store"
     )
+    render_ready = next(
+        item
+        for item in components
+        if getattr(item, "id", None) == "risk-initial-render-ready"
+    )
 
-    assert any(isinstance(item, html.Table) for item in _walk(risk_grid.children))
-    assert any(isinstance(item, html.Table) for item in _walk(aggregate_grid.children))
+    assert not any(isinstance(item, html.Table) for item in _walk(risk_grid.children))
+    assert not any(
+        isinstance(item, html.Table) for item in _walk(aggregate_grid.children)
+    )
+    assert risk_grid.children.children == "Loading Risk Explorer…"
+    assert aggregate_grid.children.children == "Loading Aggregate P&L…"
     assert filter_values.data == [[] for _field in FILTER_DIMENSION_FIELDS]
+    assert render_ready.data is None
 
 
 def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> None:
@@ -1201,22 +1278,57 @@ def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
         "children",
     )
     assert ("promotion-generation-store", "data") not in aggregate_inputs
+    assert ("risk-initial-render-ready", "data") in aggregate_inputs
     assert (
         '{"risk_type":["ALL"],"type":"aggregate-row-toggle"}',
         "n_clicks",
     ) in aggregate_inputs
 
 
-def test_aggregate_pl_can_group_by_portfolio() -> None:
+def test_aggregate_pl_falls_back_from_portfolio_and_aggregates_books() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     component = build_aggregate_pl_table(prepared, "portfolio", [])
     header = next(item for item in _walk(component) if isinstance(item, html.Thead))
     labels = [str(item.children) for item in _walk(header) if isinstance(item, html.Th)]
 
-    assert labels == ["Index", "BOOK-A", "BOOK-B", "Total"]
+    assert labels == ["Index", "1111", "Total"]
 
 
-def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() -> None:
+def test_aggregate_waits_for_the_matching_risk_render_revision(monkeypatch) -> None:
+    app = build_app(data=_raw_risk_frame())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == "aggregate-pl-grid"
+            and output.component_property == "children"
+            for output in _callback_outputs(item)
+        )
+    )
+    callback = metadata["callback"].__wrapped__
+    arguments = ("activity", 0, None, [], [], [[], [], [], []], [], [])
+
+    with pytest.raises(PreventUpdate):
+        callback(*arguments)
+
+    monkeypatch.setattr(workspace_callbacks, "ctx", SimpleNamespace(triggered_id=None))
+    _open_rows, component = callback(
+        "activity",
+        0,
+        0,
+        [],
+        [],
+        [[], [], [], []],
+        [],
+        [],
+    )
+
+    assert any(isinstance(item, html.Table) for item in _walk(component))
+
+
+def test_risk_consumers_use_applied_filters_but_unmapped_inventory_is_complete() -> (
+    None
+):
     app = build_app(refresh_manager=_warm_manager())
     applied_exclusion = ("risk-filter-exclude-applied-store", "data")
     applied_filters = ("dimension-filter-values-store", "data")
@@ -1224,7 +1336,6 @@ def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() 
     for output_id in (
         "aggregate-pl-grid",
         "top-promotions-grid",
-        "unmapped-books-grid",
         "quick-search-results",
     ):
         inputs = _callback_inputs_for_output(app, output_id, "children")
@@ -1232,6 +1343,12 @@ def test_every_applicable_risk_consumer_is_wired_to_portfolio_and_filter_mode() 
         assert applied_filters in inputs
         assert ("risk-filter-exclude-selected", "value") not in inputs
         assert ("portfolio-filter", "value") not in inputs
+
+    unmapped_inputs = _callback_inputs_for_output(
+        app, "unmapped-books-grid", "children"
+    )
+    assert applied_exclusion not in unmapped_inputs
+    assert applied_filters not in unmapped_inputs
 
     explorer_inputs = _callback_inputs_for_output(app, "risk-grid", "children")
     assert applied_exclusion in explorer_inputs
@@ -1314,7 +1431,7 @@ def _quick_catalog() -> SearchCatalog:
     )
 
 
-def test_quick_risk_filters_portfolio_in_both_modes_at_position_grain() -> None:
+def test_search_catalog_retains_portfolio_but_risk_dashboard_rejects_it() -> None:
     catalog = _quick_catalog()
     kwargs = {
         "index_columns": ("Portfolio",),
@@ -1331,24 +1448,19 @@ def test_quick_risk_filters_portfolio_in_both_modes_at_position_grain() -> None:
         **kwargs,
     ).frame
     prepared = prepare_risk_data(_raw_risk_frame())
-    main_included = apply_filters(
-        prepared,
-        ["IR"],
-        ["Risk"],
-        {"portfolio": ["BOOK-A"]},
-    )
-    main_excluded = apply_filters(
-        prepared,
-        ["IR"],
-        ["Risk"],
-        {"portfolio": ["BOOK-A"]},
-        exclude_selected=True,
-    )
+    with pytest.raises(ValueError, match="Unknown reporting-dimension"):
+        apply_filters(
+            prepared,
+            ["IR"],
+            ["Risk"],
+            {"portfolio": ["BOOK-A"]},
+        )
+    dashboard = apply_filters(prepared, ["IR"], ["Risk"], {})
 
     assert included[["Portfolio", "Risk"]].values.tolist() == [["BOOK-A", 10.0]]
     assert excluded[["Portfolio", "Risk"]].values.tolist() == [["BOOK-B", 20.0]]
-    assert main_included[["portfolio", "risk"]].values.tolist() == [["BOOK-A", 10.0]]
-    assert main_excluded[["portfolio", "risk"]].values.tolist() == [["BOOK-B", 20.0]]
+    assert dashboard["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
+    assert dashboard["risk"].sum() == 30.0
 
 
 def test_quick_risk_helper_forwards_exclusion_and_action_tokens_bind_the_mode() -> None:

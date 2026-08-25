@@ -75,6 +75,7 @@ def test_javascript_behaviors_have_one_page_or_shared_owner() -> None:
         'event.code === "F9"',
         'event.code === "F8"',
         'refreshTrigger.id === "clear-cache-button"',
+        '"pnl-initial-load-retry"',
         'setProps("data-player-visibility-store"',
         'window.addEventListener("pagehide"',
         'children: "Recalculating…"',

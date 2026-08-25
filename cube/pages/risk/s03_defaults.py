@@ -14,7 +14,7 @@ from typing import Final
 
 import pandas as pd
 
-from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import RISK_FILTER_DIMENSION_FIELDS
 
 
 DEFAULT_RISK_FILTER_LABEL: Final = "Default - Activities 1-3"
@@ -109,7 +109,7 @@ def default_risk_filter_values(frame: pd.DataFrame) -> tuple[list[str], ...]:
     )
     return tuple(
         list(resolved.activities) if field.key == "activity" else []
-        for field in FILTER_DIMENSION_FIELDS
+        for field in RISK_FILTER_DIMENSION_FIELDS
     )
 
 
@@ -119,7 +119,7 @@ def default_risk_filter_payload(frame: pd.DataFrame) -> dict[str, list[str]]:
     values = default_risk_filter_values(frame)
     return {
         field.key: selected
-        for field, selected in zip(FILTER_DIMENSION_FIELDS, values, strict=True)
+        for field, selected in zip(RISK_FILTER_DIMENSION_FIELDS, values, strict=True)
     }
 
 

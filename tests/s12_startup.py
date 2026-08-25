@@ -21,6 +21,7 @@ from cube.pages.static_data import (
     build_static_data_page,
     build_static_data_table,
 )
+from cube.pages.risk import s02_state as risk_state
 from cube.app import s07_factory as factory
 from cube.app import s04_startup as events
 from cube.app.s07_factory import build_app
@@ -187,6 +188,11 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
         for item in base_components
         if getattr(item, "id", None) == "shared-refresh-bootstrap-interval"
     )
+    initial_trigger = next(
+        item
+        for item in _walk(risk_page)
+        if getattr(item, "id", None) == "initial-load-trigger"
+    )
     mounted_ids = [
         _component_id_key(component_id)
         for item in [*base_components, *_walk(risk_page)]
@@ -221,6 +227,9 @@ def test_manager_backed_risk_page_mounts_server_owned_loading_shell(
     # The router reveals this shell after resolving the URL. Its follower must
     # already be live so direct Data/Stock/Statics visits receive revision 1.
     assert bootstrap_interval.disabled is False
+    assert bootstrap_interval.interval == 2_000
+    assert initial_trigger.interval == 2_000
+    assert initial_trigger.max_intervals == -1
     assert {"cube-page-container", "initial-load-trigger"} <= risk_ids
     # The factory-level shared shell owns the progress IDs; the cold Risk body
     # must not mount a duplicate copy.
@@ -410,7 +419,17 @@ def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
     assert "revisionAdvanced" in source
     assert "progressStartedDuringAttempt" in source
     assert "server_boot_id" in source
+    assert "previousBackendProgress" in source
+    assert "Server process restarted during refresh" in source
+    assert "previous attempt ended before Python could report an error" in source
+    assert "Last confirmed work:" in source
     assert 'refreshProgressState.mode === "bootstrap"' in source
+    assert "serverReplaced: false" in source
+    assert "refreshProgressState.serverReplaced = true" in source
+    assert "state.serverReplaced" in source
+    assert "state.serverReplaced = false" in source
+    assert 'state.backendError = ""' in source
+    assert "reload this page to reconnect before using refreshed data" in source
     assert "const startupAttemptMatches" in source
     assert "attributeOldValue: true" in source
     assert "transitionedFromRunning" in source
@@ -858,6 +877,7 @@ def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
         return original(frame)
 
     monkeypatch.setattr(factory, "prepare_risk_data", counted_prepare)
+    monkeypatch.setattr(risk_state, "prepare_risk_data", counted_prepare)
 
     _native_page(app, "/")
     _native_page(app, "/pnl")
@@ -874,6 +894,33 @@ def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
     )
 
     assert calls == 1
+
+
+def test_prepared_dashboard_cache_honours_an_older_requested_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original_register = factory.register_callbacks
+
+    def capture_loader(*args, **kwargs):
+        captured["loader"] = kwargs["prepared_frame_loader"]
+        return original_register(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "register_callbacks", capture_loader)
+    manager = build_production_refresh_manager()
+    build_app(refresh_manager=manager)
+    manager.refresh(force_risk=True, force_pl=True)
+    source = manager.read_frame("dashboard_frame").frame
+    newer = source.assign(Activity="NEWER")
+    older = source.assign(Activity="OLDER")
+    loader = captured["loader"]
+
+    newest_prepared = loader(revision=2, frame=newer)
+    requested_older = loader(revision=1, frame=older)
+
+    assert set(newest_prepared["activity"]) == {"NEWER"}
+    assert set(requested_older["activity"]) == {"OLDER"}
+    assert loader(revision=2, frame=newer) is newest_prepared
 
 
 def test_native_pages_match_the_public_prefix_exactly() -> None:

@@ -44,6 +44,7 @@ def register_workspace_callbacks(
         Output("aggregate-pl-grid", "children"),
         Input("aggregate-pl-dimension", "value"),
         Input("data-revision-store", "data"),
+        Input("risk-initial-render-ready", "data"),
         Input({"type": "aggregate-row-toggle", "risk_type": ALL}, "n_clicks"),
         Input("split-filter", "value"),
         Input("dimension-filter-values-store", "data"),
@@ -53,6 +54,7 @@ def register_workspace_callbacks(
     def reduce_and_render_aggregate_pl(
         dimension,
         _data_revision,
+        risk_initial_render_ready,
         row_clicks,
         selected_splits,
         dimension_values,
@@ -60,6 +62,13 @@ def register_workspace_callbacks(
         open_risk_types,
     ):
         """Apply shared filters, reduce a chevron, and render Aggregate P&L."""
+        try:
+            risk_render_revision = int(risk_initial_render_ready)
+            data_revision = int(_data_revision or 0)
+        except (TypeError, ValueError):
+            raise PreventUpdate from None
+        if risk_render_revision != data_revision:
+            raise PreventUpdate
         updated_open_risk_types = no_update
         effective_open_risk_types = list(open_risk_types or [])
         triggered = ctx.triggered_id
@@ -82,21 +91,40 @@ def register_workspace_callbacks(
             )
             updated_open_risk_types = effective_open_risk_types
 
-        aggregate_frame = cache.filtered(
-            refresh_manager,
-            None,  # Do not limit Aggregate P&L to the active Risk Explorer tab.
-            None,  # Do not apply the active IR-family tab.
-            selected_splits,
-            reporting_filter_map(dimension_values),
-            exclude_selected=risk_exclude_selected(exclude_value),
+        filter_map = reporting_filter_map(dimension_values)
+        render_key = json.dumps(
+            {
+                "view": "aggregate-pl",
+                "revision": cache.revision,
+                "dimension": dimension,
+                "splits": sorted(selected_splits or []),
+                "filters": {
+                    key: sorted(selected or [])
+                    for key, selected in sorted(filter_map.items())
+                },
+                "exclude_selected": risk_exclude_selected(exclude_value),
+                "open_risk_types": effective_open_risk_types,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
         )
 
         return (
             updated_open_risk_types,
-            build_aggregate_pl_table(
-                aggregate_frame,
-                dimension,
-                effective_open_risk_types,
+            cache.rendered(
+                render_key,
+                lambda: build_aggregate_pl_table(
+                    cache.filtered(
+                        refresh_manager,
+                        None,  # Aggregate includes every Risk Explorer tab.
+                        None,  # Aggregate includes every IR family.
+                        selected_splits,
+                        filter_map,
+                        exclude_selected=risk_exclude_selected(exclude_value),
+                    ),
+                    dimension,
+                    effective_open_risk_types,
+                ),
             ),
         )
 

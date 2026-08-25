@@ -14,13 +14,14 @@ PORTFOLIO_UI_FIELD = PortfolioField(
     PORTFOLIO_COLUMN,
     "portfolio",
     "Portfolio",
-    roles=frozenset({"view_dimension", "filter_dimension"}),
+    # Stock and P&L still use Portfolio as a filter. Risk deliberately keeps
+    # this shared saved-view field internal and aggregates across it.
+    roles=frozenset({"filter_dimension"}),
     dashboard_section="position",
     filter_id="portfolio-filter",
 )
-VIEW_DIMENSION_FIELDS = (
-    PORTFOLIO_UI_FIELD,
-    *(field for field in PORTFOLIO_FIELDS if "view_dimension" in field.roles),
+VIEW_DIMENSION_FIELDS = tuple(
+    field for field in PORTFOLIO_FIELDS if "view_dimension" in field.roles
 )
 _FILTER_FIELD_BY_KEY = {
     field.key: field
@@ -41,13 +42,16 @@ if set(_FILTER_FIELD_BY_KEY) != set(FILTER_DIMENSION_ORDER):
 FILTER_DIMENSION_FIELDS = tuple(
     _FILTER_FIELD_BY_KEY[key] for key in FILTER_DIMENSION_ORDER
 )
+RISK_FILTER_DIMENSION_FIELDS = tuple(
+    field for field in FILTER_DIMENSION_FIELDS if field.key != "portfolio"
+)
 ROW_TOGGLE_OPEN_GLYPH = "−"
 ROW_TOGGLE_CLOSED_GLYPH = "▸"
 VIEW_DIMENSIONS = tuple(field.key for field in VIEW_DIMENSION_FIELDS)
-FILTER_COLUMNS = [field.key for field in FILTER_DIMENSION_FIELDS]
+FILTER_COLUMNS = [field.key for field in RISK_FILTER_DIMENSION_FIELDS]
 DIMENSION_LABELS = {field.key: field.label for field in VIEW_DIMENSION_FIELDS}
 DIMENSION_FILTER_IDS = {
-    field.key: field.dash_filter_id for field in FILTER_DIMENSION_FIELDS
+    field.key: field.dash_filter_id for field in RISK_FILTER_DIMENSION_FIELDS
 }
 DEFAULT_VIEW_DIMENSION = next(
     field.key for field in VIEW_DIMENSION_FIELDS if "default_view" in field.roles
@@ -295,6 +299,7 @@ __all__ = [
     "PROMOTION_THRESHOLD_COLUMNS",
     "REQUIRED_INPUT_COLUMNS",
     "RISK_TYPE_ORDER",
+    "RISK_FILTER_DIMENSION_FIELDS",
     "ROW_TOGGLE_CLOSED_GLYPH",
     "ROW_TOGGLE_OPEN_GLYPH",
     "ROW_KEY_COLUMNS",

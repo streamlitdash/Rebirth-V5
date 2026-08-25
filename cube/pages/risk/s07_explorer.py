@@ -23,7 +23,7 @@ from cube.ui.s01_constants import (
     DETAIL_COMPONENT_LABELS,
     DETAIL_COMPONENTS,
     EXPANDABLE_METRICS,
-    FILTER_DIMENSION_FIELDS,
+    RISK_FILTER_DIMENSION_FIELDS,
     METRIC_COLUMNS,
     PLOT_METRICS,
     compose_detail_metric,
@@ -49,7 +49,6 @@ from .s02_state import (
     _new_trade_details_for_selection,
     _RiskDataCache,
     _valid_delegated_row_key,
-    filter_unmapped_portfolios,
     risk_action_view_token,
     risk_exclude_selected,
 )
@@ -92,6 +91,20 @@ def register_explorer_callbacks(
     dimension_filter_ids: Sequence[str],
 ) -> None:
     """Register Cross, Split VA, detail, filters, and tree interactions."""
+
+    app.clientside_callback(
+        """
+        function (context, ready) {
+            if (!context) return window.dash_clientside.no_update;
+            const revision = Number(context.data_revision || 0);
+            if (ready === revision) return window.dash_clientside.no_update;
+            return revision;
+        }
+        """,
+        Output("risk-initial-render-ready", "data"),
+        Input("risk-view-context-store", "data"),
+        State("risk-initial-render-ready", "data"),
+    )
 
     @app.callback(
         Output("dimension-filter-values-store", "data"),
@@ -213,7 +226,7 @@ def register_explorer_callbacks(
 
         result = []
         for field, selected in zip(
-            FILTER_DIMENSION_FIELDS,
+            RISK_FILTER_DIMENSION_FIELDS,
             selected_values,
             strict=True,
         ):
@@ -886,16 +899,12 @@ def register_explorer_callbacks(
         Output("unmapped-books-grid", "children"),
         Input("unmapped-books-summary", "n_clicks"),
         Input("data-revision-store", "data"),
-        Input("dimension-filter-values-store", "data"),
-        Input("risk-filter-exclude-applied-store", "data"),
         State("unmapped-books-details", "open"),
         prevent_initial_call=True,
     )
     def render_unmapped_books(
         _summary_clicks,
         _revision,
-        dimension_values,
-        exclude_value,
         is_open,
     ):
         """Load the complete unmapped-book inventory only while it is open."""
@@ -910,21 +919,6 @@ def register_explorer_callbacks(
             refresh_manager.read_frame("unmapped_frame").frame
             if refresh_manager is not None
             else pd.DataFrame()
-        )
-        portfolio_index = next(
-            index
-            for index, field in enumerate(FILTER_DIMENSION_FIELDS)
-            if field.key == "portfolio"
-        )
-        selected_portfolios = (
-            (dimension_values or [])[portfolio_index]
-            if len(dimension_values or []) > portfolio_index
-            else []
-        )
-        frame = filter_unmapped_portfolios(
-            frame,
-            selected_portfolios,
-            exclude_selected=risk_exclude_selected(exclude_value),
         )
         return True, build_unmapped_books_table(frame)
 

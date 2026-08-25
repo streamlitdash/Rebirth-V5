@@ -51,7 +51,10 @@ from cube.pages.data.s01_selection import (
 )
 from cube.pages.data.s02_view import build_data_page
 from cube.pages.risk.s04_handoff import _handoff_payload, build_history_handoff
-from cube.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import (
+    DIMENSION_FILTER_IDS,
+    RISK_FILTER_DIMENSION_FIELDS as FILTER_DIMENSION_FIELDS,
+)
 from cube.app.s07_factory import build_app
 
 
@@ -302,7 +305,9 @@ def test_quick_handoff_uses_catalog_identity_and_active_filter_view() -> None:
         snapshot_date=pd.Timestamp("2026-08-21"),
     )
     manager = _Resolver(resolved)
-    dimension_values = [[f"VALUE-{index}"] for index in range(5)]
+    dimension_values = [
+        [f"VALUE-{index}"] for index in range(len(FILTER_DIMENSION_FIELDS))
+    ]
 
     handoff = build_history_handoff(
         manager,

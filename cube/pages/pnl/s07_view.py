@@ -270,7 +270,7 @@ def build_pl_page(
                 (
                     dcc.Interval(
                         id="pnl-initial-load-trigger",
-                        interval=500,
+                        interval=2_000,
                         n_intervals=0,
                         max_intervals=1,
                     )

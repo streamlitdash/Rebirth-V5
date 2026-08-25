@@ -25,7 +25,10 @@ from cube.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
 from cube.pages.risk.s03_defaults import DEFAULT_RISK_FILTER_LABEL
 from cube.app import s07_factory as factory_module
 from cube.ui import s03_filters as saved_views_module
-from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import (
+    FILTER_DIMENSION_FIELDS,
+    RISK_FILTER_DIMENSION_FIELDS,
+)
 from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     BASE_SAVED_VIEW_LABEL,
@@ -41,6 +44,7 @@ from cube.ui.s03_filters import (
 
 
 FILTER_KEYS = tuple(field.key for field in FILTER_DIMENSION_FIELDS)
+RISK_FILTER_KEYS = tuple(field.key for field in RISK_FILTER_DIMENSION_FIELDS)
 
 
 def _filters(activity: str = "Macro") -> dict[str, list[str]]:
@@ -81,7 +85,7 @@ def _callback_for_output(app: Dash, component_id: str, component_property: str):
     return metadata["callback"].__wrapped__
 
 
-def test_filter_order_is_the_same_explicit_five_column_contract() -> None:
+def test_risk_omits_portfolio_while_stock_and_pnl_keep_shared_contract() -> None:
     assert FILTER_KEYS == (
         "activity",
         "signoffgroup",
@@ -97,7 +101,12 @@ def test_filter_order_is_the_same_explicit_five_column_contract() -> None:
         "Sub Category",
     )
     assert tuple(field.key for field in STOCK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
-    assert tuple(field.key for field in RISK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
+    assert tuple(field.key for field in RISK_SAVED_VIEW_CONTROLS.fields) == (
+        "activity",
+        "signoffgroup",
+        "category",
+        "subcategory",
+    )
     assert tuple(field.key for field in PL_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
     assert {
         RISK_SAVED_VIEW_CONTROLS.selector_id,
@@ -462,7 +471,7 @@ def test_generic_callbacks_never_own_filter_dropdown_values(tmp_path: Path) -> N
             build_saved_filter_view_bar(RISK_SAVED_VIEW_CONTROLS),
             *[
                 dcc.Dropdown(id=RISK_SAVED_VIEW_CONTROLS.filter_ids[field.key])
-                for field in FILTER_DIMENSION_FIELDS
+                for field in RISK_FILTER_DIMENSION_FIELDS
             ],
             dcc.Checklist(id=RISK_SAVED_VIEW_CONTROLS.exclude_id),
         ]
@@ -501,7 +510,7 @@ def test_page_readiness_commits_base_without_treating_drafts_as_inputs(
             build_saved_filter_view_bar(controls),
             *[
                 dcc.Dropdown(id=controls.filter_ids[field.key], value=[])
-                for field in FILTER_DIMENSION_FIELDS
+                for field in controls.fields
             ],
             dcc.Checklist(id=controls.exclude_id, value=[]),
         ]
@@ -516,7 +525,7 @@ def test_page_readiness_commits_base_without_treating_drafts_as_inputs(
         )
     )
     commit = metadata["callback"].__wrapped__
-    base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], [], []]
+    base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], []]
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
@@ -605,7 +614,7 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             BASE_SAVED_VIEW_ID,
             "",
             None,
-            *([[]] * len(FILTER_KEYS)),
+            *([[]] * len(controls.fields)),
             [],
         )
         assert options == [
@@ -623,7 +632,7 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
         named.identifier,
         0,
         None,
-        *([[]] * len(FILTER_KEYS)),
+        *([[]] * len(RISK_FILTER_KEYS)),
         [],
     )
     risk_values, risk_exclude = saved_view_request_values(
@@ -633,7 +642,6 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     assert risk_values == (
         ["Credit"],
         ["SOG-A"],
-        ["BOOK-B", "BOOK-D"],
         ["Core"],
         ["Rates"],
     )
@@ -680,7 +688,7 @@ def test_callbacks_save_update_delete_and_apply_base(
             build_saved_filter_view_bar(controls),
             *[
                 dcc.Dropdown(id=controls.filter_ids[field.key], value=[])
-                for field in FILTER_DIMENSION_FIELDS
+                for field in controls.fields
             ],
             dcc.Checklist(id=controls.exclude_id, value=[]),
         ]
@@ -691,7 +699,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     commit = _callback_for_output(app, controls.committed_state_id, "data")
     actions = _callback_for_output(app, controls.save_id, "children")
     current_label = _callback_for_output(app, controls.current_label_id, "children")
-    selected_values = [_filters()[key] for key in FILTER_KEYS]
+    selected_values = [_filters()[key] for key in RISK_FILTER_KEYS]
 
     assert actions(BASE_SAVED_VIEW_ID) == ("Save New", True, False)
     assert (
@@ -735,7 +743,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         identifier,
         0,
         None,
-        *([[]] * len(FILTER_KEYS)),
+        *([[]] * len(RISK_FILTER_KEYS)),
         [],
     )
     draft_values, draft_exclude = saved_view_request_values(named_draft, controls)
@@ -760,6 +768,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         ["exclude"],
     )
     assert current_label(committed, saved[0]) == "Morning"
+    assert repository.get("stock", identifier).filters["portfolio"] == ()
 
     updated_filters = _filters("Updated")
     monkeypatch.setattr(
@@ -775,7 +784,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         identifier,
         "Ignored while updating",
         committed,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
     assert updated[1] == identifier
@@ -801,7 +810,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         updated_draft,
         controls,
     )
-    assert staged_values == tuple(updated_filters[key] for key in FILTER_KEYS)
+    assert staged_values == tuple(updated_filters[key] for key in RISK_FILTER_KEYS)
     assert staged_exclude == []
 
     monkeypatch.setattr(
@@ -813,11 +822,11 @@ def test_callbacks_save_update_delete_and_apply_base(
         BASE_SAVED_VIEW_ID,
         0,
         committed,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         ["exclude"],
     )
     base_values, exclude = saved_view_request_values(base_request, controls)
-    assert base_values == ([], [], [], [], [])
+    assert base_values == ([], [], [], [])
     assert exclude == []
 
     monkeypatch.setattr(
@@ -829,7 +838,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         BASE_SAVED_VIEW_ID,
         1,
         committed,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
     restored_values, restored_exclude = saved_view_request_values(
@@ -846,7 +855,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         BASE_SAVED_VIEW_ID,
         "",
         committed,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
     assert cancelled[1] == identifier
@@ -865,7 +874,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         identifier,
         "",
         committed,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
     assert deleted[1] is no_update
@@ -881,7 +890,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         2,
         True,
         BASE_SAVED_VIEW_ID,
-        *([[]] * len(FILTER_KEYS)),
+        *([[]] * len(RISK_FILTER_KEYS)),
         [],
         committed,
     )
@@ -898,7 +907,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         identifier,
         "",
         committed_base,
-        *(updated_filters[key] for key in FILTER_KEYS),
+        *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
     assert deleted[0] == [

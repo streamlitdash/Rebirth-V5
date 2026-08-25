@@ -116,7 +116,7 @@ def test_manual_promotion_is_immutable_and_revision_bound() -> None:
         risk_type="IR",
         ir_family="delta",
         splits=["Risk"],
-        filters=_filters(portfolio=["BOOK-A"]),
+        filters=_filters(category=["Core"]),
     )
     assert promotion_basis_is_stale(generation, changed_basis)
-    assert "Portfolio: BOOK-A" in promotion_basis_summary(changed_basis)
+    assert "Category: Core" in promotion_basis_summary(changed_basis)

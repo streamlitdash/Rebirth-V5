@@ -16,7 +16,6 @@ from cube.ui.s02_aggregation import (
     ordered_unique,
 )
 from cube.ui.s04_components import (
-    build_aggregate_pl_table,
     build_cube_loader,
     build_shared_refresh_shell,
 )
@@ -29,7 +28,7 @@ from cube.ui.s01_constants import (
     DETAIL_MEASURES,
     DIMENSION_FILTER_IDS,
     EXPANDABLE_METRICS,
-    FILTER_DIMENSION_FIELDS,
+    RISK_FILTER_DIMENSION_FIELDS,
     IR_GREEK_FAMILY_LABELS,
     METRIC_COLUMNS,
     UNDERLYING_SORT_METRICS,
@@ -42,7 +41,6 @@ from .s05_charts import detail_tenor_view_state
 from .s01_common import RISK_FILTER_NOTE, RISK_SAVED_VIEW_CONTROLS, metric_title
 from .s03_defaults import default_risk_filter_payload, default_risk_filter_values
 from .s11_promotion import build_promotion_generation_controls
-from .s06_explorertables import build_risk_table
 from .s09_quickmarket import build_quick_market_search
 from .s08_quickrisk import build_quick_search
 from .s13_workspacetables import TOP_PROMOTION_SIGNALS
@@ -597,7 +595,7 @@ def build_layout(
             ],
             className="control-field",
         )
-        for index, field in enumerate(FILTER_DIMENSION_FIELDS)
+        for index, field in enumerate(RISK_FILTER_DIMENSION_FIELDS)
     ]
     initial_risk_type = risk_options[0]["value"]
     initial_ir_family = "delta" if initial_risk_type == "IR" else None
@@ -621,22 +619,18 @@ def build_layout(
             CREDIT_MEASURES[0],
         )
     initial_open_rows = default_open_rows(initial_risk_frame, initial_risk_type)
-    initial_risk_table = build_risk_table(
-        initial_risk_frame,
-        [],
-        initial_open_rows,
-        dimension=DEFAULT_VIEW_DIMENSION,
-        toggle_type="main-row-toggle",
-        cell_type="main-risk-cell",
-        index_label=initial_risk_type,
-        promotion_enabled=True,
-        region_enabled=False,
-        underlying_sort_metric=DEFAULT_UNDERLYING_SORT_METRIC,
+    # The mounted callbacks own both tables and fire from the committed
+    # revision Store. Building them here as well doubles the largest initial
+    # component work and response payload for no durable result.
+    initial_risk_table = html.Div(
+        "Loading Risk Explorer…",
+        className="risk-grid-placeholder",
+        role="status",
     )
-    initial_aggregate_table = build_aggregate_pl_table(
-        default_filtered,
-        DEFAULT_VIEW_DIMENSION,
-        [],
+    initial_aggregate_table = html.Div(
+        "Loading Aggregate P&L…",
+        className="aggregate-pl-placeholder",
+        role="status",
     )
     return html.Div(
         [
@@ -657,6 +651,9 @@ def build_layout(
             # risk tabs. A tab change can therefore update the Greek choices,
             # default open rows and selection state before expensive tables run.
             dcc.Store(id="risk-view-context-store", data=None),
+            # Aggregate P&L waits for this one-shot handoff so its first large
+            # groupby cannot compete with the initial Risk table render.
+            dcc.Store(id="risk-initial-render-ready", data=None),
             # Dynamic hierarchy controls publish small delegated DOM actions to
             # these stable stores. Keeping per-row/per-cell Dash IDs out of the
             # rendered tables prevents the callback graph from being remounted
@@ -668,7 +665,7 @@ def build_layout(
             dcc.Store(
                 id="dimension-filter-values-store",
                 # This Store is positional because the Risk reducer binds it to
-                # FILTER_DIMENSION_FIELDS with ``zip(..., strict=True)``.  Its
+                # RISK_FILTER_DIMENSION_FIELDS with ``zip(..., strict=True)``. Its
                 # initial value must match the dropdowns exactly; the old
                 # mapping briefly turned field names into character filters and
                 # could replace a warm table with an empty render during mount.

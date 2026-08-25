@@ -197,6 +197,7 @@ def register_refresh_callbacks(
             load_intervals: Any,
             retry_clicks: Any,
             pnl_intervals: Any = 0,
+            pnl_retry_clicks: Any = 0,
         ) -> StartupStatus:
             """Apply one idempotent startup signal and return its current state."""
             if triggered in {"initial-load-trigger", "pnl-initial-load-trigger"}:
@@ -210,8 +211,11 @@ def register_refresh_callbacks(
                 # n_intervals=1 is delivered only after the cold Risk page has
                 # or the cold P&L page has painted. Static/Stock never own one.
                 coordinator.start()
-            elif triggered == "initial-load-retry":
-                if int(retry_clicks or 0) <= 0:
+            elif triggered in {"initial-load-retry", "pnl-initial-load-retry"}:
+                clicks = (
+                    pnl_retry_clicks if triggered.startswith("pnl-") else retry_clicks
+                )
+                if int(clicks or 0) <= 0:
                     raise PreventUpdate
                 coordinator.start(retry=True)
             return coordinator.status()
@@ -222,6 +226,8 @@ def register_refresh_callbacks(
             Input("initial-load-retry", "n_clicks", allow_optional=True),
             State("initial-load-message", "children", allow_optional=True),
             prevent_initial_call=True,
+            # Prevent overlapping full dashboard materialization.
+            running=[(Output("initial-load-trigger", "disabled"), True, False)],
         )
         def load_initial_snapshot_after_first_paint(
             load_intervals,
@@ -267,20 +273,24 @@ def register_refresh_callbacks(
             Input("initial-load-trigger", "n_intervals", allow_optional=True),
             Input("initial-load-retry", "n_clicks", allow_optional=True),
             Input("pnl-initial-load-trigger", "n_intervals", allow_optional=True),
+            Input("pnl-initial-load-retry", "n_clicks", allow_optional=True),
             Input("shared-refresh-bootstrap-interval", "n_intervals"),
             State("refresh-status", "className", allow_optional=True),
             State("error-log", "children", allow_optional=True),
             State("refresh-commit-revision", "children", allow_optional=True),
+            State("pnl-page", "id", allow_optional=True),
             prevent_initial_call=True,
         )
         def hydrate_shared_refresh_shell(
             load_intervals,
             retry_clicks,
             pnl_intervals,
+            pnl_retry_clicks,
             _shared_intervals,
             status_class="",
             displayed_error="",
             displayed_revision=0,
+            pnl_page_id=None,
         ):
             """Follow revision 1 independently of the mounted Dash page."""
             if (
@@ -293,6 +303,7 @@ def register_refresh_callbacks(
                 load_intervals,
                 retry_clicks,
                 pnl_intervals,
+                pnl_retry_clicks,
             )
             common_options = {
                 "refresh_enabled": True,
@@ -316,10 +327,11 @@ def register_refresh_callbacks(
                     raise PreventUpdate
                 return build_shared_refresh_shell(
                     refresh_manager.control_snapshot,
-                    # The committed marker may advance on any page, but the
-                    # live revision Store is released only after a consuming
-                    # financial page (warm Risk or P&L) mounts.
-                    data_revision=shell_revision,
+                    data_revision=(
+                        int(refresh_manager.health.revision)
+                        if pnl_page_id == "pnl-page"
+                        else shell_revision
+                    ),
                     **common_options,
                 ).children
             if startup.phase == "failed":

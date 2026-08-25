@@ -9,7 +9,7 @@ from uuid import uuid4
 from dash import Dash, Input, Output, State, ctx, no_update
 
 from cube.history import HistoryHandoff, RiskFilterView
-from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import RISK_FILTER_DIMENSION_FIELDS
 from cube.app.s02_contracts import RefreshManagerProtocol
 
 
@@ -28,13 +28,13 @@ def build_risk_filter_view(
 ) -> RiskFilterView:
     """Capture the visible Risk Filter View using archive column names."""
 
-    if len(dimension_values) != len(FILTER_DIMENSION_FIELDS):
+    if len(dimension_values) != len(RISK_FILTER_DIMENSION_FIELDS):
         raise ValueError("Risk filter values do not match the reporting schema")
     filters = [("Split", _values(selected_splits))]
     filters.extend(
         (field.external_name, _values(raw_values))
         for field, raw_values in zip(
-            FILTER_DIMENSION_FIELDS,
+            RISK_FILTER_DIMENSION_FIELDS,
             dimension_values,
             strict=True,
         )

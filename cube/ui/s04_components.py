@@ -922,18 +922,35 @@ def build_shared_refresh_shell(
             dcc.Store(id="force-risk-render-store", data={}),
             dcc.Store(id="refresh-result-store", data=0),
             dcc.Store(id="refresh-busy-store", data=False),
+            dcc.Store(
+                id="pnl-initial-retry-enabled-store",
+                data=bool(error and not keep_polling and initial_snapshot is None),
+            ),
+            # Risk has its page-local Retry action. P&L does not replace its
+            # whole page during cold start, so this persistent, route-gated
+            # action gives it the same retry path without duplicate IDs.
+            html.Button(
+                "Retry initial load",
+                id="pnl-initial-load-retry",
+                n_clicks=0,
+                hidden=True,
+                disabled=True,
+                className="reload-risk-button initial-load-retry",
+                type="button",
+            ),
             dcc.Interval(
                 id="auto-refresh-interval",
                 interval=15 * 60_000,
                 n_intervals=0,
                 disabled=True,
             ),
-            # Once Risk starts revision 1 this common poll survives navigation,
-            # allowing the shell to receive the terminal snapshot even if the
-            # cold page and its own interval unmount.
+            # Once Risk starts revision 1 this low-frequency handoff survives
+            # navigation. Browser progress uses the lightweight /progressz
+            # endpoint; Dash only needs to check occasionally for the final
+            # committed snapshot.
             dcc.Interval(
                 id="shared-refresh-bootstrap-interval",
-                interval=500,
+                interval=2_000,
                 n_intervals=0,
                 disabled=not bootstrap_polling,
             ),
@@ -996,13 +1013,12 @@ def build_initial_load_layout(
             ),
             dcc.Interval(
                 id="initial-load-trigger",
-                interval=500,
+                interval=2_000,
                 n_intervals=0,
-                # Keep polling while another browser owns the first writer.
-                # Replacing this shell with the full layout removes it.
+                # The first tick starts or follows the process-owned writer.
+                # Low-frequency later ticks provide a server-rendered success
+                # and Retry fallback if browser /progressz is unavailable.
                 max_intervals=-1,
-                # A failed transaction waits for Retry. A watchdog warning can
-                # keep polling the same owned writer without starting another.
                 disabled=error is not None and not keep_polling,
             ),
             html.H1("Cube Risk & PL", className="sr-only"),

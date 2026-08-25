@@ -329,7 +329,10 @@ def build_app(
             if selected_revision >= prepared_dashboard_revision:
                 prepared_dashboard_revision = selected_revision
                 prepared_dashboard_frame = prepared
-            return prepared_dashboard_frame
+                return prepared_dashboard_frame
+            # An out-of-order caller must receive the frame it requested, not
+            # a newer cached frame mislabeled with the older revision.
+            return prepared
 
     def current_cube_page():
         """Serve the shell cold and the complete dashboard after revision 1."""
@@ -678,6 +681,7 @@ def build_app(
         risk_data,
         route_prefix=request_prefix,
         startup_coordinator=startup_coordinator,
+        prepared_frame_loader=prepared_committed_dashboard,
         reduced_tenor_catalog=reduced_tenor_catalog,
         matrix_provider=reduced_tenor_matrix_provider,
     )

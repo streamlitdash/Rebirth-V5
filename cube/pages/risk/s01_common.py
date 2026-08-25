@@ -6,7 +6,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from cube.ui.s01_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
+from cube.ui.s01_constants import DIMENSION_FILTER_IDS, RISK_FILTER_DIMENSION_FIELDS
 from cube.ui.s03_filters import SavedFilterViewControls
 
 from .s03_defaults import DEFAULT_RISK_FILTER_LABEL
@@ -22,16 +22,17 @@ DETAIL_TENOR_VIEW_LABELS = {
 RISK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     scope="risk",
     prefix="risk",
-    fields=FILTER_DIMENSION_FIELDS,
+    fields=RISK_FILTER_DIMENSION_FIELDS,
     filter_ids=DIMENSION_FILTER_IDS,
     exclude_id="risk-filter-exclude-selected",
     base_label=DEFAULT_RISK_FILTER_LABEL,
 )
 RISK_FILTER_NOTE = (
-    "Include mode uses OR within one filter (B or D) and AND across filters "
-    "(Credit and Portfolio B or D). Exclude mode removes a row if it matches "
+    "Include mode uses OR within one filter (B or D) and AND across filters. "
+    "Exclude mode removes a row if it matches "
     "any selected value in any populated filter. Leave a filter blank for all "
-    "values; Risk selections remain independent from Stock and P&L."
+    "values. Risk is aggregated across Portfolio; Stock and P&L keep their "
+    "own Portfolio filters."
 )
 
 
@@ -41,7 +42,7 @@ def reporting_filter_map(
     """Bind callback values to the authoritative portfolio schema."""
     return {
         field.key: list(selected or [])
-        for field, selected in zip(FILTER_DIMENSION_FIELDS, values, strict=True)
+        for field, selected in zip(RISK_FILTER_DIMENSION_FIELDS, values, strict=True)
     }
 
 
@@ -55,7 +56,7 @@ def quick_risk_filter_map(
         **{
             field.external_name: list(selected or [])
             for field, selected in zip(
-                FILTER_DIMENSION_FIELDS,
+                RISK_FILTER_DIMENSION_FIELDS,
                 dimension_values,
                 strict=True,
             )
