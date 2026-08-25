@@ -609,7 +609,7 @@ def build_app(
     @app.callback(
         Output("global-warning-summary", "children"),
         Output("global-warning-summary", "className"),
-        Input("data-revision-store", "data"),
+        Input("refresh-commit-revision", "children"),
     )
     def show_global_warnings(_revision):
         """Expose committed source warnings without blocking unaffected pages."""
@@ -641,7 +641,7 @@ def build_app(
                     html.Summary(f"Loaded with {len(warnings)} data warning(s)"),
                     html.Ul(details),
                 ],
-                open=False,
+                open=True,
             ),
             "global-warning-summary has-warnings",
         )

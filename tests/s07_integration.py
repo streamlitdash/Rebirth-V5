@@ -484,7 +484,11 @@ def test_cold_start_commits_after_total_connector_budget_is_exhausted() -> None:
     elapsed = monotonic() - started
 
     assert snapshot.revision == 1
-    assert snapshot.errors == ()
+    assert len(snapshot.errors) == 1
+    assert "ConnectorRefreshBudgetError" in snapshot.errors[0]
+    assert any(
+        label in snapshot.errors[0] for label in ("Risk/dRisk", "Connector budget")
+    )
     assert 1 <= len(risk_calls) < len(wrapped)
     assert not snapshot.dashboard_frame.empty
     assert elapsed < 5
@@ -680,7 +684,8 @@ def test_cold_start_commits_when_market_service_is_operationally_unavailable(
         if "Market circuit opened after bulk fx/delta" in record.getMessage()
     ]
     assert snapshot.revision == 1
-    assert snapshot.errors == ()
+    assert len(snapshot.errors) == 1
+    assert "FX Delta Opening market (fx/delta) unavailable" in snapshot.errors[0]
     assert not fx_dashboard.empty
     assert fx_dashboard["Market Available"].eq(False).all()
     assert unavailable_calls == ["called"]
@@ -715,7 +720,9 @@ def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -
     snapshot = manager.refresh(force_risk=True, force_pl=True)
 
     assert snapshot.revision == 1
-    assert snapshot.errors == ()
+    assert len(snapshot.errors) == 1
+    assert "IR Delta Risk/dRisk (ir/delta) unavailable" in snapshot.errors[0]
+    assert manager.health.active_error_count == 1
     assert risk_calls == 1
     assert not snapshot.dashboard_frame.empty
     assert not snapshot.dashboard_frame["Source Type"].eq("ir/delta").any()
@@ -739,7 +746,8 @@ def test_cold_start_uses_default_readiness_when_checker_is_unavailable() -> None
     snapshot = manager.refresh(force_risk=True, force_pl=True)
 
     assert snapshot.revision == 1
-    assert snapshot.errors == ()
+    assert len(snapshot.errors) == 1
+    assert "Risk checker unavailable" in snapshot.errors[0]
     assert snapshot.risk_checker.empty
     assert snapshot.risk_status["Age"].eq(0).all()
     assert snapshot.risk_status["Age Defaulted"].eq(True).all()
@@ -776,7 +784,8 @@ def test_cold_start_commits_risk_when_market_status_resolver_blocks() -> None:
     assert entered.is_set()
     assert elapsed < 5
     assert snapshot.revision == 1
-    assert snapshot.errors == ()
+    assert len(snapshot.errors) == 1
+    assert "Market status resolver unavailable" in snapshot.errors[0]
     assert snapshot.market_status == "OFFICIAL"
     assert not snapshot.dashboard_frame.empty
     network_market_rows = snapshot.dashboard_frame.loc[

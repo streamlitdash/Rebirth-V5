@@ -578,6 +578,8 @@ class RiskRefreshManager(_RefreshStateMixin):
         self._refresh_lock = RLock()
         self._state_lock = RLock()
         self._progress_lock = RLock()
+        self._operational_warning_lock = RLock()
+        self._operational_warnings: list[str] = []
         self._progress = RefreshProgressSnapshot(
             attempt_id=None,
             function_name=None,
@@ -674,20 +676,55 @@ class RiskRefreshManager(_RefreshStateMixin):
             (AssertionError, MemoryError, TypeError, ValueError),
         )
 
-    @staticmethod
+    def _reset_operational_warnings(self) -> None:
+        """Start one refresh-scoped collection of fail-soft source warnings."""
+
+        with self._operational_warning_lock:
+            self._operational_warnings = []
+
+    def _operational_warning_snapshot(self) -> tuple[str, ...]:
+        """Return the bounded warnings produced by the active refresh."""
+
+        with self._operational_warning_lock:
+            return tuple(self._operational_warnings)
+
     def _log_operational_failure(
+        self,
         *,
         boundary: str,
         error: Exception,
         source_type: str | None = None,
-    ) -> None:
+        product_label: str | None = None,
+        stage: str | None = None,
+    ) -> str:
+        """Persist a safe UI warning and log the exact operational failure."""
+
+        incident_id = uuid.uuid4().hex[:10]
         suffix = "" if source_type is None else f" for {source_type}"
-        LOGGER.warning(
-            "%s connector unavailable%s; continuing with shaped missing data. %s",
+        display_label = f"{boundary}{suffix}"
+        if product_label:
+            display_label = f"{product_label} {boundary}"
+            if source_type is not None:
+                display_label = f"{display_label} ({source_type})"
+        warning = (
+            f"{display_label} unavailable ({type(error).__name__}; incident "
+            f"{incident_id}). Missing data retained. Check the terminal for the "
+            "exact reason."
+        )
+        with self._operational_warning_lock:
+            self._operational_warnings.append(warning)
+        LOGGER.error(
+            "%s connector unavailable%s; continuing with shaped missing data. "
+            "incident=%s stage=%s product=%s reason=%s",
             boundary,
             suffix,
-            RiskRefreshManager._bounded_market_error(error),
+            incident_id,
+            stage or "unknown",
+            product_label or "unknown",
+            _bounded_failure_reason(error),
+            exc_info=(type(error), error, error.__traceback__),
         )
+        return warning
 
     def _load_portfolio_config_source(
         self,
@@ -870,7 +907,11 @@ class RiskRefreshManager(_RefreshStateMixin):
         except Exception as error:
             if not fail_soft or not self._is_operational_connector_error(error):
                 raise
-            self._log_operational_failure(boundary="Risk checker", error=error)
+            self._log_operational_failure(
+                boundary="Risk checker",
+                error=error,
+                stage="readiness",
+            )
             readiness = self._validate_risk_readiness(
                 pd.DataFrame(columns=[RISK_TYPE, RISK_GREEK, AGE])
             )
@@ -1014,6 +1055,17 @@ class RiskRefreshManager(_RefreshStateMixin):
                         raise
                     if circuit is not None:
                         if circuit.trip(exc):
+                            self._log_operational_failure(
+                                boundary=(
+                                    "Opening market"
+                                    if stage == "market_open"
+                                    else "Current market"
+                                ),
+                                error=exc,
+                                source_type=spec.source_type,
+                                product_label=_product_progress_label(spec),
+                                stage=stage,
+                            )
                             LOGGER.warning(
                                 "Market circuit opened after %s %s failed; all "
                                 "remaining market calls in this refresh are skipped. %s",
@@ -1154,6 +1206,17 @@ class RiskRefreshManager(_RefreshStateMixin):
                     raise
                 if circuit is not None:
                     if circuit.trip(exc):
+                        self._log_operational_failure(
+                            boundary=(
+                                "Opening market"
+                                if stage == "market_open"
+                                else "Current market"
+                            ),
+                            error=exc,
+                            source_type=spec.source_type,
+                            product_label=_product_progress_label(spec),
+                            stage=stage,
+                        )
                         LOGGER.warning(
                             "Market circuit opened after bulk %s %s failed; all "
                             "remaining market calls in this refresh are skipped. %s",
@@ -1723,6 +1786,7 @@ class RiskRefreshManager(_RefreshStateMixin):
             )
             risk_circuit = _OperationalCircuitBreaker()
             market_circuit = _OperationalCircuitBreaker()
+            self._reset_operational_warnings()
             self._start_progress(attempted_at)
             refresh_started = time.monotonic()
             stage_durations: dict[str, float] = {}
@@ -1768,6 +1832,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     self._log_operational_failure(
                         boundary="Market status resolver",
                         error=error,
+                        stage="market_status",
                     )
                     self._progress_activity(
                         _callable_name(self._market_status_resolver),
@@ -2070,6 +2135,11 @@ class RiskRefreshManager(_RefreshStateMixin):
                         )
                         risk_circuit.trip(budget_error)
                         market_circuit.trip(budget_error)
+                        self._log_operational_failure(
+                            boundary="Connector budget",
+                            error=budget_error,
+                            stage="risk",
+                        )
                         LOGGER.warning(
                             "Connector elapsed-time budget exhausted; all remaining "
                             "risk and market network calls are skipped."
@@ -2104,8 +2174,10 @@ class RiskRefreshManager(_RefreshStateMixin):
                             risk_circuit.trip(error)
                             market_circuit.trip(error)
                         self._log_operational_failure(
-                            boundary="Risk",
+                            boundary="Risk/dRisk",
                             source_type=source_type,
+                            product_label=product_label,
+                            stage="risk",
                             error=error,
                         )
                         next_risk[source_type] = self._empty_product_risk(spec)
@@ -2179,6 +2251,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         self._log_operational_failure(
                             boundary="Cross Gamma",
                             error=error,
+                            stage="risk",
                         )
                         raw_cross_gamma = pd.DataFrame(
                             columns=list(CROSS_GAMMA_COLUMNS)
@@ -2207,6 +2280,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         self._log_operational_failure(
                             boundary="New Trades",
                             error=error,
+                            stage="risk",
                         )
                         raw_new_trades = pd.DataFrame(columns=list(NEW_TRADE_COLUMNS))
                     add_supplemental_scope(new_trade_market_scope(raw_new_trades))
@@ -2263,6 +2337,11 @@ class RiskRefreshManager(_RefreshStateMixin):
                     )
                     risk_circuit.trip(budget_error)
                     market_circuit.trip(budget_error)
+                    self._log_operational_failure(
+                        boundary="Connector budget",
+                        error=budget_error,
+                        stage="market",
+                    )
                     LOGGER.warning(
                         "Connector elapsed-time budget exhausted; all remaining "
                         "risk and market network calls are skipped."
@@ -2556,7 +2635,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     market_frame=self._combined_market_frame(next_market, market_date),
                     dashboard_frame=dashboard,
                     unmapped_frame=unmapped,
-                    errors=(),
+                    errors=self._operational_warning_snapshot(),
                 )
 
                 search_started = time.monotonic()

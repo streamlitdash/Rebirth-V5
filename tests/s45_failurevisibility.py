@@ -11,6 +11,7 @@ import pytest
 
 from cube.app.s04_startup import StartupCoordinator
 from cube.app.s05_progress import progress_payload
+from cube.app.s07_factory import build_app
 from cube.domain.s02_products import ProductConnectorAdapter
 from cube.services.s05_sources import build_production_refresh_manager
 
@@ -172,3 +173,62 @@ def test_cold_refresh_error_logs_true_stage_and_populates_actionable_progress(
     assert "Check the terminal for the exact reason" in progress.error
     assert "open connector returned an invalid tenor contract" not in progress.error
     assert payload["error"] == progress.error
+
+
+def test_credit_delta_soft_failure_is_visible_and_keeps_startup_usable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = build_production_refresh_manager()
+    adapter = manager._connector_adapters["credit/delta"]
+
+    def unavailable_credit_risk(_date: pd.Timestamp) -> pd.DataFrame:
+        raise ConnectionError("credit risk service refused the request")
+
+    manager._connector_adapters["credit/delta"] = ProductConnectorAdapter(
+        risk=unavailable_credit_risk,
+        market_open=adapter.market_open,
+        market_status=adapter.market_status,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="cube.services.s06_refresh"):
+        snapshot = manager.refresh(force_risk=True, force_pl=True)
+
+    assert snapshot.revision == 1
+    assert not snapshot.dashboard_frame.empty
+    assert manager._risk_frames["credit/delta"].empty
+    assert len(snapshot.errors) == 1
+    warning = snapshot.errors[0]
+    assert "Credit Delta Risk/dRisk (credit/delta) unavailable" in warning
+    assert "ConnectionError" in warning
+    assert "Check the terminal for the exact reason" in warning
+    assert "credit risk service refused the request" not in warning
+    assert manager.control_snapshot.errors == snapshot.errors
+    assert manager.health.active_error_count == 1
+
+    record = next(
+        item
+        for item in caplog.records
+        if "Risk/dRisk connector unavailable for credit/delta" in item.getMessage()
+    )
+    assert "reason=ConnectionError: credit risk service refused the request" in (
+        record.getMessage()
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is ConnectionError
+    assert "Traceback (most recent call last)" in caplog.text
+
+    app = build_app(refresh_manager=manager)
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if "global-warning-summary.children" in str(item["output"])
+    )
+    assert metadata["inputs"] == [
+        {"id": "refresh-commit-revision", "property": "children"}
+    ]
+    render_warning = metadata["callback"].__wrapped__
+    children, class_name = render_warning(snapshot.revision)
+    assert class_name == "global-warning-summary has-warnings"
+    assert children.open is True
+    assert "Loaded with 1 data warning(s)" in str(children)
+    assert "Credit Delta Risk/dRisk (credit/delta) unavailable" in str(children)
