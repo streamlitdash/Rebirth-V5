@@ -460,7 +460,7 @@ def test_activity_base_matcher_distinguishes_exact_base_from_manual_filters() ->
         False,
         incomplete_options,
     )
-    assert matches_activity_1_to_3_base(
+    assert not matches_activity_1_to_3_base(
         {**exact, "activity": []},
         False,
         [{"label": "Other", "value": "Other"}],
@@ -732,7 +732,8 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             {"label": controls.base_label, "value": BASE_SAVED_VIEW_ID},
             {"label": named.name, "value": named.identifier},
         ]
-        assert selected == BASE_SAVED_VIEW_ID
+        # Catalogue refreshes must not overwrite a newer browser selection.
+        assert selected is no_update
 
     risk_apply = _callback_for_output(
         app,
@@ -882,6 +883,51 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert current_label(committed, saved[0]) == "Morning"
     assert repository.get("stock", identifier).filters["portfolio"] == ()
 
+    # An Apply arriving with the one-time initialization update still owns the
+    # commit; initialization must not force the identifier back to Base.
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id=controls.initialized_id,
+            triggered_prop_ids={
+                f"{controls.apply_id}.n_clicks": controls.apply_id,
+                f"{controls.initialized_id}.data": controls.initialized_id,
+            },
+        ),
+    )
+    coalesced_apply = commit(
+        1,
+        True,
+        identifier,
+        *selected_values,
+        ["exclude"],
+        None,
+    )
+    assert coalesced_apply["view_id"] == identifier
+
+    # A later initialization-only event is not another Apply merely because
+    # the button retains a historical non-zero click count.
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id=controls.initialized_id,
+            triggered_prop_ids={
+                f"{controls.initialized_id}.data": controls.initialized_id
+            },
+        ),
+    )
+    with pytest.raises(saved_views_module.PreventUpdate):
+        commit(
+            1,
+            True,
+            identifier,
+            *selected_values,
+            ["exclude"],
+            committed,
+        )
+
     manual_values = [["Manual"], *selected_values[1:]]
     monkeypatch.setattr(
         saved_views_module,
@@ -903,7 +949,13 @@ def test_callbacks_save_update_delete_and_apply_base(
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
-        SimpleNamespace(triggered_id=controls.apply_id),
+        SimpleNamespace(
+            triggered_id=controls.refresh_id,
+            triggered_prop_ids={
+                f"{controls.refresh_id}.n_intervals": controls.refresh_id,
+                f"{controls.apply_id}.n_clicks": controls.apply_id,
+            },
+        ),
     )
     custom_mode = mutate(
         0,
@@ -927,6 +979,28 @@ def test_callbacks_save_update_delete_and_apply_base(
     }
     assert actions(CUSTOM_SAVED_VIEW_ID) == ("Save New", True, False)
     assert "Save New" in custom_mode[3]
+
+    # Refreshing the catalogue must retain the synthetic Custom Mode option
+    # while leaving the browser's current selector value untouched.
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.refresh_id),
+    )
+    refreshed_custom = mutate(
+        1,
+        1,
+        0,
+        0,
+        2,
+        CUSTOM_SAVED_VIEW_ID,
+        "",
+        custom_committed,
+        *manual_values,
+        ["exclude"],
+    )
+    assert refreshed_custom[1] is no_update
+    assert CUSTOM_SAVED_VIEW_ID in {option["value"] for option in refreshed_custom[0]}
 
     monkeypatch.setattr(
         saved_views_module,
@@ -1150,7 +1224,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         "ctx",
         SimpleNamespace(triggered_id=controls.apply_id),
     )
-    committed_base = commit(
+    cleared_default = commit(
         2,
         True,
         BASE_SAVED_VIEW_ID,
@@ -1159,6 +1233,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         committed,
         [],
     )
+    assert cleared_default["view_id"] == CUSTOM_SAVED_VIEW_ID
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
@@ -1172,7 +1247,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         0,
         identifier,
         "",
-        committed_base,
+        cleared_default,
         *(updated_filters[key] for key in RISK_FILTER_KEYS),
         [],
     )
@@ -1180,7 +1255,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         {"label": DEFAULT_RISK_FILTER_LABEL, "value": BASE_SAVED_VIEW_ID}
     ]
     assert deleted[1] == BASE_SAVED_VIEW_ID
-    assert current_label(committed_base, deleted[0]) == DEFAULT_RISK_FILTER_LABEL
+    assert current_label(cleared_default, deleted[0]) == CUSTOM_SAVED_VIEW_LABEL
     assert "Deleted view: Morning" in deleted[3]
     assert repository.list("stock") == ()
 

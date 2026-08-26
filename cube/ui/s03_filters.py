@@ -39,8 +39,13 @@ def matches_activity_1_to_3_base(
         values for key, values in filters.items() if key != "activity"
     ):
         return False
-    selected = filters.get("activity") or ()
-    selected_owners: set[int] = set()
+    selected = {
+        str(value).strip()
+        for value in (filters.get("activity") or ())
+        if str(value).strip()
+    }
+    if not selected:
+        return False
 
     def owner_for(raw_value: object) -> int | None:
         value = " ".join(
@@ -57,12 +62,6 @@ def matches_activity_1_to_3_base(
             None,
         )
 
-    for raw_value in selected:
-        owner = owner_for(raw_value)
-        if owner is None:
-            return False
-        selected_owners.add(owner)
-
     if activity_options is not None:
         available_defaults = {
             str(option.get("value") if isinstance(option, Mapping) else option).strip()
@@ -70,9 +69,12 @@ def matches_activity_1_to_3_base(
             if owner_for(option.get("value") if isinstance(option, Mapping) else option)
             is not None
         }
-        return {str(value).strip() for value in selected} == available_defaults
+        return selected == available_defaults
 
-    return bool(selected) and selected_owners == set(range(len(_BASE_ACTIVITY_ALIASES)))
+    selected_owners = {owner_for(value) for value in selected}
+    return None not in selected_owners and selected_owners == set(
+        range(len(_BASE_ACTIVITY_ALIASES))
+    )
 
 
 @dataclass(frozen=True)
@@ -662,7 +664,6 @@ def register_saved_filter_view_callbacks(
         selected_identifier: object,
         filter_values: Sequence[Sequence[str] | None],
         exclude_value: Sequence[str] | None,
-        committed_state: object,
         activity_options: Sequence[object] | None = None,
     ) -> str:
         """Name an applied exact view, otherwise mark it as unsaved Custom."""
@@ -684,33 +685,11 @@ def register_saved_filter_view_callbacks(
                     else CUSTOM_SAVED_VIEW_ID
                 )
             base_filters = {field.key: [] for field in controls.fields}
-            if current_filters == base_filters and not current_exclude:
-                return BASE_SAVED_VIEW_ID
-            try:
-                committed_values = committed_filter_state_values(
-                    committed_state,
-                    controls,
-                )
-            except ValueError:
-                committed_values = None
-            if (
-                isinstance(committed_state, Mapping)
-                and committed_state.get("view_id") == BASE_SAVED_VIEW_ID
-                and committed_values
-                == (
-                    tuple(
-                        list(current_filters[field.key]) for field in controls.fields
-                    ),
-                    (["exclude"] if current_exclude else []),
-                )
-            ):
-                return BASE_SAVED_VIEW_ID
-            if (
-                isinstance(committed_state, Mapping)
-                and committed_state.get("view_id") != BASE_SAVED_VIEW_ID
-            ):
-                return BASE_SAVED_VIEW_ID
-            return CUSTOM_SAVED_VIEW_ID
+            return (
+                BASE_SAVED_VIEW_ID
+                if current_filters == base_filters and not current_exclude
+                else CUSTOM_SAVED_VIEW_ID
+            )
 
         try:
             selected_view = page_view(
@@ -787,9 +766,27 @@ def register_saved_filter_view_callbacks(
             else None
         )
         try:
-            triggered = ctx.triggered_id
-        except MissingCallbackContextException:
-            triggered = controls.refresh_id
+            triggered_ids = set(ctx.triggered_prop_ids.values())
+        except (AttributeError, LookupError, MissingCallbackContextException):
+            try:
+                triggered = ctx.triggered_id
+            except (AttributeError, LookupError, MissingCallbackContextException):
+                triggered = controls.refresh_id
+            triggered_ids = {triggered}
+        triggered = next(
+            (
+                candidate
+                for candidate in (
+                    controls.save_id,
+                    controls.delete_id,
+                    controls.cancel_id,
+                    controls.apply_id,
+                    controls.refresh_id,
+                )
+                if candidate in triggered_ids
+            ),
+            controls.refresh_id,
+        )
 
         try:
             selected = selected_identifier
@@ -846,7 +843,6 @@ def register_saved_filter_view_callbacks(
                     selected_identifier,
                     filter_values,
                     exclude_value,
-                    committed_state,
                     activity_options,
                 )
                 status = (
@@ -855,6 +851,10 @@ def register_saved_filter_view_callbacks(
                     else "Applied filters are active."
                 )
             else:
+                # The one-shot catalogue refresh owns only the option list.
+                # Returning a selector value from its stale State can overwrite
+                # a selection made while the server response was in flight.
+                selected = no_update
                 status = "Shared saved views are ready."
 
             views = repository.list(controls.scope)
@@ -863,13 +863,16 @@ def register_saved_filter_view_callbacks(
                 CUSTOM_SAVED_VIEW_ID,
                 *(view.identifier for view in views),
             }
-            if selected not in identifiers:
+            if selected is not no_update and selected not in identifiers:
                 selected = BASE_SAVED_VIEW_ID
+            option_identifier = (
+                selected_identifier if selected is no_update else selected
+            )
             return (
                 saved_view_options(
                     views,
                     base_label=controls.base_label,
-                    include_custom=is_custom_saved_view(selected),
+                    include_custom=is_custom_saved_view(option_identifier),
                 ),
                 selected,
                 name_update,
@@ -980,23 +983,31 @@ def register_saved_filter_view_callbacks(
             else None
         )
         try:
-            triggered = ctx.triggered_id
-        except MissingCallbackContextException:
-            triggered = controls.apply_id if int(apply_clicks or 0) > 0 else None
-        if triggered == controls.initialized_id:
-            if not initialized or committed_state is not None:
-                raise PreventUpdate
-            selected_identifier = BASE_SAVED_VIEW_ID
-        elif triggered != controls.apply_id or int(apply_clicks or 0) <= 0:
-            raise PreventUpdate
-        else:
+            triggered_ids = set(ctx.triggered_prop_ids.values())
+        except (AttributeError, LookupError, MissingCallbackContextException):
+            try:
+                triggered = ctx.triggered_id
+            except (AttributeError, LookupError, MissingCallbackContextException):
+                triggered = controls.apply_id if int(apply_clicks or 0) > 0 else None
+            triggered_ids = {triggered} if triggered is not None else set()
+
+        apply_triggered = (
+            controls.apply_id in triggered_ids and int(apply_clicks or 0) > 0
+        )
+        initialized_triggered = controls.initialized_id in triggered_ids
+        if apply_triggered:
             selected_identifier = committed_view_identifier(
                 selected_identifier,
                 filter_values,
                 exclude_value,
-                committed_state,
                 activity_options,
             )
+        elif initialized_triggered:
+            if not initialized or committed_state is not None:
+                raise PreventUpdate
+            selected_identifier = BASE_SAVED_VIEW_ID
+        else:
+            raise PreventUpdate
         return committed_filter_state(
             controls,
             selected_identifier,
