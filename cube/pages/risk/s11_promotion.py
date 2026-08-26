@@ -519,12 +519,15 @@ def build_promotion_generation_controls(revision: int) -> html.Div:
         [
             dcc.Store(id=PROMOTION_GENERATION_STORE_ID, data=baseline.to_store()),
             html.Button(
-                "Recalculate promotions",
+                "Recalculate all Risk views",
                 id=PROMOTION_RECALCULATE_ID,
                 n_clicks=0,
                 type="button",
                 className="promotion-action-button promotion-recalculate-button",
-                title="Recalculate promotion from the currently visible Risk rows",
+                title=(
+                    "Recalculate promotion for every Risk Type using the current "
+                    "applied filters"
+                ),
                 **{"aria-busy": "false"},
             ),
             html.Button(

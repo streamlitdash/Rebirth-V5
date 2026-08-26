@@ -42,17 +42,27 @@ def _active_groups_for_frame(
     frame: pd.DataFrame,
     promotion_enabled: bool,
     region_enabled: bool,
+    underlying_identity_mode: str = "reported",
 ) -> list[str]:
-    """Resolve the hierarchy without inventing Region for products that lack it."""
+    """Resolve the Risk Explorer hierarchy for the selected identity."""
     region_available = bool(
         "region" in frame
         and frame["region"].fillna("").astype(str).str.strip().ne("").any()
     )
-    return get_active_groups(
-        promotion_enabled,
-        region_enabled,
-        region_available=region_available,
+    identity_group = (
+        "underlying"
+        if str(underlying_identity_mode).strip().casefold() == "underlying"
+        else "reported underlying"
     )
+    return [
+        group
+        for group in get_active_groups(
+            promotion_enabled,
+            region_enabled,
+            region_available=region_available,
+        )
+        if group not in {"reported underlying", "underlying"} or group == identity_group
+    ]
 
 
 def metric_class(column: str, expanded_metrics: list[str] | None = None) -> str:
@@ -334,6 +344,7 @@ def build_risk_table(
     view_token: str | None = None,
     promotion_enabled: bool = True,
     region_enabled: bool = True,
+    underlying_identity_mode: str = "reported",
     underlying_sort_metric: str | None = None,
 ) -> html.Div:
     if frame.empty:
@@ -404,6 +415,7 @@ def build_risk_table(
                     frame,
                     promotion_enabled,
                     region_enabled,
+                    underlying_identity_mode,
                 ),
                 toggle_type=toggle_type,
                 cell_type=cell_type,
@@ -465,6 +477,7 @@ def build_alt_risk_table(
     view_token: str | None = None,
     promotion_enabled: bool = True,
     region_enabled: bool = True,
+    underlying_identity_mode: str = "reported",
     underlying_sort_metric: str | None = None,
 ) -> html.Div:
     """Build the indexed hierarchy with the selected dimension pivoted into columns."""
@@ -555,6 +568,7 @@ def build_alt_risk_table(
                     frame,
                     promotion_enabled,
                     region_enabled,
+                    underlying_identity_mode,
                 ),
                 cell_builder=dimension_cells,
                 toggle_type="alt-row-toggle",
@@ -631,6 +645,7 @@ def build_credit_multi_table(
     view_token: str | None = None,
     promotion_enabled: bool | None = None,
     region_enabled: bool = True,
+    underlying_identity_mode: str = "reported",
     underlying_sort_metric: str | None = None,
 ) -> html.Div:
     """Build Credit Multi: one selected metric across all credit measures."""
@@ -722,6 +737,7 @@ def build_credit_multi_table(
                 frame,
                 promotion_enabled,
                 region_enabled,
+                underlying_identity_mode,
             ),
             cell_builder=measure_cells,
             toggle_type="main-row-toggle",

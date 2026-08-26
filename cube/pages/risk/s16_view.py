@@ -1046,7 +1046,8 @@ def build_layout(
                     html.Div(
                         [
                             html.Label(
-                                "Sort underlying by", htmlFor="underlying-sort-metric"
+                                "Sort selected identity by",
+                                htmlFor="underlying-sort-metric",
                             ),
                             dcc.Dropdown(
                                 id="underlying-sort-metric",
@@ -1081,6 +1082,20 @@ def build_layout(
                                 ],
                                 value=["promotion"],
                                 className="risk-explorer-options",
+                            ),
+                            html.Label(
+                                "Underlying rows",
+                                htmlFor="underlying-identity-mode",
+                            ),
+                            dcc.RadioItems(
+                                id="underlying-identity-mode",
+                                options=[
+                                    {"label": "Reported", "value": "reported"},
+                                    {"label": "Raw", "value": "underlying"},
+                                ],
+                                value="reported",
+                                inline=True,
+                                className="underlying-identity-mode",
                             ),
                         ],
                         className="control-field risk-explorer-option-field",

@@ -7,7 +7,10 @@ from typing import Sequence
 import pandas as pd
 
 from cube.ui.s01_constants import DIMENSION_FILTER_IDS, RISK_FILTER_DIMENSION_FIELDS
-from cube.ui.s03_filters import SavedFilterViewControls
+from cube.ui.s03_filters import (
+    SavedFilterViewControls,
+    matches_activity_1_to_3_base,
+)
 
 from .s03_defaults import DEFAULT_RISK_FILTER_LABEL
 
@@ -26,6 +29,7 @@ RISK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=DIMENSION_FILTER_IDS,
     exclude_id="risk-filter-exclude-selected",
     base_label=DEFAULT_RISK_FILTER_LABEL,
+    base_filter_matcher=matches_activity_1_to_3_base,
 )
 RISK_FILTER_NOTE = (
     "Include mode uses OR within one filter (B or D) and AND across filters. "

@@ -120,3 +120,35 @@ def test_manual_promotion_is_immutable_and_revision_bound() -> None:
     )
     assert promotion_basis_is_stale(generation, changed_basis)
     assert "Category: Core" in promotion_basis_summary(changed_basis)
+
+
+def test_one_promotion_generation_can_classify_every_risk_type() -> None:
+    frame = _promotion_frame()
+    fx = frame.iloc[[0]].copy()
+    fx["risk type"] = "FX"
+    fx["risk greek"] = "Delta"
+    fx["reported underlying"] = "EUR/USD"
+    fx["risk"] = 1_500.0
+    frame = pd.concat([frame, fx], ignore_index=True)
+    basis = PromotionBasis.build(
+        7,
+        risk_type=None,
+        ir_family=None,
+        splits=["Risk"],
+        filters=_filters(),
+    )
+
+    generation = calculate_current_view_promotion(
+        frame,
+        basis,
+        identifier="all-risk-types",
+    )
+
+    assert {
+        (row.risk_type, row.risk_greek, row.reported_underlying)
+        for row in generation.rows
+    } == {
+        ("IR", "Delta", "USD-SOFR"),
+        ("FX", "Delta", "EUR/USD"),
+    }
+    assert all(row.reason == "Big Risk" for row in generation.rows)

@@ -121,6 +121,7 @@ def test_risk_explorer_keeps_only_cross_and_splitva_with_inline_actions() -> Non
     ]
     assert {
         "split-filter",
+        "underlying-identity-mode",
         "underlying-sort-metric",
         "risk-explorer-options",
         "promotion-recalculate-current-view",
@@ -135,6 +136,7 @@ def test_risk_explorer_keeps_only_cross_and_splitva_with_inline_actions() -> Non
             getattr(child, "id", None)
             in {
                 "split-filter",
+                "underlying-identity-mode",
                 "underlying-sort-metric",
                 "risk-explorer-options",
                 "promotion-recalculate-current-view",
@@ -143,3 +145,22 @@ def test_risk_explorer_keeps_only_cross_and_splitva_with_inline_actions() -> Non
         )
     ]
     assert len(explorer_fields) == 4
+
+    identity_mode = next(
+        item
+        for item in components
+        if getattr(item, "id", None) == "underlying-identity-mode"
+    )
+    assert identity_mode.value == "reported"
+    assert [option["value"] for option in identity_mode.options] == [
+        "reported",
+        "underlying",
+    ]
+    options_field = next(
+        item
+        for item in components
+        if "risk-explorer-option-field"
+        in set(str(getattr(item, "className", "")).split())
+    )
+    options_field_ids = {getattr(item, "id", None) for item in _walk(options_field)}
+    assert {"risk-explorer-options", "underlying-identity-mode"} <= options_field_ids

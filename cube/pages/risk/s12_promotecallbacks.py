@@ -59,7 +59,7 @@ def register_promotion_callbacks(
     cache: RiskPromotionCacheProtocol,
     refresh_manager: RefreshManagerProtocol | None,
 ) -> None:
-    """Register one immutable baseline/manual generation state machine."""
+    """Register one promotion generation shared by every Risk Type view."""
 
     @app.callback(
         Output(PROMOTION_GENERATION_STORE_ID, "data"),
@@ -73,8 +73,6 @@ def register_promotion_callbacks(
         Input(PROMOTION_RECALCULATE_ID, "n_clicks"),
         Input(PROMOTION_RESET_ID, "n_clicks"),
         Input("data-revision-store", "data"),
-        Input("risk-type-tabs", "value"),
-        Input("ir-family-tabs", "value"),
         Input("dimension-filter-values-store", "data"),
         Input("risk-filter-exclude-applied-store", "data"),
         Input("risk-explorer-options", "value"),
@@ -88,8 +86,6 @@ def register_promotion_callbacks(
         _recalculate_clicks,
         _reset_clicks,
         data_revision,
-        risk_type,
-        ir_family,
         filter_values,
         exclude_value,
         explorer_options,
@@ -113,8 +109,8 @@ def register_promotion_callbacks(
         }
         basis = PromotionBasis.build(
             revision,
-            risk_type=risk_type,
-            ir_family=ir_family,
+            risk_type=None,
+            ir_family=None,
             splits=splits,
             filters=filters,
             exclude_selected="exclude" in (exclude_value or []),
@@ -137,7 +133,7 @@ def register_promotion_callbacks(
                 "filter-note",
                 True,
                 "Scope: committed Activities 1–3 policy",
-                "Recalculate promotions",
+                "Recalculate all Risk views",
                 False,
                 "false",
             )
@@ -147,8 +143,8 @@ def register_promotion_callbacks(
             try:
                 filtered = cache.filtered(
                     refresh_manager,
-                    risk_type,
-                    ir_family,
+                    None,
+                    None,
                     splits,
                     filters,
                     exclude_selected=basis.exclude_selected,
@@ -168,7 +164,7 @@ def register_promotion_callbacks(
                     "filter-note has-errors",
                     True,
                     scope,
-                    "Recalculate promotions",
+                    "Recalculate all Risk views",
                     False,
                     "false",
                 )
@@ -182,13 +178,13 @@ def register_promotion_callbacks(
             return (
                 generation_store,
                 (
-                    f"Current-view promotion is active ({len(generation.rows):,} "
+                    f"All-Risk promotion is active ({len(generation.rows):,} "
                     f"exposures; {elapsed_ms:,.0f} ms)."
                 ),
                 "filter-note",
                 False,
                 scope,
-                "Recalculate promotions",
+                "Recalculate all Risk views",
                 False,
                 "false",
             )
@@ -197,13 +193,13 @@ def register_promotion_callbacks(
             return (
                 no_update,
                 (
-                    "Promotion uses the previous filter basis. Recalculate the "
-                    "current view or reset to the committed baseline."
+                    "Promotion uses the previous filter basis. Recalculate all "
+                    "Risk views or reset to the committed baseline."
                 ),
                 "filter-note has-warning",
                 False,
                 scope,
-                "Recalculate promotions",
+                "Recalculate all Risk views",
                 False,
                 "false",
             )
@@ -212,21 +208,21 @@ def register_promotion_callbacks(
             if active is None:
                 return (
                     baseline.to_store(),
-                    "Current-view promotion expired; committed baseline restored.",
+                    "All-Risk promotion expired; committed baseline restored.",
                     "filter-note has-warning",
                     True,
                     "Scope: committed Activities 1–3 policy",
-                    "Recalculate promotions",
+                    "Recalculate all Risk views",
                     False,
                     "false",
                 )
             return (
                 no_update,
-                f"Current-view promotion is active ({len(active.rows):,} exposures).",
+                f"All-Risk promotion is active ({len(active.rows):,} exposures).",
                 "filter-note",
                 False,
                 scope,
-                "Recalculate promotions",
+                "Recalculate all Risk views",
                 False,
                 "false",
             )
@@ -236,7 +232,7 @@ def register_promotion_callbacks(
             "filter-note",
             True,
             "Scope: committed Activities 1–3 policy",
-            "Recalculate promotions",
+            "Recalculate all Risk views",
             False,
             "false",
         )

@@ -32,9 +32,12 @@ from cube.ui.s01_constants import (
 from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     BASE_SAVED_VIEW_LABEL,
+    CUSTOM_SAVED_VIEW_ID,
+    CUSTOM_SAVED_VIEW_LABEL,
     base_saved_filter_view,
     build_saved_filter_view_bar,
     committed_filter_state_values,
+    matches_activity_1_to_3_base,
     register_saved_filter_view_callbacks,
     saved_view_apply_request,
     saved_view_request_matches_base,
@@ -401,8 +404,67 @@ def test_selected_saved_view_label_uses_name_and_recovers_to_base() -> None:
     assert selected_saved_view_label(BASE_SAVED_VIEW_ID, options) == (
         BASE_SAVED_VIEW_LABEL
     )
+    assert selected_saved_view_label(CUSTOM_SAVED_VIEW_ID, options) == (
+        CUSTOM_SAVED_VIEW_LABEL
+    )
     assert selected_saved_view_label("credit-books", options) == "Credit books"
     assert selected_saved_view_label("deleted-view", options) == BASE_SAVED_VIEW_LABEL
+
+
+def test_activity_base_matcher_distinguishes_exact_base_from_manual_filters() -> None:
+    exact = {
+        "activity": ["Macro", "Credit", "Hedge"],
+        "signoffgroup": [],
+        "category": [],
+        "subcategory": [],
+    }
+    temp = {
+        **exact,
+        "activity": [
+            "TEMP_REPLACE_ME - Activity 1",
+            "TEMP_REPLACE_ME - Activity 2",
+            "TEMP_REPLACE_ME - Activity 3",
+        ],
+    }
+
+    assert matches_activity_1_to_3_base(exact, False)
+    assert matches_activity_1_to_3_base(temp, False)
+    assert not matches_activity_1_to_3_base(
+        {**exact, "category": ["Core"]},
+        False,
+    )
+    assert not matches_activity_1_to_3_base(
+        {**exact, "activity": ["Macro", "Credit"]},
+        False,
+    )
+    assert not matches_activity_1_to_3_base(exact, True)
+
+    incomplete_options = [
+        {"label": "Macro", "value": "Macro"},
+        {"label": "Credit", "value": "Credit"},
+        {"label": "Other", "value": "Other"},
+    ]
+    incomplete = {**exact, "activity": ["Macro", "Credit"]}
+    assert matches_activity_1_to_3_base(
+        incomplete,
+        False,
+        incomplete_options,
+    )
+    assert not matches_activity_1_to_3_base(
+        {**exact, "activity": ["Macro"]},
+        False,
+        incomplete_options,
+    )
+    assert not matches_activity_1_to_3_base(
+        {**exact, "activity": []},
+        False,
+        incomplete_options,
+    )
+    assert matches_activity_1_to_3_base(
+        {**exact, "activity": []},
+        False,
+        [{"label": "Other", "value": "Other"}],
+    )
 
 
 def test_request_store_is_validated_and_detects_later_manual_edits(
@@ -496,6 +558,54 @@ def test_generic_callbacks_never_own_filter_dropdown_values(tmp_path: Path) -> N
         for component_id in RISK_SAVED_VIEW_CONTROLS.filter_ids.values()
     )
     assert (RISK_SAVED_VIEW_CONTROLS.exclude_id, "value") not in outputs
+    selector_owner = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == RISK_SAVED_VIEW_CONTROLS.selector_id
+            and output.component_property == "options"
+            for output in _outputs(metadata)
+        )
+    )
+    selector_inputs = {
+        (item["id"], item["property"]) for item in selector_owner["inputs"]
+    }
+    selector_state = {
+        (item["id"], item["property"]) for item in selector_owner["state"]
+    }
+    assert (RISK_SAVED_VIEW_CONTROLS.apply_id, "n_clicks") in selector_inputs
+    assert (
+        RISK_SAVED_VIEW_CONTROLS.committed_state_id,
+        "data",
+    ) not in selector_inputs
+    assert (
+        RISK_SAVED_VIEW_CONTROLS.committed_state_id,
+        "data",
+    ) in selector_state
+    activity_options = (
+        RISK_SAVED_VIEW_CONTROLS.filter_ids["activity"],
+        "options",
+    )
+    assert activity_options not in selector_inputs
+    assert activity_options in selector_state
+
+    committed_owner = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == RISK_SAVED_VIEW_CONTROLS.committed_state_id
+            and output.component_property == "data"
+            for output in _outputs(metadata)
+        )
+    )
+    committed_inputs = {
+        (item["id"], item["property"]) for item in committed_owner["inputs"]
+    }
+    committed_state = {
+        (item["id"], item["property"]) for item in committed_owner["state"]
+    }
+    assert activity_options not in committed_inputs
+    assert activity_options in committed_state
 
 
 def test_page_readiness_commits_base_without_treating_drafts_as_inputs(
@@ -611,6 +721,7 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
             0,
             0,
             0,
+            0,
             BASE_SAVED_VIEW_ID,
             "",
             None,
@@ -719,6 +830,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         1,
         0,
         0,
+        0,
         BASE_SAVED_VIEW_ID,
         "Morning",
         None,
@@ -770,6 +882,155 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert current_label(committed, saved[0]) == "Morning"
     assert repository.get("stock", identifier).filters["portfolio"] == ()
 
+    manual_values = [["Manual"], *selected_values[1:]]
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.apply_id),
+    )
+    custom_committed = commit(
+        2,
+        True,
+        identifier,
+        *manual_values,
+        ["exclude"],
+        committed,
+    )
+    assert custom_committed["view_id"] == CUSTOM_SAVED_VIEW_ID
+    assert current_label(custom_committed, saved[0]) == CUSTOM_SAVED_VIEW_LABEL
+    assert repository.get("risk", identifier).filters["activity"] == ("Macro",)
+
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.apply_id),
+    )
+    custom_mode = mutate(
+        0,
+        1,
+        0,
+        0,
+        2,
+        identifier,
+        "",
+        committed,
+        *manual_values,
+        ["exclude"],
+    )
+    assert custom_mode[1] == CUSTOM_SAVED_VIEW_ID
+    assert {option["value"]: option for option in custom_mode[0]}[
+        CUSTOM_SAVED_VIEW_ID
+    ] == {
+        "label": CUSTOM_SAVED_VIEW_LABEL,
+        "value": CUSTOM_SAVED_VIEW_ID,
+        "disabled": True,
+    }
+    assert actions(CUSTOM_SAVED_VIEW_ID) == ("Save New", True, False)
+    assert "Save New" in custom_mode[3]
+
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.cancel_id),
+    )
+    custom_restore_request = stage(
+        CUSTOM_SAVED_VIEW_ID,
+        1,
+        custom_committed,
+        *selected_values,
+        [],
+    )
+    restored_custom_values, restored_custom_exclude = saved_view_request_values(
+        custom_restore_request,
+        controls,
+    )
+    assert restored_custom_values == tuple(manual_values)
+    assert restored_custom_exclude == ["exclude"]
+    cancelled_custom = mutate(
+        0,
+        1,
+        0,
+        1,
+        2,
+        CUSTOM_SAVED_VIEW_ID,
+        "",
+        custom_committed,
+        *selected_values,
+        [],
+    )
+    assert cancelled_custom[1] == CUSTOM_SAVED_VIEW_ID
+
+    risk_base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], []]
+    edited_base_values = [*risk_base_values]
+    edited_base_values[2] = ["Core"]
+    monkeypatch.setattr(
+        saved_views_module,
+        "ctx",
+        SimpleNamespace(triggered_id=controls.apply_id),
+    )
+    edited_base_from_custom = commit(
+        3,
+        True,
+        BASE_SAVED_VIEW_ID,
+        *edited_base_values,
+        [],
+        custom_committed,
+    )
+    assert edited_base_from_custom["view_id"] == CUSTOM_SAVED_VIEW_ID
+
+    base_from_custom = commit(
+        4,
+        True,
+        BASE_SAVED_VIEW_ID,
+        *risk_base_values,
+        [],
+        custom_committed,
+    )
+    assert base_from_custom["view_id"] == BASE_SAVED_VIEW_ID
+
+    incomplete_base_values = [["Macro", "Credit"], [], [], []]
+    incomplete_activity_options = [
+        {"label": "Macro", "value": "Macro"},
+        {"label": "Credit", "value": "Credit"},
+    ]
+    incomplete_base_from_custom = commit(
+        5,
+        True,
+        BASE_SAVED_VIEW_ID,
+        *incomplete_base_values,
+        [],
+        custom_committed,
+        incomplete_activity_options,
+    )
+    assert incomplete_base_from_custom["view_id"] == BASE_SAVED_VIEW_ID
+
+    incomplete_manual_from_base = commit(
+        6,
+        True,
+        BASE_SAVED_VIEW_ID,
+        ["Macro"],
+        *incomplete_base_values[1:],
+        [],
+        incomplete_base_from_custom,
+        incomplete_activity_options,
+    )
+    assert incomplete_manual_from_base["view_id"] == CUSTOM_SAVED_VIEW_ID
+
+    incomplete_base_mode = mutate(
+        0,
+        1,
+        0,
+        0,
+        5,
+        BASE_SAVED_VIEW_ID,
+        "",
+        custom_committed,
+        *incomplete_base_values,
+        [],
+        incomplete_activity_options,
+    )
+    assert incomplete_base_mode[1] == BASE_SAVED_VIEW_ID
+
     updated_filters = _filters("Updated")
     monkeypatch.setattr(
         saved_views_module,
@@ -779,6 +1040,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     updated = mutate(
         0,
         2,
+        0,
         0,
         0,
         identifier,
@@ -852,6 +1114,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         2,
         0,
         1,
+        0,
         BASE_SAVED_VIEW_ID,
         "",
         committed,
@@ -871,6 +1134,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         2,
         1,
         1,
+        0,
         identifier,
         "",
         committed,
@@ -893,6 +1157,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         *([[]] * len(RISK_FILTER_KEYS)),
         [],
         committed,
+        [],
     )
     monkeypatch.setattr(
         saved_views_module,
@@ -904,6 +1169,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         2,
         2,
         1,
+        0,
         identifier,
         "",
         committed_base,

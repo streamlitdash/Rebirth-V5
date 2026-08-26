@@ -84,6 +84,12 @@ def _explorer_option_state(values: Sequence[str] | None) -> tuple[bool, bool, bo
     )
 
 
+def _selected_underlying_identity_mode(value: object) -> str:
+    """Return the bounded Risk Explorer identity mode."""
+
+    return "underlying" if str(value).strip().casefold() == "underlying" else "reported"
+
+
 def register_explorer_callbacks(
     app: Dash,
     refresh_manager: RefreshManagerProtocol | None,
@@ -257,6 +263,7 @@ def register_explorer_callbacks(
         promotion_generation,
         region_enabled,
         reduced_tenor,
+        underlying_identity_mode,
         underlying_sort_metric,
     ) -> dict[str, Any]:
         """Return every value-affecting input embedded in delegated actions."""
@@ -277,6 +284,9 @@ def register_explorer_callbacks(
             ),
             "region_enabled": bool(region_enabled),
             "reduced_tenor": bool(reduced_tenor),
+            "underlying_identity_mode": _selected_underlying_identity_mode(
+                underlying_identity_mode
+            ),
             "underlying_sort_metric": selected_underlying_sort_metric(
                 underlying_sort_metric
             ),
@@ -289,6 +299,7 @@ def register_explorer_callbacks(
         data_revision,
         table_view,
         dimension,
+        underlying_identity_mode,
         underlying_sort_metric,
         splits,
         expanded_metrics,
@@ -306,6 +317,9 @@ def register_explorer_callbacks(
     ):
         """Build only the visible Risk Explorer table for the current state."""
         normalized_ir_family = ir_family if active_risk_type == "IR" else None
+        selected_identity_mode = _selected_underlying_identity_mode(
+            underlying_identity_mode
+        )
         selected_sort_metric = selected_underlying_sort_metric(underlying_sort_metric)
         risk_context = {
             "risk_type": active_risk_type,
@@ -325,6 +339,7 @@ def register_explorer_callbacks(
             promotion_generation=promotion_generation,
             region_enabled=region_enabled,
             reduced_tenor=reduced_tenor,
+            underlying_identity_mode=selected_identity_mode,
             underlying_sort_metric=selected_sort_metric,
         )
 
@@ -366,6 +381,7 @@ def register_explorer_callbacks(
                     view_token=view_token,
                     promotion_enabled=promotion_enabled,
                     region_enabled=region_enabled,
+                    underlying_identity_mode=selected_identity_mode,
                     underlying_sort_metric=selected_sort_metric,
                 )
 
@@ -394,6 +410,7 @@ def register_explorer_callbacks(
                     view_token,
                     promotion_enabled=promotion_enabled,
                     region_enabled=region_enabled,
+                    underlying_identity_mode=selected_identity_mode,
                     underlying_sort_metric=selected_sort_metric,
                 )
             if active_risk_type == "Credit":
@@ -409,6 +426,7 @@ def register_explorer_callbacks(
                 view_token=view_token,
                 promotion_enabled=promotion_enabled,
                 region_enabled=region_enabled,
+                underlying_identity_mode=selected_identity_mode,
                 underlying_sort_metric=selected_sort_metric,
             )
 
@@ -532,6 +550,7 @@ def register_explorer_callbacks(
         Input("risk-filter-exclude-applied-store", "data"),
         Input("risk-explorer-options", "value"),
         Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
+        Input("underlying-identity-mode", "value"),
         Input("underlying-sort-metric", "value"),
         State("open-rows-store", "data"),
         State("expanded-metrics", "value"),
@@ -559,6 +578,7 @@ def register_explorer_callbacks(
         exclude_value,
         explorer_options,
         promotion_generation,
+        underlying_identity_mode,
         underlying_sort_metric,
         current_open_rows,
         current_expanded_metrics,
@@ -593,6 +613,7 @@ def register_explorer_callbacks(
             "table-dimension.value",
             "table-view-tabs.value",
             "credit-view-tabs.value",
+            "underlying-identity-mode.value",
         }
         table_inputs = {
             "split-filter.value",
@@ -704,6 +725,7 @@ def register_explorer_callbacks(
                     promotion_generation=promotion_generation,
                     region_enabled=bool(region_enabled),
                     reduced_tenor=bool(reduced_tenor),
+                    underlying_identity_mode=underlying_identity_mode,
                     underlying_sort_metric=selected_underlying_sort_metric(
                         underlying_sort_metric
                     ),
@@ -848,6 +870,7 @@ def register_explorer_callbacks(
                 data_revision=data_revision,
                 table_view=table_view,
                 dimension=dimension,
+                underlying_identity_mode=underlying_identity_mode,
                 underlying_sort_metric=underlying_sort_metric,
                 splits=effective_splits,
                 expanded_metrics=effective_expanded_metrics,

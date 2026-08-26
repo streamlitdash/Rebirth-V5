@@ -14,6 +14,7 @@ from cube.ui.s01_constants import FILTER_DIMENSION_FIELDS
 from cube.ui.s03_filters import (
     SavedFilterViewControls,
     committed_filter_state_values,
+    matches_activity_1_to_3_base,
 )
 
 
@@ -41,6 +42,7 @@ PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=PL_FILTER_IDS,
     exclude_id=PL_FILTER_EXCLUDE_ID,
     base_label="Base Review",
+    base_filter_matcher=matches_activity_1_to_3_base,
 )
 PL_FILTER_NOTE = (
     "Base Review starts with Activity 1, 2 and 3. Include mode uses OR within "

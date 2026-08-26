@@ -31,11 +31,14 @@ from cube.ui.s01_constants import (
 from cube.ui.s02_aggregation import (
     apply_filters,
     credit_measure_values,
+    detail_frame,
     dimension_title,
     prepare_risk_data,
+    row_key,
     selected_dimension,
 )
 from cube.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
+from cube.pages.risk.s06_explorertables import build_risk_table
 from cube.pages.risk.s11_promotion import (
     PromotionBasis,
     calculate_current_view_promotion,
@@ -286,6 +289,127 @@ def test_prepare_retains_portfolio_but_risk_filters_use_reporting_fields() -> No
     # Exclusion is AND across the per-dimension complements.
     assert excluded["portfolio"].tolist() == ["BOOK-B"]
     assert unrestricted["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
+
+
+def test_risk_explorer_hides_raw_underlyings_without_losing_detail_identity() -> None:
+    raw = _raw_risk_frame()
+    raw["Reported Underlying"] = "G10-RATES"
+    raw["Underlying"] = ["USD-SOFR", "EUR-ESTR"]
+    raw["Risk"] = [10.0, 20.0]
+    raw["dRisk"] = [1.0, 2.0]
+    raw["PL"] = [4.0, 6.0]
+    raw["Open"] = [3.0, 5.0]
+    raw["Current"] = [4.0, 7.0]
+    prepared = prepare_risk_data(raw)
+    contexts = [
+        {"risk greek": "Delta"},
+        {"risk greek": "Delta", "region": "Americas"},
+        {"risk greek": "Delta", "region": "Americas", "group": "G10"},
+        {
+            "risk greek": "Delta",
+            "region": "Americas",
+            "group": "G10",
+            "reported underlying": "G10-RATES",
+        },
+    ]
+
+    component = build_risk_table(
+        prepared,
+        expanded_metrics=[],
+        open_rows=[row_key(context) for context in contexts],
+        promotion_enabled=False,
+        region_enabled=True,
+        underlying_identity_mode="reported",
+    )
+    rows = [item for item in _walk(component) if isinstance(item, html.Tr)]
+    row_classes = [str(getattr(row, "className", "")) for row in rows]
+    labels = [
+        str(item.children)
+        for item in _walk(component)
+        if isinstance(item, html.Span) and item.className == "row-label-text"
+    ]
+
+    assert any("group-kind-reported-underlying" in value for value in row_classes)
+    assert not any("group-kind-underlying" in value for value in row_classes)
+    assert "G10-RATES" in labels
+    assert "USD-SOFR" not in labels
+    assert "EUR-ESTR" not in labels
+
+    reported_row = next(
+        row
+        for row in rows
+        if "group-kind-reported-underlying" in str(getattr(row, "className", ""))
+    )
+    risk_cell = next(
+        cell
+        for cell in reported_row.children
+        if getattr(cell, "data-metric", None) == "risk"
+    )
+    assert risk_cell.children.children == "30.0"
+
+    tenor_row = next(
+        row
+        for row in rows
+        if "group-kind-tenor-swap" in str(getattr(row, "className", ""))
+    )
+    move_cell = next(
+        cell
+        for cell in tenor_row.children
+        if getattr(cell, "data-metric", None) == "move"
+    )
+    assert move_cell.children.children == "1.5"
+
+    core = apply_filters(
+        prepared,
+        ["IR"],
+        ["Risk"],
+        {"category": ["Core"]},
+    )
+    core_component = build_risk_table(
+        core,
+        expanded_metrics=[],
+        open_rows=[row_key(context) for context in contexts],
+        promotion_enabled=False,
+        region_enabled=True,
+        underlying_identity_mode="reported",
+    )
+    core_tenor_row = next(
+        row
+        for row in _walk(core_component)
+        if isinstance(row, html.Tr)
+        and "group-kind-tenor-swap" in str(getattr(row, "className", ""))
+    )
+    core_move_cell = next(
+        cell
+        for cell in core_tenor_row.children
+        if getattr(cell, "data-metric", None) == "move"
+    )
+    assert core_move_cell.children.children == "1"
+
+    detail = detail_frame(prepared, contexts[-1], "risk")
+    assert set(detail["underlying"]) == {"USD-SOFR", "EUR-ESTR"}
+
+    raw_component = build_risk_table(
+        prepared,
+        expanded_metrics=[],
+        open_rows=[row_key(context) for context in contexts],
+        promotion_enabled=False,
+        region_enabled=True,
+        underlying_identity_mode="underlying",
+    )
+    raw_rows = [item for item in _walk(raw_component) if isinstance(item, html.Tr)]
+    raw_row_classes = [str(getattr(row, "className", "")) for row in raw_rows]
+    raw_labels = [
+        str(item.children)
+        for item in _walk(raw_component)
+        if isinstance(item, html.Span) and item.className == "row-label-text"
+    ]
+    assert any("group-kind-underlying" in value for value in raw_row_classes)
+    assert not any(
+        "group-kind-reported-underlying" in value for value in raw_row_classes
+    )
+    assert {"USD-SOFR", "EUR-ESTR"} <= set(raw_labels)
+    assert "G10-RATES" not in raw_labels
 
 
 def test_prepare_keeps_numeric_and_named_portfolios_as_internal_text() -> None:
@@ -1181,7 +1305,7 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
     )
 
 
-def test_promotion_recalculation_captures_split_without_callback_cycle() -> None:
+def test_promotion_recalculation_is_shared_across_risk_tabs() -> None:
     app = build_app(refresh_manager=_warm_manager())
     metadata = next(
         item
@@ -1197,6 +1321,8 @@ def test_promotion_recalculation_captures_split_without_callback_cycle() -> None
 
     assert ("split-filter", "value") not in inputs
     assert ("split-filter", "value") in states
+    assert ("risk-type-tabs", "value") not in inputs
+    assert ("ir-family-tabs", "value") not in inputs
     assert ("dimension-filter-values-store", "data") in inputs
     assert ("risk-filter-exclude-applied-store", "data") in inputs
     assert ("risk-filter-exclude-selected", "value") not in inputs

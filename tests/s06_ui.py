@@ -29,6 +29,7 @@ from cube.pages.risk.s08_quickrisk import (
     build_quick_search_pivot,
 )
 from cube.pages.risk.s06_explorertables import (
+    _active_groups_for_frame,
     build_small_table,
     build_tree_rows,
     metric_header,
@@ -41,6 +42,7 @@ from cube.pages.risk.s13_workspacetables import (
 )
 from cube.pages.risk.s16_view import build_unmapped_books_table
 from cube.ui.s02_aggregation import ordered_unique, row_key
+from cube.ui.s01_constants import BASE_GROUPS
 from cube.pages.risk.s10_search import (
     _product_shaped_quick_search_indexes,
     _prune_quick_search_indexes,
@@ -98,6 +100,33 @@ def test_split_labels_follow_the_canonical_filter_order() -> None:
         "Gamma",
         "XGAMMA",
     ]
+
+
+@pytest.mark.parametrize(
+    ("identity_mode", "shown_group", "hidden_group"),
+    [
+        ("reported", "reported underlying", "underlying"),
+        ("underlying", "underlying", "reported underlying"),
+    ],
+)
+@pytest.mark.parametrize("promotion_enabled", [True, False])
+def test_risk_explorer_hierarchy_shows_only_selected_underlying_identity(
+    promotion_enabled: bool,
+    identity_mode: str,
+    shown_group: str,
+    hidden_group: str,
+) -> None:
+    groups = _active_groups_for_frame(
+        pd.DataFrame({"region": ["Americas"]}),
+        promotion_enabled,
+        region_enabled=True,
+        underlying_identity_mode=identity_mode,
+    )
+
+    assert shown_group in groups
+    assert hidden_group not in groups
+    assert "reported underlying" in BASE_GROUPS
+    assert "underlying" in BASE_GROUPS
 
 
 def test_quick_risk_and_market_search_use_native_collapsible_chevrons() -> None:
