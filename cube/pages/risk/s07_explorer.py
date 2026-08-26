@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
@@ -30,6 +31,7 @@ from cube.ui.s01_constants import (
     split_detail_metric,
 )
 from cube.app.s02_contracts import RefreshManagerProtocol
+from cube.services.s08_jtd import JTDReferenceError, jtd_reference_rows
 from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     committed_filter_state_values,
@@ -59,6 +61,9 @@ from .s06_explorertables import (
 )
 from .s13_workspacetables import NEW_TRADE_SPLIT
 from .s16_view import build_unmapped_books_table
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _pruned_split_selection(
@@ -507,12 +512,40 @@ def register_explorer_callbacks(
                 promotion_generation=promotion_generation,
                 revision=int(cache.revision),
             )
+
+        effective_credit_measure = selected_credit_measure
+        if effective_credit_measure is None and credit_view == "single":
+            effective_credit_measure = credit_measure
+        jtd_reference = None
+        jtd_underlying = None
+        jtd_error = None
+        if (
+            detail_risk_type == "Credit"
+            and table_view != "alt"
+            and effective_credit_measure == "JTD"
+        ):
+            jtd_underlying = selected_context.get("underlying") or selected_context.get(
+                "reported underlying"
+            )
+            if jtd_underlying:
+                try:
+                    jtd_reference = jtd_reference_rows(jtd_underlying)
+                except JTDReferenceError as error:
+                    LOGGER.exception(
+                        "Could not load JTD reference for %s", jtd_underlying
+                    )
+                    jtd_error = str(error)
+            else:
+                jtd_error = "Select an Underlying row to show its JTD reference."
         return build_detail_panel_with_state(
             filtered,
             detail_selection,
             compose_detail_metric(plot_measure, plot_component),
             tenor_view,
             new_trade_details=new_trade_details,
+            jtd_reference=jtd_reference,
+            jtd_underlying=jtd_underlying,
+            jtd_error=jtd_error,
         )
 
     @app.callback(

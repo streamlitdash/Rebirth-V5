@@ -1,4 +1,4 @@
-"""Bounded, process-local application log drawer for operators."""
+"""Bounded, process-local application log modal for operators."""
 
 from __future__ import annotations
 
@@ -13,53 +13,64 @@ from cube.app.s03_logging import recent_application_log_text
 ApplicationLogSource = Callable[[], str]
 
 
-def build_app_log_panel() -> html.Aside:
-    """Return the shared log drawer without polling or browser persistence."""
+def build_app_log_panel() -> html.Div:
+    """Return the shared log modal without polling or browser persistence."""
 
-    return html.Aside(
+    return html.Div(
         [
             html.Div(
                 [
-                    html.Div(
+                    html.Section(
                         [
-                            html.H2(
-                                "Application log summary", className="app-log-title"
+                            html.Div(
+                                [
+                                    html.Div(
+                                        [
+                                            html.H2(
+                                                "Application logs",
+                                                className="app-log-title",
+                                            ),
+                                            html.P(
+                                                "Recent application messages, errors, "
+                                                "tracebacks and print output from this "
+                                                "running server process.",
+                                                className="app-log-note",
+                                            ),
+                                        ]
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Button(
+                                                "Refresh",
+                                                id="app-log-refresh-button",
+                                                n_clicks=0,
+                                                type="button",
+                                                className="app-log-action",
+                                            ),
+                                            html.Button(
+                                                "Close",
+                                                id="app-log-close-button",
+                                                n_clicks=0,
+                                                type="button",
+                                                className="app-log-action",
+                                            ),
+                                        ],
+                                        className="app-log-actions",
+                                    ),
+                                ],
+                                className="app-log-panel-header",
                             ),
-                            html.P(
-                                "Safe events from this server process only. Exact messages "
-                                "and tracebacks remain in Preview/terminal; operating-system "
-                                "output is not exposed here.",
-                                className="app-log-note",
-                            ),
-                        ]
-                    ),
-                    html.Div(
-                        [
-                            html.Button(
-                                "Refresh",
-                                id="app-log-refresh-button",
-                                n_clicks=0,
-                                type="button",
-                                className="app-log-action",
-                            ),
-                            html.Button(
-                                "Close",
-                                id="app-log-close-button",
-                                n_clicks=0,
-                                type="button",
-                                className="app-log-action",
+                            html.Pre(
+                                "Open App Logs to read the latest application output.",
+                                id="app-log-content",
+                                className="app-log-content",
+                                **{"aria-live": "off"},
                             ),
                         ],
-                        className="app-log-actions",
+                        className="app-log-dialog",
                     ),
                 ],
-                className="app-log-panel-header",
-            ),
-            html.Pre(
-                "Open App Logs to read the latest safe application events.",
-                id="app-log-content",
-                className="app-log-content",
-                **{"aria-live": "off"},
+                className="app-log-dialog-position",
             ),
         ],
         id="app-log-panel",
@@ -68,7 +79,7 @@ def build_app_log_panel() -> html.Aside:
         role="dialog",
         **{
             "aria-label": "Application logs",
-            "aria-modal": "false",
+            "aria-modal": "true",
         },
     )
 
@@ -78,7 +89,7 @@ def register_app_log_callbacks(
     *,
     log_source: ApplicationLogSource = recent_application_log_text,
 ) -> None:
-    """Register one explicit open/refresh/close callback for the shared drawer."""
+    """Register one explicit open/refresh/close callback for the shared modal."""
 
     @app.callback(
         Output("app-log-panel", "hidden"),

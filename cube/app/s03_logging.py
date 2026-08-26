@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import re
+import sys
 from threading import RLock
 from time import perf_counter
 from typing import Any, Iterator, MutableMapping
@@ -29,7 +30,7 @@ _SAFE_FIELDS = frozenset(
 _warned: set[tuple[str, object]] = set()
 
 _APPLICATION_LOG_RECORD_LIMIT = 200
-_APPLICATION_LOG_RECORD_CHAR_LIMIT = 1_000
+_APPLICATION_LOG_RECORD_CHAR_LIMIT = 4_000
 _APPLICATION_LOG_SNAPSHOT_LIMIT = 100
 _APPLICATION_LOG_SNAPSHOT_CHAR_LIMIT = 64_000
 _APPLICATION_LOG_NAMES = ("cube", "app", "__main__", "dash.dash")
@@ -49,6 +50,19 @@ _OPERATOR_EVENT_FIELDS = (
     "calls",
 )
 _OPERATOR_VALUE_PATTERN = re.compile(r"[^A-Za-z0-9 _./:+-]")
+_SECRET_PATTERN = re.compile(
+    r"(?i)\b(password|passwd|secret|token|authorization|api[_ -]?key)\b"
+    r"([\"']?\s*[:=]\s*)(?P<quote>[\"']?)"
+    r"(?:(?:bearer|basic)\s+)?"
+    r".*?(?P=quote)(?=\s*(?:[,;} ]|$))"
+)
+
+
+def _browser_safe_text(value: object) -> str:
+    """Bound one terminal/error message and mask common credential fields."""
+
+    text = str(value).replace("\x00", "")
+    return _SECRET_PATTERN.sub(r"\1\2[redacted]", text)
 
 
 def _safe_operator_value(value: object, *, limit: int = 100) -> str:
@@ -64,33 +78,40 @@ def _safe_operator_value(value: object, *, limit: int = 100) -> str:
 
 
 def _render_operator_record(record: logging.LogRecord) -> str | None:
-    """Render only explicitly allowlisted metadata for the browser drawer.
-
-    The normal terminal handler still formats the complete record and traceback.
-    This separate representation deliberately never calls ``record.getMessage``
-    and never formats ``exc_info``, because connector exception strings can hold
-    credentials, query text, or financial data that must not be copied into a
-    browser response.
-    """
+    """Render structured events plus actionable application errors."""
 
     raw_event = getattr(record, "cube_operator_event", None)
-    if not isinstance(raw_event, dict):
-        return None
-    event = _safe_operator_value(raw_event.get("event", "Application event"))
-    fields = [
-        f"{field}={_safe_operator_value(raw_event[field])}"
-        for field in _OPERATOR_EVENT_FIELDS
-        if raw_event.get(field) is not None
-    ]
     timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
-    suffix = f" | {' '.join(fields)}" if fields else ""
-    return f"{timestamp} {record.levelname} {event}{suffix}"
+    if isinstance(raw_event, dict):
+        event = _safe_operator_value(raw_event.get("event", "Application event"))
+        fields = [
+            f"{field}={_safe_operator_value(raw_event[field])}"
+            for field in _OPERATOR_EVENT_FIELDS
+            if raw_event.get(field) is not None
+        ]
+        suffix = f" | {' '.join(fields)}" if fields else ""
+        summary = f"{timestamp} {record.levelname} {event}{suffix}"
+        if record.levelno < logging.WARNING:
+            return summary
+        message = _browser_safe_text(record.getMessage())
+        if record.exc_info:
+            formatter = logging.Formatter()
+            traceback = formatter.formatException(record.exc_info)
+            message = f"{message}\n{_browser_safe_text(traceback)}"
+        return f"{summary}\n{message}"
+    if record.levelno < logging.WARNING:
+        return None
+    message = _browser_safe_text(record.getMessage())
+    if record.exc_info:
+        formatter = logging.Formatter()
+        message = f"{message}\n{_browser_safe_text(formatter.formatException(record.exc_info))}"
+    return f"{timestamp} {record.levelname} {record.name} {message}"
 
 
 class _BoundedApplicationLogHandler(logging.Handler):
-    """Keep a small process-local copy of safe structured operator events."""
+    """Keep a small process-local copy of operator events and terminal text."""
 
     def __init__(self) -> None:
         super().__init__(level=logging.NOTSET)
@@ -99,6 +120,8 @@ class _BoundedApplicationLogHandler(logging.Handler):
 
     @staticmethod
     def _accepts(record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return True
         name = str(record.name)
         return any(
             name == prefix or name.startswith(f"{prefix}.")
@@ -125,6 +148,21 @@ class _BoundedApplicationLogHandler(logging.Handler):
     def clear_entries(self) -> None:
         with self._entries_lock:
             self._entries.clear()
+
+    def append_terminal_text(self, source: str, value: object) -> None:
+        """Append one complete stdout line without logging recursion."""
+
+        message = _browser_safe_text(value).strip()
+        if not message:
+            return
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        rendered = f"{timestamp} {source} {message}"
+        if len(rendered) > _APPLICATION_LOG_RECORD_CHAR_LIMIT:
+            rendered = (
+                rendered[: _APPLICATION_LOG_RECORD_CHAR_LIMIT - 16] + " ... [truncated]"
+            )
+        with self._entries_lock:
+            self._entries.append(rendered)
 
     def snapshot(
         self,
@@ -165,8 +203,58 @@ class _BoundedApplicationLogHandler(logging.Handler):
 _APPLICATION_LOG_HANDLER = _BoundedApplicationLogHandler()
 
 
+class _TerminalTee:
+    """Forward stdout to Jupyter and mirror complete print lines to App Logs."""
+
+    def __init__(self, stream: object, source: str) -> None:
+        self._stream = stream
+        self._source = source
+        self._pending = ""
+        self._lock = RLock()
+        self._cube_terminal_tee = True
+
+    def write(self, value: object) -> int:
+        text = str(value)
+        written = self._stream.write(text)
+        with self._lock:
+            self._pending += text
+            lines = self._pending.splitlines(keepends=True)
+            self._pending = ""
+            for line in lines:
+                if line.endswith(("\n", "\r")):
+                    _APPLICATION_LOG_HANDLER.append_terminal_text(
+                        self._source, line.rstrip("\r\n")
+                    )
+                else:
+                    self._pending = line
+        return len(text) if written is None else int(written)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
+
+
+def _install_terminal_tees() -> None:
+    """Install the stdout mirror once without changing terminal output."""
+
+    if not getattr(sys.stdout, "_cube_terminal_tee", False):
+        sys.stdout = _TerminalTee(sys.stdout, "STDOUT")
+
+
 def attach_application_log_handler(logger: logging.Logger) -> None:
-    """Attach the shared safe-event handler to one application logger."""
+    """Attach one safe copy without mirroring the logger through stdout too."""
+
+    for handler in logger.handlers:
+        if not isinstance(handler, logging.StreamHandler):
+            continue
+        stream = getattr(handler, "stream", None)
+        if isinstance(stream, _TerminalTee):
+            # Dash may create its stdout handler after stdout was wrapped.
+            # Keep that handler visible in Jupyter, but bypass the mirror
+            # because this logger receives the bounded handler directly below.
+            handler.setStream(stream._stream)
 
     if _APPLICATION_LOG_HANDLER not in logger.handlers:
         logger.addHandler(_APPLICATION_LOG_HANDLER)
@@ -209,6 +297,7 @@ def configure_runtime_logging() -> int:
     root_logger.setLevel(level)
     _APPLICATION_LOG_HANDLER.setLevel(level)
     attach_application_log_handler(root_logger)
+    _install_terminal_tees()
     return level
 
 

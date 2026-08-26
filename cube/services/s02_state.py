@@ -28,6 +28,7 @@ from cube.domain.s07_governance import (
     _merge_validated_config,
     _validate_dashboard_release,
     apply_baseline_promotions,
+    apply_pinned_promotions,
     to_dashboard_frame,
 )
 from cube.domain.s02_products import (
@@ -39,6 +40,7 @@ from cube.domain.s02_products import (
     SOURCE_TYPE,
     UNDERLYING,
     FrameName,
+    GovernanceSource,
     ProductSpec,
 )
 from cube.services.s01_snapshots import (
@@ -570,6 +572,7 @@ class _RefreshStateMixin:
         thresholds: pd.DataFrame,
         reported_underlyings: pd.DataFrame,
         overlay_frames: Mapping[str, pd.DataFrame] | None = None,
+        pinned_promotions: GovernanceSource | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """Apply reporting governance and return enriched, dashboard, unmapped."""
         missing = set(PRODUCT_SPECS_BY_SOURCE_TYPE) - set(pl_frames)
@@ -581,17 +584,18 @@ class _RefreshStateMixin:
         release_frames.extend(
             frame for frame in (overlay_frames or {}).values() if not frame.empty
         )
-        combined = pd.concat(release_frames, ignore_index=True, sort=False)
-        configured = _merge_validated_config(combined, config)
-        reported = attach_reported_underlying(
-            configured,
+        enriched = pd.concat(release_frames, ignore_index=True, sort=False)
+        enriched = _merge_validated_config(enriched, config)
+        enriched = attach_reported_underlying(
+            enriched,
             reported_underlyings,
             allowed_pairs=RELEASE_RISK_PAIRS,
         )
-        enriched = apply_baseline_promotions(reported, thresholds)
-        mapped = enriched.loc[enriched[PORTFOLIO_MAPPED].eq(True)].copy()
+        enriched = apply_baseline_promotions(enriched, thresholds)
+        enriched = apply_pinned_promotions(enriched, pinned_promotions)
+        mapped_mask = enriched[PORTFOLIO_MAPPED].eq(True)
         unmapped = enriched.loc[enriched[PORTFOLIO_MAPPED].eq(False)].copy()
-        dashboard = to_dashboard_frame(mapped)
+        dashboard = to_dashboard_frame(enriched.loc[mapped_mask])
         _validate_dashboard_release(dashboard)
         return enriched, dashboard, unmapped
 

@@ -27,7 +27,10 @@ from .s01_common import (
     metric_title,
 )
 from .s06_explorertables import build_small_table
-from .s13_workspacetables import build_new_trade_detail_table
+from .s13_workspacetables import (
+    build_jtd_reference_table,
+    build_new_trade_detail_table,
+)
 
 
 _DETAIL_LOGGER = logging.getLogger(__name__)
@@ -628,6 +631,9 @@ def _build_detail_panel_from_frame(
     metric: str,
     tenor_view: str,
     new_trade_details: pd.DataFrame | None = None,
+    jtd_reference: pd.DataFrame | None = None,
+    jtd_underlying: str | None = None,
+    jtd_error: str | None = None,
 ) -> html.Div:
     # Diagnostics: trace tenor view data for debugging
     partitions = detail_tenor_partitions(detail)
@@ -789,6 +795,15 @@ def _build_detail_panel_from_frame(
         if new_trade_details is not None
         else None
     )
+    jtd_table = (
+        build_jtd_reference_table(
+            jtd_reference,
+            jtd_underlying,
+            error=jtd_error,
+        )
+        if jtd_reference is not None or jtd_underlying is not None or jtd_error
+        else None
+    )
 
     # Build matrix table for surface view, otherwise use flat table
     if matrix_detail is not None and not matrix_detail.empty:
@@ -817,6 +832,7 @@ def _build_detail_panel_from_frame(
                 ],
                 className="detail-header",
             ),
+            *([jtd_table] if jtd_table is not None else []),
             *([new_trade_table] if new_trade_table is not None else []),
             html.Div(
                 [
@@ -840,6 +856,9 @@ def build_detail_panel_with_state(
     tenor_view: str | None = "auto",
     *,
     new_trade_details: pd.DataFrame | None = None,
+    jtd_reference: pd.DataFrame | None = None,
+    jtd_underlying: str | None = None,
+    jtd_error: str | None = None,
 ) -> tuple[html.Div, list[dict[str, object]], str]:
     """Build one detail panel and its synchronized tenor-view picker state."""
     if not selection:
@@ -870,6 +889,9 @@ def build_detail_panel_with_state(
         metric=metric,
         tenor_view=resolved_view,
         new_trade_details=new_trade_details,
+        jtd_reference=jtd_reference,
+        jtd_underlying=jtd_underlying,
+        jtd_error=jtd_error,
     )
     return panel, options, resolved_view
 

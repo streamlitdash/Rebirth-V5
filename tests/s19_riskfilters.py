@@ -1265,7 +1265,12 @@ def test_risk_top_workspace_uses_four_ordered_tabs_with_aggregate_default() -> N
         if isinstance(item, dcc.Dropdown) and item.id == "top-promotions-signal"
     )
     assert signal.value == "vol-score"
-    assert signal.options == [{"label": "Vol Score", "value": "vol-score"}]
+    assert signal.options == [
+        {"label": "Vol Score", "value": "vol-score"},
+        {"label": "Risk", "value": "risk"},
+        {"label": "dRisk", "value": "drisk"},
+        {"label": "P&L", "value": "pl"},
+    ]
     assert "top-book-details" not in ids
     assert "top-book-grid" not in ids
     assert "top-book-summary" not in ids

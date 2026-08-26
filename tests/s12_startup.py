@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event, Thread
 from types import SimpleNamespace
 
 import pandas as pd
@@ -921,6 +921,79 @@ def test_prepared_dashboard_cache_honours_an_older_requested_revision(
     assert set(newest_prepared["activity"]) == {"NEWER"}
     assert set(requested_older["activity"]) == {"OLDER"}
     assert loader(revision=2, frame=newer) is newest_prepared
+
+
+def test_warm_risk_route_uses_prepared_cache_before_reading_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    reads: list[str] = []
+    original_read_frame = manager.read_frame
+
+    def tracked_read_frame(name: str):
+        reads.append(name)
+        return original_read_frame(name)
+
+    monkeypatch.setattr(manager, "read_frame", tracked_read_frame)
+
+    _native_page(app, "/")
+    _native_page(app, "/")
+
+    assert reads == []
+
+
+def test_prepared_dashboard_cache_miss_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    original_register = factory.register_callbacks
+
+    def capture_loader(*args, **kwargs):
+        captured["loader"] = kwargs["prepared_frame_loader"]
+        return original_register(*args, **kwargs)
+
+    monkeypatch.setattr(factory, "register_callbacks", capture_loader)
+    manager = build_production_refresh_manager()
+    build_app(refresh_manager=manager)
+    manager.refresh(force_risk=True, force_pl=True)
+    revision = manager.health.revision
+    reads: list[str] = []
+    original_read_frame = manager.read_frame
+
+    def tracked_read_frame(name: str):
+        reads.append(name)
+        time.sleep(0.05)
+        return original_read_frame(name)
+
+    monkeypatch.setattr(manager, "read_frame", tracked_read_frame)
+    loader = captured["loader"]
+    barrier = Barrier(3)
+    results: list[pd.DataFrame | None] = []
+    errors: list[BaseException] = []
+
+    def load() -> None:
+        try:
+            barrier.wait(timeout=2)
+            results.append(loader(revision=revision))
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    workers = [Thread(target=load), Thread(target=load)]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=2)
+    for worker in workers:
+        worker.join(timeout=3)
+
+    assert errors == []
+    assert all(not worker.is_alive() for worker in workers)
+    assert reads == ["dashboard_frame"]
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert loader(revision=revision) is results[0]
+    assert reads == ["dashboard_frame"]
 
 
 def test_native_pages_match_the_public_prefix_exactly() -> None:

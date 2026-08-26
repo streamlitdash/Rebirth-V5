@@ -1,14 +1,17 @@
-/* Shared header utilities and the bounded process-local application log drawer. */
+/* Shared header utilities and the bounded process-local application log modal. */
 
 .cube-header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   min-width: 0;
   gap: 8px;
   margin-left: auto;
 }
 
 .cube-header-utilities.header-utility-pair {
+  gap: 8px;
   margin-left: 0;
 }
 
@@ -47,9 +50,21 @@
 
 .app-log-panel {
   position: fixed;
-  top: 64px;
-  right: 14px;
+  inset: 0;
   z-index: 1400;
+  padding: 24px;
+  overflow: auto;
+  background: rgba(17, 17, 17, 0.46);
+}
+
+.app-log-dialog-position {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  pointer-events: none;
+}
+
+.app-log-dialog {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(780px, calc(100vw - 28px));
@@ -59,6 +74,7 @@
   border-radius: 12px;
   background: var(--surface-raised);
   box-shadow: 0 20px 55px rgba(17, 17, 17, 0.22);
+  pointer-events: auto;
 }
 
 .app-log-panel[hidden] {
@@ -112,6 +128,7 @@
 @media (max-width: 760px) {
   .cube-header-actions {
     width: 100%;
+    justify-content: space-between;
   }
 
   .cube-header-actions .cube-nav {
@@ -126,8 +143,10 @@
   }
 
   .app-log-panel {
-    top: 112px;
-    right: 8px;
+    padding: 8px;
+  }
+
+  .app-log-dialog {
     width: calc(100vw - 16px);
     height: min(72vh, 620px);
     padding: 10px;

@@ -524,6 +524,56 @@ PROMOTION_KEYS = [
     "risk greek",
     "reported underlying",
 ]
+_PINNED_REASON_PATTERN = r"(?:^|[,/]\s*)\*(?:\s*[,/]|$)"
+
+
+def preserve_pinned_promotions(
+    source: pd.DataFrame,
+    classified: pd.DataFrame,
+) -> pd.DataFrame:
+    """Carry existing ``*`` parents into a newly calculated classification."""
+
+    result = classified.copy()
+    if source.empty or "promotion reason" not in source:
+        return result
+    required = [*PROMOTION_KEYS, "display bucket", "promotion reason"]
+    missing = [column for column in required if column not in result]
+    if missing:
+        raise ValueError(f"Promotion result is missing columns: {missing}")
+    source_missing = [column for column in PROMOTION_KEYS if column not in source]
+    if source_missing:
+        raise ValueError(f"Promotion source is missing columns: {source_missing}")
+
+    source_reasons = source["promotion reason"].fillna("").astype(str)
+    pinned_source = source_reasons.str.contains(
+        _PINNED_REASON_PATTERN,
+        regex=True,
+        na=False,
+    )
+    if not pinned_source.any():
+        return result
+
+    pinned_parents = pd.MultiIndex.from_frame(
+        source.loc[pinned_source, PROMOTION_KEYS].drop_duplicates()
+    )
+    result_parents = pd.MultiIndex.from_frame(result[PROMOTION_KEYS])
+    pinned_result = result_parents.isin(pinned_parents)
+    reasons = result["promotion reason"].fillna("").astype(str).str.strip()
+    already_pinned = reasons.str.contains(
+        _PINNED_REASON_PATTERN,
+        regex=True,
+        na=False,
+    )
+    needs_prefix = pinned_result & ~already_pinned
+    result.loc[needs_prefix, "promotion reason"] = np.where(
+        reasons.loc[needs_prefix].ne(""),
+        "*, " + reasons.loc[needs_prefix],
+        "*",
+    )
+    result.loc[pinned_result, "display bucket"] = result.loc[
+        pinned_result, "reported underlying"
+    ]
+    return result
 
 
 def recompute_filtered_promotion(data: pd.DataFrame) -> pd.DataFrame:
@@ -591,12 +641,13 @@ def recompute_filtered_promotion(data: pd.DataFrame) -> pd.DataFrame:
         PROMOTION_KEYS + ["display bucket", "promotion reason", "promotion score"]
     ]
 
-    return base.merge(
+    classified = base.merge(
         promotion,
         on=PROMOTION_KEYS,
         how="left",
         validate="many_to_one",
     )
+    return preserve_pinned_promotions(data, classified)
 
 
 def filter_ir_family(
@@ -1341,6 +1392,7 @@ __all__ = [
     "parse_row_key",
     "prepare_risk_data",
     "recompute_filtered_promotion",
+    "preserve_pinned_promotions",
     "row_key",
     "selected_dimension",
     "selected_underlying_sort_metric",

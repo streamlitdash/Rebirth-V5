@@ -54,6 +54,7 @@ def test_v4_domain_service_and_adapter_modules_have_descriptive_owners() -> None
             "s05_sources.py",
             "s06_refresh.py",
             "s07_tenorreduction.py",
+            "s08_jtd.py",
         },
         "adapters": {
             "s01_common.py",

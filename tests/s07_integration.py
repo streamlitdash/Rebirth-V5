@@ -692,6 +692,132 @@ def test_cold_start_commits_when_market_service_is_operationally_unavailable(
     assert len(circuit_warnings) == 1
 
 
+def test_market_failure_skips_only_its_product() -> None:
+    adapters = dict(get_product_connector_adapters())
+    credit_delta = adapters["credit/delta"]
+    fx_delta = adapters["fx/delta"]
+    fx_vega = adapters["fx/vega"]
+    calls: list[str] = []
+
+    def unavailable_credit_open(
+        _date: pd.Timestamp,
+        _underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        del market_status
+        calls.append("credit/delta open")
+        raise ConnectionError("Credit Delta open is unavailable")
+
+    def credit_status(
+        market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append("credit/delta status")
+        return credit_delta.market_status(
+            market_date,
+            underlying,
+            market_status=market_status,
+        )
+
+    def fx_delta_open(
+        _date: pd.Timestamp,
+        underlyings: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append("fx/delta open")
+        assert fx_delta.market_open_bulk is not None
+        return fx_delta.market_open_bulk(
+            _date,
+            underlyings,
+            market_status=market_status,
+        )
+
+    def fx_delta_status(
+        market_date: pd.Timestamp,
+        underlyings: tuple[str, ...],
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append("fx/delta status")
+        assert fx_delta.market_status_bulk is not None
+        return fx_delta.market_status_bulk(
+            market_date,
+            underlyings,
+            market_status=market_status,
+        )
+
+    def fx_vega_open(
+        open_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append("fx/vega open")
+        return fx_vega.market_open(
+            open_date,
+            underlying,
+            market_status=market_status,
+        )
+
+    def fx_vega_status(
+        market_date: pd.Timestamp,
+        underlying: str,
+        *,
+        market_status: str,
+    ) -> pd.DataFrame:
+        calls.append("fx/vega status")
+        return fx_vega.market_status(
+            market_date,
+            underlying,
+            market_status=market_status,
+        )
+
+    adapters["credit/delta"] = ProductConnectorAdapter(
+        risk=credit_delta.risk,
+        market_open=unavailable_credit_open,
+        market_status=credit_status,
+    )
+    adapters["fx/delta"] = ProductConnectorAdapter(
+        risk=fx_delta.risk,
+        market_open=fx_delta.market_open,
+        market_status=fx_delta.market_status,
+        market_open_bulk=fx_delta_open,
+        market_status_bulk=fx_delta_status,
+    )
+    adapters["fx/vega"] = ProductConnectorAdapter(
+        risk=fx_vega.risk,
+        market_open=fx_vega_open,
+        market_status=fx_vega_status,
+    )
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=adapters,
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    snapshot = manager.refresh(force_risk=True, force_pl=True)
+
+    assert snapshot.revision == 1
+    assert len(snapshot.errors) == 1
+    assert (
+        "Credit Delta Opening market (credit/delta) unavailable" in snapshot.errors[0]
+    )
+    assert calls.count("credit/delta open") == 1
+    assert calls.count("credit/delta status") == 0
+    assert calls.count("fx/delta open") == 1
+    assert calls.count("fx/delta status") == 1
+    assert calls.count("fx/vega open") > 0
+    assert calls.count("fx/vega status") > 0
+
+
 def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -> None:
     adapters = dict(get_product_connector_adapters())
     ir_delta = adapters["ir/delta"]
@@ -727,6 +853,52 @@ def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -
     assert not snapshot.dashboard_frame.empty
     assert not snapshot.dashboard_frame["Source Type"].eq("ir/delta").any()
     assert manager._risk_frames["ir/delta"].empty
+
+
+def test_pins_publish_once_and_a_bad_pin_refresh_keeps_last_good_data() -> None:
+    pins = pd.DataFrame(
+        [
+            [
+                "IR",
+                "Delta",
+                "TEMP_REPLACE_ME - G10 Rates",
+                "TEMP_REPLACE_ME - USD SOFR",
+            ]
+        ],
+        columns=["Risk Type", "Risk Greek", "Reported Underlying", "Underlying"],
+    )
+    manager = build_production_refresh_manager()
+    manager._pinned_promotion_source = lambda: pins.copy()
+
+    published = manager.refresh(force_risk=True, force_pl=True)
+    matching = (
+        published.dashboard_frame["Risk Type"].eq("IR")
+        & published.dashboard_frame["Risk Greek"].eq("Delta")
+        & published.dashboard_frame["Reported Underlying"].eq(
+            "TEMP_REPLACE_ME - G10 Rates"
+        )
+    )
+
+    assert matching.any()
+    assert (
+        published.dashboard_frame.loc[matching, "Promotion Reason"]
+        .str.contains("*", regex=False)
+        .all()
+    )
+
+    def unavailable_pins() -> pd.DataFrame:
+        raise ValueError("bad pin file")
+
+    manager._pinned_promotion_source = unavailable_pins
+    retained = manager.refresh_portfolios(expected_revision=published.revision)
+
+    assert retained.revision == published.revision
+    assert len(retained.errors) == 1
+    assert "Last successful data retained" in retained.errors[0]
+    pd.testing.assert_frame_equal(
+        retained.dashboard_frame,
+        published.dashboard_frame,
+    )
 
 
 def test_cold_start_uses_default_readiness_when_checker_is_unavailable() -> None:

@@ -105,6 +105,9 @@
 .detail-underlying { text-align: left; }
 .detail-number { text-align: right; }
 .detail-table-empty { padding: 24px !important; color: var(--text-muted); text-align: center; }
+.jtd-reference-card { margin-top: 12px; }
+.jtd-reference-title { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.jtd-reference-table-wrap { max-height: 320px; }
 .empty-detail,
 .empty-state { color: var(--text-muted); }
 .empty-state { display: grid; min-height: 180px; padding: 28px; place-items: center; gap: 5px; text-align: center; }

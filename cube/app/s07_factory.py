@@ -300,32 +300,46 @@ def build_app(
         if refresh_manager is None:
             return risk_data
         if frame is None:
-            try:
-                requested_revision = int(refresh_manager.health.revision)
-            except Exception:
-                requested_revision = -1
+            if revision is None:
+                try:
+                    requested_revision = int(refresh_manager.health.revision)
+                except Exception:
+                    requested_revision = -1
+            else:
+                requested_revision = int(revision)
             if requested_revision <= 0:
                 return None
-            with prepared_dashboard_lock:
-                if (
-                    prepared_dashboard_frame is not None
-                    and prepared_dashboard_revision == requested_revision
-                ):
-                    return prepared_dashboard_frame
-            dashboard_read = refresh_manager.read_frame("dashboard_frame")
-            revision = int(dashboard_read.revision)
-            frame = dashboard_read.frame
         elif revision is None:
             raise ValueError("revision is required when a dashboard frame is supplied")
+        else:
+            requested_revision = int(revision)
 
-        selected_revision = int(revision)
+        # Keep the cache check, defensive manager read, and preparation behind
+        # one lock. Concurrent callers for the same revision then share one
+        # read/copy and one prepared frame.
         with prepared_dashboard_lock:
             if (
                 prepared_dashboard_frame is not None
-                and prepared_dashboard_revision == selected_revision
+                and prepared_dashboard_revision == requested_revision
             ):
                 return prepared_dashboard_frame
-            prepared = prepare_risk_data(frame) if not frame.empty else frame.copy()
+            if frame is None:
+                dashboard_read = refresh_manager.read_frame("dashboard_frame")
+                selected_revision = int(dashboard_read.revision)
+                selected_frame = dashboard_read.frame
+                if (
+                    prepared_dashboard_frame is not None
+                    and prepared_dashboard_revision == selected_revision
+                ):
+                    return prepared_dashboard_frame
+            else:
+                selected_revision = requested_revision
+                selected_frame = frame
+            prepared = (
+                prepare_risk_data(selected_frame)
+                if not selected_frame.empty
+                else selected_frame.copy()
+            )
             if selected_revision >= prepared_dashboard_revision:
                 prepared_dashboard_revision = selected_revision
                 prepared_dashboard_frame = prepared
@@ -340,19 +354,20 @@ def build_app(
             try:
                 revision = int(refresh_manager.health.revision)
                 if revision > 0:
-                    snapshot = refresh_manager.control_snapshot
-                    dashboard_read = refresh_manager.read_frame("dashboard_frame")
-                    if int(snapshot.revision) != int(dashboard_read.revision):
+                    # The first iteration normally succeeds. Retry once only
+                    # when a new commit lands while this route is reading it.
+                    for _attempt in range(2):
                         snapshot = refresh_manager.control_snapshot
-                        dashboard_read = refresh_manager.read_frame("dashboard_frame")
-                    if int(snapshot.revision) != int(dashboard_read.revision):
+                        expected_revision = int(snapshot.revision)
+                        prepared = prepared_committed_dashboard(
+                            revision=expected_revision
+                        )
+                        if expected_revision == int(refresh_manager.health.revision):
+                            break
+                    else:
                         raise RuntimeError(
                             "Committed dashboard and control revisions disagree"
                         )
-                    prepared = prepared_committed_dashboard(
-                        revision=int(dashboard_read.revision),
-                        frame=dashboard_read.frame,
-                    )
                     if prepared is None:
                         raise RuntimeError("Committed dashboard frame is unavailable")
                     return build_layout(

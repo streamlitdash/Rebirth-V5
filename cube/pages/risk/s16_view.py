@@ -864,7 +864,7 @@ def build_layout(
                                                         html.H2("Top Promotions"),
                                                         html.P(
                                                             "A flat rank of eligible committed promotions. "
-                                                            "Vol Score comes directly from the Risk connector."
+                                                            "Values are ordered by absolute size; signed values remain visible."
                                                         ),
                                                     ],
                                                     className="top-promotions-heading-copy",
@@ -872,7 +872,7 @@ def build_layout(
                                                 html.Div(
                                                     [
                                                         html.Label(
-                                                            "Connector signal",
+                                                            "Order by",
                                                             htmlFor="top-promotions-signal",
                                                             className="eyebrow",
                                                         ),

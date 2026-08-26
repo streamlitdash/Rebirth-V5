@@ -83,7 +83,7 @@ def test_configure_runtime_logging_resolves_level_without_python_311_api(
     assert configure_runtime_logging() == logging.DEBUG
 
 
-def test_application_log_copy_exposes_only_safe_structured_events() -> None:
+def test_application_log_copy_exposes_sanitized_structured_errors() -> None:
     clear_application_logs()
     configure_runtime_logging()
     logger = logging.getLogger("cube.tests.browser_logs")
@@ -114,13 +114,14 @@ def test_application_log_copy_exposes_only_safe_structured_events() -> None:
     assert "source=credit/delta" in rendered
     assert "product=Credit Delta" in rendered
     assert "error_type=KeyError" in rendered
-    assert "credit delta mapping is absent" not in rendered
-    assert "Traceback (most recent call last)" not in rendered
-    assert "password" not in rendered
-    assert "Authorization" not in rendered
+    assert "credit delta mapping is absent" in rendered
+    assert "Traceback (most recent call last)" in rendered
+    assert "password=[redacted]" in rendered
+    assert "Authorization" in rendered
+    assert "[redacted]" in rendered
     assert "not-for-browser" not in rendered
     assert "TOPSECRET" not in rendered
-    assert "third-party-noise" not in rendered
+    assert "third-party-noise" in rendered
     clear_application_logs()
 
 
@@ -135,7 +136,7 @@ def test_application_log_handler_is_idempotent_and_response_bounded() -> None:
         extra={"cube_operator_event": {"event": "one-idempotent-record"}},
     )
     assert recent_application_log_text().count("one-idempotent-record") == 1
-    assert "raw-idempotent-message" not in recent_application_log_text()
+    assert recent_application_log_text().count("raw-idempotent-message") == 1
     for index in range(230):
         logger.info(
             "raw bounded payload %s",

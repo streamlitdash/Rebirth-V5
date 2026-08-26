@@ -12,7 +12,10 @@ from uuid import uuid4
 import pandas as pd
 from dash import dcc, html
 
-from cube.ui.s02_aggregation import recompute_filtered_promotion
+from cube.ui.s02_aggregation import (
+    preserve_pinned_promotions,
+    recompute_filtered_promotion,
+)
 from cube.ui.s01_constants import FILTER_COLUMNS
 
 
@@ -471,7 +474,7 @@ def apply_promotion_generation(
         result["display bucket"] = "Other"
         result["promotion reason"] = ""
         result["promotion score"] = 0.0
-        return result
+        return preserve_pinned_promotions(frame, result)
     result = base.merge(
         classification,
         on=list(PROMOTION_KEYS),
@@ -481,7 +484,7 @@ def apply_promotion_generation(
     result["display bucket"] = result["display bucket"].fillna("Other")
     result["promotion reason"] = result["promotion reason"].fillna("")
     result["promotion score"] = result["promotion score"].fillna(0.0)
-    return result
+    return preserve_pinned_promotions(frame, result)
 
 
 def promotion_table(

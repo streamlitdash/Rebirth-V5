@@ -56,6 +56,7 @@ TEMP_CSV_FILES = {
     "portfolio_config": TEMP_DATA_DIRECTORY / "s06_portfolios.csv",
     "risk_thresholds": TEMP_DATA_DIRECTORY / "s07_thresholds.csv",
     "reported_underlyings": TEMP_DATA_DIRECTORY / "s09_reported.csv",
+    "pinned_promotions": TEMP_DATA_DIRECTORY / "s12_pinned.csv",
 }
 
 _SOURCE_TYPE = "Source Type"
@@ -97,6 +98,12 @@ _TEMP_CSV_SCHEMAS = {
         "Underlying",
         "Reported Underlying",
     ),
+    "pinned_promotions": (
+        "Risk Type",
+        "Risk Greek",
+        "Reported Underlying",
+        "Underlying",
+    ),
 }
 
 
@@ -133,7 +140,7 @@ def _load_temp_csv(
             f"Temp connector file {path.name} must have columns "
             f"{list(expected_columns)} in that order; found {list(actual_columns)}."
         )
-    if frame.empty:
+    if frame.empty and dataset != "pinned_promotions":
         raise TempCsvConnectorError(f"Temp connector file {path.name} has no rows.")
     frame.columns = list(expected_columns)
     if _SOURCE_TYPE in expected_columns:
@@ -603,6 +610,18 @@ def get_reported_underlyings() -> pd.DataFrame:
     return frame.copy()
 
 
+def get_pinned_promotions() -> pd.DataFrame:
+    """Return exact raw-to-reported identities that receive the ``*`` marker.
+
+    Real replacement contract: return exactly ``Risk Type``, ``Risk Greek``,
+    ``Reported Underlying``, and ``Underlying``. The four columns form a unique
+    key. Unlike temp connector data, these governed labels need no placeholder
+    notice because they are intended to be maintained directly.
+    """
+
+    return _read_temp_csv("pinned_promotions").copy()
+
+
 def get_colossus_pl(market_date: pd.Timestamp) -> pd.DataFrame:
     """Return official Colossus P&L at the archive's four-key grain.
 
@@ -762,6 +781,7 @@ def build_production_refresh_manager(
         get_portfolio_config,
         thresholds=get_risk_thresholds,
         reported_underlyings=get_reported_underlyings,
+        pinned_promotions=get_pinned_promotions,
         risk_checker_loader=get_risk_checker,
         market_status_resolver=resolve_market_state,
         risk_loader=get_risk,
@@ -789,6 +809,7 @@ __all__ = [
     "get_market_state",
     "get_market_status",
     "get_new_trades",
+    "get_pinned_promotions",
     "get_portfolio_config",
     "get_product_connector_adapters",
     "get_reported_underlyings",

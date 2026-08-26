@@ -99,6 +99,12 @@ _DASHBOARD_ZERO_TOKENS: Final = frozenset(
         "-infinity",
     }
 )
+PINNED_PROMOTION_COLUMNS: Final = (
+    RISK_TYPE,
+    RISK_GREEK,
+    REPORTED_UNDERLYING,
+    UNDERLYING,
+)
 
 
 def _activity_key(value: object) -> str:
@@ -238,6 +244,41 @@ def load_reported_underlyings(
     )
 
 
+def load_pinned_promotions(source: GovernanceSource | None) -> pd.DataFrame:
+    """Validate the optional four-column pinned-promotion list."""
+
+    columns = list(PINNED_PROMOTION_COLUMNS)
+    if source is None:
+        return pd.DataFrame(columns=columns)
+    resolved = _load_governance_source(source, label="pinned promotions")
+    frame = (
+        pd.read_csv(resolved, dtype="string", keep_default_na=False)
+        if isinstance(resolved, (str, Path))
+        else resolved
+    )
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("pinned promotions must be a DataFrame or CSV path")
+    result = frame.copy()
+    if list(result.columns) != columns:
+        raise ValueError(
+            f"pinned promotions columns must be exactly {columns} in that order; "
+            f"found {list(result.columns)}"
+        )
+    if result.empty:
+        return result
+    result = _require_nonblank(result, columns, "pinned promotions")
+    if result.duplicated(columns).any():
+        raise ValueError("pinned promotions must contain unique four-column keys")
+    pairs = pd.MultiIndex.from_frame(result[[RISK_TYPE, RISK_GREEK]])
+    invalid = ~pairs.isin(RELEASE_RISK_PAIRS)
+    if invalid.any():
+        records = result.loc[invalid, [RISK_TYPE, RISK_GREEK]].to_dict("records")
+        raise ValueError(
+            f"pinned promotions contain unknown Risk Type + Risk Greek rows: {records}"
+        )
+    return result[columns].copy()
+
+
 def _apply_validated_thresholds(
     frame: pd.DataFrame,
     threshold_frame: pd.DataFrame,
@@ -343,6 +384,52 @@ def apply_baseline_promotions(
         threshold_frame,
         promotion_activity_keys=_BASELINE_PROMOTION_ACTIVITY_KEYS,
     )
+
+
+def apply_pinned_promotions(
+    frame: pd.DataFrame,
+    pinned_promotions: GovernanceSource | None,
+) -> pd.DataFrame:
+    """Prefix ``*`` on reported parents triggered by exact four-key pins."""
+
+    result = frame.copy()
+    pins = load_pinned_promotions(pinned_promotions)
+    if pins.empty or result.empty:
+        return result
+    required = [
+        *PINNED_PROMOTION_COLUMNS,
+        PORTFOLIO_MAPPED,
+        DISPLAY_BUCKET,
+        PROMOTION_REASON,
+    ]
+    _require_columns(result, required, "promoted P&L")
+    mapped = result[PORTFOLIO_MAPPED].eq(True)
+    mapped_rows = result.loc[mapped]
+    raw_keys = pd.MultiIndex.from_frame(mapped_rows[list(PINNED_PROMOTION_COLUMNS)])
+    matched_rows = mapped_rows.loc[
+        raw_keys.isin(pd.MultiIndex.from_frame(pins[list(PINNED_PROMOTION_COLUMNS)]))
+    ]
+    if matched_rows.empty:
+        return result
+
+    reported_keys = [RISK_TYPE, RISK_GREEK, REPORTED_UNDERLYING]
+    pinned_parents = pd.MultiIndex.from_frame(
+        matched_rows[reported_keys].drop_duplicates()
+    )
+    parent_keys = pd.MultiIndex.from_frame(result[reported_keys])
+    is_pinned = mapped & parent_keys.isin(pinned_parents)
+    reasons = result[PROMOTION_REASON].fillna("").astype(str).str.strip()
+    already_pinned = reasons.str.contains(
+        r"(?:^|,\s*)\*(?:\s*,|$)", regex=True, na=False
+    )
+    needs_prefix = is_pinned & ~already_pinned
+    result.loc[needs_prefix, PROMOTION_REASON] = np.where(
+        reasons.loc[needs_prefix].ne(""),
+        "*, " + reasons.loc[needs_prefix],
+        "*",
+    )
+    result.loc[is_pinned, DISPLAY_BUCKET] = result.loc[is_pinned, REPORTED_UNDERLYING]
+    return result
 
 
 def evaluate_promotions(
@@ -470,14 +557,9 @@ def _zero_fill_dashboard_metrics(frame: pd.DataFrame) -> None:
 
 
 def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    frame = frame.copy()
-    # Ordinary product rows already passed the strict connector boundary.
-    # Supplemental New Trades/XGAMMA rows have no connector-owned Vol Score,
-    # so they remain neutral rather than inheriting a position's score.
-    if VOL_SCORE not in frame:
-        frame[VOL_SCORE] = 0.0
-    else:
-        frame[VOL_SCORE] = pd.to_numeric(frame[VOL_SCORE], errors="coerce").fillna(0.0)
+    """Return one owned, display-ready projection of mapped P&L rows."""
+
+    has_vol_score = VOL_SCORE in frame
     _require_columns(
         frame,
         [
@@ -504,14 +586,12 @@ def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
             MARKET_DATA_STATUS,
             PROMOTION_REASON,
             PROMOTION_SCORE,
-            VOL_SCORE,
             RISK_THRESHOLD,
             DRISK_THRESHOLD,
             PL_THRESHOLD,
         ],
         "combined P&L",
     )
-    _zero_fill_dashboard_metrics(frame)
     columns = [
         SOURCE_TYPE,
         RISK_TYPE,
@@ -544,7 +624,24 @@ def to_dashboard_frame(frame: pd.DataFrame) -> pd.DataFrame:
         MARKET_DATA_STATUS,
         *[column for column in CREDIT_MEASURE_COLUMNS if column in frame],
     ]
-    return frame[columns].copy()
+    selected_columns = (
+        columns
+        if has_vol_score
+        else [column for column in columns if column != VOL_SCORE]
+    )
+    result = frame.loc[:, selected_columns].copy()
+
+    # Ordinary product rows already passed the strict connector boundary.
+    # Supplemental New Trades/XGAMMA rows have no connector-owned Vol Score,
+    # so they remain neutral rather than inheriting a position's score.
+    if has_vol_score:
+        result[VOL_SCORE] = pd.to_numeric(result[VOL_SCORE], errors="coerce").fillna(
+            0.0
+        )
+    else:
+        result.insert(columns.index(VOL_SCORE), VOL_SCORE, 0.0)
+    _zero_fill_dashboard_metrics(result)
+    return result
 
 
 def _validate_dashboard_release(frame: pd.DataFrame) -> None:
@@ -755,6 +852,7 @@ def build_dashboard_dataframe(
     market_date: date | datetime | str | pd.Timestamp,
     market_status: str,
     reported_underlyings: pd.DataFrame | str | Path | None = None,
+    pinned_promotions: pd.DataFrame | str | Path | None = None,
 ) -> pd.DataFrame:
     """Build a display-ready frame from connector, config, and threshold inputs.
 
@@ -785,4 +883,5 @@ def build_dashboard_dataframe(
         allowed_pairs=RELEASE_RISK_PAIRS,
     )
     enriched = apply_baseline_promotions(reported, load_thresholds(thresholds))
+    enriched = apply_pinned_promotions(enriched, pinned_promotions)
     return to_dashboard_frame(enriched.loc[enriched[PORTFOLIO_MAPPED].eq(True)])

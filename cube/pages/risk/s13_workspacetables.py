@@ -48,7 +48,12 @@ NEW_TRADE_DETAIL_LABELS = {
     "trader code": "Trader Code",
     "trader name": "Trader Name",
 }
-TOP_PROMOTION_SIGNALS = {"vol-score": "Vol Score"}
+TOP_PROMOTION_SIGNALS = {
+    "vol-score": "Vol Score",
+    "risk": "Risk",
+    "drisk": "dRisk",
+    "pl": "P&L",
+}
 
 
 def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -90,13 +95,24 @@ def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if promoted.empty:
         return pd.DataFrame(columns=output_columns)
 
-    label_order = {"Big Risk": 0, "Big dRisk": 1, "Big PL": 2}
+    label_order = {"*": 0, "Big Risk": 1, "Big dRisk": 2, "Big PL": 3}
 
     def combined_label(values: pd.Series) -> str:
-        unique = {str(value).strip() for value in values if str(value).strip()}
-        return " / ".join(
+        unique = {
+            token.strip()
+            for value in values
+            for token in str(value).replace("/", ",").split(",")
+            if token.strip()
+        }
+        return ", ".join(
             sorted(unique, key=lambda value: (label_order.get(value, 99), value))
         )
+
+    def signed_max_abs(values: pd.Series) -> float:
+        numeric = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+        if numeric.size == 0:
+            return np.nan
+        return float(numeric[np.argmax(np.abs(numeric))])
 
     aggregated = (
         promoted.groupby(
@@ -106,7 +122,7 @@ def top_book_exposure_frame(frame: pd.DataFrame) -> pd.DataFrame:
             {
                 "promotion reason": combined_label,
                 "promotion score": "max",
-                "vol score": "max",
+                "vol score": signed_max_abs,
                 "risk": lambda values: values.sum(min_count=1),
                 "drisk": lambda values: values.sum(min_count=1),
                 "pl": lambda values: values.sum(min_count=1),
@@ -147,7 +163,7 @@ def top_promotions_frame(
     limit: int = 500,
     signal: str = "vol-score",
 ) -> pd.DataFrame:
-    """Rank committed promotions by their connector-owned Vol Score.
+    """Rank committed promotions by the absolute selected signal.
 
     This function never classifies or recalculates promotion. It only groups
     position rows carrying the committed ``promotion reason`` and
@@ -180,7 +196,9 @@ def top_promotions_frame(
     if promoted.empty:
         return pd.DataFrame(columns=output_columns)
 
-    promoted["_signal_rank"] = pd.to_numeric(promoted[signal_column], errors="coerce")
+    promoted["_signal_rank"] = pd.to_numeric(
+        promoted[signal_column], errors="coerce"
+    ).abs()
     promoted["_pl_rank"] = pd.to_numeric(promoted["P&L"], errors="coerce").abs()
     promoted = promoted.sort_values(
         [
@@ -235,33 +253,44 @@ def build_top_promotions_table(
                 f"{len(ranked):,} committed promotion identities",
                 className="top-promotions-count",
             ),
-            dash_table.DataTable(
-                id="top-promotions-table",
-                columns=columns,
-                data=ranked.to_dict("records"),
-                page_action="native",
-                page_current=0,
-                page_size=10,
-                cell_selectable=False,
-                style_table={"overflowX": "auto"},
-                style_cell={
-                    "padding": "0.65rem 0.75rem",
-                    "fontFamily": "inherit",
-                    "fontSize": "0.82rem",
-                    "textAlign": "left",
-                    "whiteSpace": "nowrap",
-                },
-                style_header={"fontWeight": 700},
-                style_data_conditional=[
-                    {
-                        "if": {"column_id": column},
-                        "textAlign": "right",
-                    }
-                    for column in numeric_columns
-                ],
+            html.Div(
+                dash_table.DataTable(
+                    id="top-promotions-table",
+                    columns=columns,
+                    data=ranked.to_dict("records"),
+                    page_action="native",
+                    page_current=0,
+                    page_size=10,
+                    cell_selectable=False,
+                    style_table={"overflowX": "auto"},
+                    style_cell={
+                        "padding": "8px 10px",
+                        "borderBottom": "1px solid var(--outline-soft)",
+                        "backgroundColor": "var(--surface)",
+                        "color": "var(--text)",
+                        "fontFamily": "inherit",
+                        "fontSize": "13px",
+                        "lineHeight": "1.3",
+                        "textAlign": "left",
+                        "whiteSpace": "nowrap",
+                    },
+                    style_header={
+                        "backgroundColor": "var(--surface-muted)",
+                        "color": "var(--text)",
+                        "fontWeight": 850,
+                    },
+                    style_data_conditional=[
+                        {
+                            "if": {"column_id": column},
+                            "textAlign": "right",
+                        }
+                        for column in numeric_columns
+                    ],
+                ),
+                className="detail-table top-promotions-table",
             ),
         ],
-        className="top-promotions-table-wrap",
+        className="detail-table-wrap top-promotions-table-wrap",
     )
 
 
@@ -565,6 +594,54 @@ def _format_new_trade_text(value: object) -> str:
     return str(value)
 
 
+def build_jtd_reference_table(
+    frame: pd.DataFrame | None,
+    underlying: str | None,
+    *,
+    error: str | None = None,
+) -> html.Div:
+    """Render every matching s13_jtd column and row as a flat detail table."""
+
+    title = f"JTD reference — {underlying}" if underlying else "JTD reference"
+    if error:
+        content = html.Div(error, className="empty-state", role="status")
+    elif frame is None or frame.empty:
+        message = (
+            f"No JTD reference rows for {underlying}."
+            if underlying
+            else "Select an Underlying row to show its JTD reference."
+        )
+        content = html.Div(message, className="empty-state", role="status")
+    else:
+        headers = [html.Th(str(column), scope="col") for column in frame.columns]
+        rows = [
+            html.Tr(
+                [
+                    html.Td("" if pd.isna(value) else str(value))
+                    for value in record.values()
+                ]
+            )
+            for record in frame.to_dict("records")
+        ]
+        content = html.Div(
+            html.Table(
+                [
+                    html.Caption(title, className="sr-only"),
+                    html.Thead(html.Tr(headers)),
+                    html.Tbody(rows),
+                ],
+                className="detail-table jtd-reference-table",
+            ),
+            className="detail-table-wrap jtd-reference-table-wrap",
+            tabIndex=0,
+        )
+    return html.Div(
+        [html.H3(title, className="jtd-reference-title"), content],
+        className="jtd-reference-card",
+        **{"aria-label": title},
+    )
+
+
 def build_new_trade_detail_table(
     frame: pd.DataFrame,
     context: Mapping[str, str],
@@ -647,6 +724,7 @@ __all__ = [
     "NEW_TRADE_DETAIL_LABELS",
     "NEW_TRADE_SPLIT",
     "TOP_PROMOTION_SIGNALS",
+    "build_jtd_reference_table",
     "build_new_trade_detail_table",
     "build_top_book_exposures",
     "build_top_promotions_table",

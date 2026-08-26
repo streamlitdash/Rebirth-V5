@@ -50,6 +50,7 @@ from cube.domain.s03_calculations import (
 from cube.domain.s07_governance import (
     _load_portfolio_config,
     load_config,
+    load_pinned_promotions,
     load_reported_underlyings,
     load_thresholds,
 )
@@ -331,7 +332,7 @@ class RiskRefreshManager(_RefreshStateMixin):
     """Transactional refresh cache with non-blocking last-good-snapshot reads.
 
     REAL CONNECTOR INTEGRATION POINT: supply the real portfolio ``config``,
-    approved ``thresholds``, optional ``reported_underlyings``, combined
+    approved ``thresholds``, optional reporting and pinned mappings, combined
     ``risk_checker_loader``, and product connectors here. Prefer
     ``connector_adapters`` when product APIs or schemas differ; generic loaders
     cover any source types not present in that mapping. Construction fails
@@ -344,6 +345,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         *,
         thresholds: GovernanceSource | None = None,
         reported_underlyings: GovernanceSource | None = None,
+        pinned_promotions: GovernanceSource | None = None,
         # PRODUCTION INTEGRATION POINT: one call returns readiness then inventory.
         risk_checker_loader: Callable[[pd.Timestamp], RiskCheckerResult],
         # PRODUCTION INTEGRATION POINT: called exactly once for each refresh view.
@@ -460,6 +462,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         self._config_source = config
         self._threshold_source = thresholds
         self._reported_underlying_source = reported_underlyings
+        self._pinned_promotion_source = pinned_promotions
         # Callable governance boundaries are intentionally lazy. Production
         # passes a dated Portfolio connector and a zero-argument threshold
         # connector, so constructing the WSGI app performs no source I/O before
@@ -471,6 +474,10 @@ class RiskRefreshManager(_RefreshStateMixin):
             self._reported_underlyings = None
         else:
             self._reported_underlyings = load_reported_underlyings(reported_underlyings)
+        if callable(pinned_promotions):
+            self._pinned_promotions = None
+        else:
+            self._pinned_promotions = load_pinned_promotions(pinned_promotions)
         self._risk_checker_loader = risk_checker_loader
         self._market_status_resolver = market_status_resolver
         self._risk_loader = risk_loader or get_risk
@@ -782,6 +789,19 @@ class RiskRefreshManager(_RefreshStateMixin):
         )
         return result
 
+    def _load_pinned_promotions_with_deadline(
+        self,
+        *,
+        budget: _ConnectorRefreshBudget | None = None,
+    ) -> pd.DataFrame:
+        if not callable(self._pinned_promotion_source):
+            return self._pinned_promotions.copy()
+        return self._call_connector(
+            ("governance", "pinned_promotions"),
+            lambda: load_pinned_promotions(self._pinned_promotion_source),
+            budget=budget,
+        )
+
     @staticmethod
     def _validate_risk_readiness(raw_status: object) -> pd.DataFrame:
         """Validate pair readiness and synthesize absent catalogue pairs at Age 0."""
@@ -1081,7 +1101,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                             )
                             self._logger.warning(
                                 "Market circuit opened after %s %s failed; all "
-                                "remaining market calls in this refresh are skipped. %s",
+                                "remaining calls in this market batch are skipped. %s",
                                 spec.source_type,
                                 stage,
                                 self._bounded_market_error(exc),
@@ -1231,8 +1251,8 @@ class RiskRefreshManager(_RefreshStateMixin):
                             stage=stage,
                         )
                         self._logger.warning(
-                            "Market circuit opened after bulk %s %s failed; all "
-                            "remaining market calls in this refresh are skipped. %s",
+                            "Market circuit opened after bulk %s %s failed; this "
+                            "market batch is unavailable. %s",
                             spec.source_type,
                             stage,
                             self._bounded_market_error(exc),
@@ -1574,7 +1594,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 message="Starting portfolio mapping refresh.",
             )
             try:
-                self._set_progress_total(4)
+                self._set_progress_total(5)
                 config_function = (
                     _callable_name(self._config_source)
                     if callable(self._config_source)
@@ -1607,6 +1627,20 @@ class RiskRefreshManager(_RefreshStateMixin):
                     )
                 )
 
+                pinned_function = (
+                    _callable_name(self._pinned_promotion_source)
+                    if callable(self._pinned_promotion_source)
+                    else "load_pinned_promotions"
+                )
+                self._progress_step(
+                    pinned_function,
+                    "portfolio_config",
+                    message="Loading pinned promotion identities.",
+                )
+                next_pinned_promotions = self._load_pinned_promotions_with_deadline(
+                    budget=connector_budget
+                )
+
                 self._progress_step(
                     "_release_pl_views",
                     "final",
@@ -1618,6 +1652,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     base_thresholds,
                     next_reported_underlyings,
                     overlay_frames,
+                    pinned_promotions=next_pinned_promotions,
                 )
                 revision = base_snapshot.revision + 1
                 search_catalog = self._build_snapshot_search_catalog(
@@ -2108,6 +2143,19 @@ class RiskRefreshManager(_RefreshStateMixin):
                         budget=connector_budget
                     )
                 )
+                pinned_function = (
+                    _callable_name(self._pinned_promotion_source)
+                    if callable(self._pinned_promotion_source)
+                    else "load_pinned_promotions"
+                )
+                self._progress_step(
+                    pinned_function,
+                    "reporting_mapping",
+                    message="Loading pinned promotion identities.",
+                )
+                next_pinned_promotions = self._load_pinned_promotions_with_deadline(
+                    budget=connector_budget
+                )
 
                 recalculate_source_types = (
                     changed_source_types
@@ -2115,7 +2163,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     | market_status_source_types
                 )
                 planned_total = (
-                    3
+                    4
                     + 2 * len(changed_source_types)
                     + int(bool(open_source_types))
                     + int(bool(market_status_source_types))
@@ -2389,6 +2437,26 @@ class RiskRefreshManager(_RefreshStateMixin):
                         "market_open",
                         message=f"Loading and validating {len(open_specs)} opening market snapshots.",
                     )
+
+                product_market_circuits: dict[str, _OperationalCircuitBreaker] = {}
+
+                def market_batch_circuit(
+                    source_type: str,
+                ) -> _OperationalCircuitBreaker:
+                    """Isolate an ordinary failure while preserving systemic stops."""
+
+                    if connector_budget.is_exhausted and not market_circuit.is_open:
+                        market_circuit.trip(
+                            ConnectorRefreshBudgetError(
+                                "The refresh connector elapsed-time budget is exhausted."
+                            )
+                        )
+                    if market_circuit.is_open:
+                        return market_circuit
+                    return product_market_circuits.setdefault(
+                        source_type, _OperationalCircuitBreaker()
+                    )
+
                 for spec in open_specs:
                     source_type = spec.source_type
                     requested_underlyings = self._requested_market_underlyings(
@@ -2416,7 +2484,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                             checker_date,
                             requested_underlyings,
                             market_status=expected_market_status,
-                            circuit=market_circuit,
+                            circuit=market_batch_circuit(source_type),
                             budget=connector_budget,
                         )
                     try:
@@ -2478,7 +2546,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                             market_date,
                             requested_underlyings,
                             market_status=expected_market_status,
-                            circuit=market_circuit,
+                            circuit=market_batch_circuit(source_type),
                             budget=connector_budget,
                         )
                     try:
@@ -2631,6 +2699,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     next_thresholds,
                     next_reported_underlyings,
                     next_overlay_frames,
+                    pinned_promotions=next_pinned_promotions,
                 )
                 stage_durations["release"] = time.monotonic() - release_started
                 revision = 1 if base_snapshot is None else base_snapshot.revision + 1
