@@ -19,6 +19,7 @@ V3 contains:
 - a lazy `data/s13_jtd.csv` table on Credit JTD detail clicks;
 - a modal Application Logs window containing structured events, warnings,
   errors, tracebacks, and `print()` output from the current process;
+- one configurable retry for quick product Risk/dRisk connector failures;
 - product-level market connector failure isolation;
 - simpler release-frame ownership and cache-first dashboard preparation.
 
@@ -394,11 +395,52 @@ market-status resolution or total refresh budget fails
   -> later market calls are skipped because the failure is systemic
 ```
 
-This does not retry a failed connector and does not turn missing Open/Current
-quotes into zero. It allows the existing unavailable/NA market shape and
-operator warning to represent that product, then continues.
+This does not retry a failed **market** connector and does not turn missing
+Open/Current quotes into zero. It allows the existing unavailable/NA market
+shape and operator warning to represent that product, then continues.
 
-### 5.2 Shorten full-frame lifetimes
+### 5.2 Retry each product Risk connector once
+
+The retry settings sit together at the top of
+`cube/services/s06_refresh.py`:
+
+```python
+_RISK_RETRIES = 1
+_RISK_RETRY_DELAY_SECONDS = 0.5
+```
+
+They are also constructor arguments on `RiskRefreshManager`, so a deployment or
+test can change them without editing the retry loop. `risk_retries=1` means one
+retry after the first call, or two attempts at most. Set it to `0` to disable
+Risk retries.
+
+The flow is deliberately small:
+
+```text
+first product Risk call
+  -> quick operational failure
+  -> wait 0.5 seconds
+  -> retry once
+  -> if the retry also fails, record one snapshot data warning
+  -> retain an empty result for that product
+  -> continue with the next product
+```
+
+Only ordinary product Risk/dRisk connector availability failures are retried.
+Contract errors such as `TypeError` or `ValueError` are not retried. Neither are
+manager deadline, busy-gate, or total-budget errors: after a manager deadline,
+the original daemon connector thread may still be running, so starting another
+network request would be unsafe. The existing same-key connector gate remains a
+second protection against duplicated outstanding calls.
+
+The terminal records the first failed attempt as a retry warning. If the retry
+also fails, the existing final connector error is logged as well; the dashboard
+still receives one unavailable-data warning for that product.
+
+This retry does not apply to the Risk checker, governance inputs, supplemental
+sources, or Market Open/Current connectors.
+
+### 5.3 Shorten full-frame lifetimes
 
 In `cube/services/s02_state.py::_release_pl_views()`, reuse one owned working
 variable through:
@@ -419,7 +461,7 @@ return.
 These are ownership changes, not financial-calculation changes. Do not add
 `gc.collect()` calls; dropping references is the simpler fix.
 
-### 5.3 Prepare a committed dashboard cache-first
+### 5.4 Prepare a committed dashboard cache-first
 
 In `cube/app/s07_factory.py`:
 
@@ -678,12 +720,18 @@ because the P&L page is also a governed send boundary.
 
 ### Connector isolation and cold page
 
-1. Make only Credit Delta Open fail quickly in a test connector.
-2. Confirm Credit Delta is marked unavailable/warned.
-3. Confirm FX Delta and FX Vega connectors are still called.
-4. Start two dashboard requests against the same committed revision and confirm
+1. Make FX Delta Risk fail once and then succeed. Confirm it is called exactly
+   twice and publishes normally.
+2. Make FX Delta Risk fail on both attempts. Confirm it is called exactly twice,
+   is retained as empty/unavailable, and FX Vega is still called.
+3. Set `risk_retries=0` and confirm a failed Risk connector is called once.
+4. Raise a contract `ValueError` and confirm it is surfaced without a retry.
+5. Make only Credit Delta Open fail quickly in a test connector.
+6. Confirm Credit Delta is marked unavailable/warned.
+7. Confirm FX Delta and FX Vega market connectors are still called.
+8. Start two dashboard requests against the same committed revision and confirm
    the prepared-dashboard work is reused.
-5. Confirm the cold shell, validated dashboard, modal, and detail panels all
+9. Confirm the cold shell, validated dashboard, modal, and detail panels all
    open and close normally.
 
 ## 8. Automated checks

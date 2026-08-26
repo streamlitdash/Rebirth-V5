@@ -12,6 +12,7 @@ import pytest
 
 from cube.domain.s02_products import PRODUCT_SPECS, ProductConnectorAdapter
 from cube.services.s06_refresh import (
+    ConnectorCallTimeoutError,
     RiskRefreshManager,
     _ConnectorRefreshBudget,
     _OperationalCircuitBreaker,
@@ -40,6 +41,28 @@ def _market_test_manager(
         risk_loader=lambda _date, _source: pd.DataFrame(),
         market_open_loader=loader,
         market_status_loader=loader,
+        sleep=wait,
+        **manager_options,
+    )
+
+
+def _risk_test_manager(
+    loader: Callable[..., object],
+    *,
+    wait: Callable[[float], None] = lambda _seconds: None,
+    **manager_options: object,
+) -> RiskRefreshManager:
+    def empty_market(*_args: object, **_kwargs: object) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    return RiskRefreshManager(
+        lambda _date: pd.DataFrame(),
+        thresholds=lambda: pd.DataFrame(),
+        risk_checker_loader=lambda _date: (pd.DataFrame(), pd.DataFrame()),
+        market_status_resolver=lambda _date: "OFFICIAL",
+        risk_loader=loader,
+        market_open_loader=empty_market,
+        market_status_loader=empty_market,
         sleep=wait,
         **manager_options,
     )
@@ -304,6 +327,101 @@ def test_market_call_retries_four_times_then_succeeds() -> None:
     assert calls == 5
     assert waits == [0.5, 0.5, 0.5, 0.5]
     assert result["Underlying"].tolist() == ["CREDIT_A"]
+
+
+def test_configured_risk_calls_retry_then_succeed() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def loader(_risk_date: pd.Timestamp, _source_type: str) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise ConnectionError("temporary risk failure")
+        return pd.DataFrame({"result": ["recovered"]})
+
+    manager = _risk_test_manager(
+        loader,
+        wait=waits.append,
+        risk_retries=2,
+        risk_retry_delay_seconds=0.25,
+    )
+    result = manager._load_product_risk(
+        PRODUCT_SPECS["creditdelta"],
+        pd.Timestamp("2026-08-21"),
+    )
+
+    assert calls == 3
+    assert waits == [0.25, 0.25]
+    assert result["result"].tolist() == ["recovered"]
+
+
+def test_risk_retry_can_be_disabled() -> None:
+    calls = 0
+
+    def loader(_risk_date: pd.Timestamp, _source_type: str) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        raise ConnectionError("risk unavailable")
+
+    manager = _risk_test_manager(loader, risk_retries=0)
+    with pytest.raises(ConnectionError, match="risk unavailable"):
+        manager._load_product_risk(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+        )
+
+    assert calls == 1
+
+
+def test_risk_contract_failure_is_not_retried() -> None:
+    calls = 0
+
+    def loader(_risk_date: pd.Timestamp, _source_type: str) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        raise ValueError("invalid risk connector schema")
+
+    manager = _risk_test_manager(loader, risk_retries=3)
+    with pytest.raises(ValueError, match="invalid risk connector schema"):
+        manager._load_product_risk(
+            PRODUCT_SPECS["creditdelta"],
+            pd.Timestamp("2026-08-21"),
+        )
+
+    assert calls == 1
+
+
+def test_manager_timeout_does_not_relaunch_a_running_risk_call() -> None:
+    entered = Event()
+    release = Event()
+    calls = 0
+    waits: list[float] = []
+
+    def loader(_risk_date: pd.Timestamp, _source_type: str) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(10)
+        return pd.DataFrame()
+
+    manager = _risk_test_manager(
+        loader,
+        wait=waits.append,
+        connector_call_timeout_seconds=0.05,
+    )
+    try:
+        with pytest.raises(ConnectorCallTimeoutError):
+            manager._load_product_risk(
+                PRODUCT_SPECS["creditdelta"],
+                pd.Timestamp("2026-08-21"),
+            )
+        assert entered.is_set()
+    finally:
+        release.set()
+
+    assert calls == 1
+    assert waits == []
 
 
 def test_operational_market_failures_are_soft_and_warn_once(caplog) -> None:
@@ -821,17 +939,29 @@ def test_market_failure_skips_only_its_product() -> None:
 def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -> None:
     adapters = dict(get_product_connector_adapters())
     ir_delta = adapters["ir/delta"]
+    ir_gamma = adapters["ir/gamma"]
     risk_calls = 0
+    later_risk_calls = 0
 
     def unavailable_risk(_date: pd.Timestamp) -> pd.DataFrame:
         nonlocal risk_calls
         risk_calls += 1
         raise ConnectionError("risk service unavailable")
 
+    def available_later_risk(risk_date: pd.Timestamp) -> pd.DataFrame:
+        nonlocal later_risk_calls
+        later_risk_calls += 1
+        return ir_gamma.risk(risk_date)
+
     adapters["ir/delta"] = ProductConnectorAdapter(
         risk=unavailable_risk,
         market_open=ir_delta.market_open,
         market_status=ir_delta.market_status,
+    )
+    adapters["ir/gamma"] = ProductConnectorAdapter(
+        risk=available_later_risk,
+        market_open=ir_gamma.market_open,
+        market_status=ir_gamma.market_status,
     )
     manager = RiskRefreshManager(
         get_portfolio_config,
@@ -839,6 +969,7 @@ def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -
         risk_checker_loader=get_risk_checker,
         market_status_resolver=lambda _date: "OFFICIAL",
         connector_adapters=adapters,
+        sleep=lambda _seconds: None,
         clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
         trading_timezone="Europe/London",
     )
@@ -849,10 +980,12 @@ def test_cold_start_commits_partial_snapshot_when_one_risk_connector_is_down() -
     assert len(snapshot.errors) == 1
     assert "IR Delta Risk/dRisk (ir/delta) unavailable" in snapshot.errors[0]
     assert manager.health.active_error_count == 1
-    assert risk_calls == 1
+    assert risk_calls == 2
+    assert later_risk_calls == 1
     assert not snapshot.dashboard_frame.empty
     assert not snapshot.dashboard_frame["Source Type"].eq("ir/delta").any()
     assert manager._risk_frames["ir/delta"].empty
+    assert not manager._risk_frames["ir/gamma"].empty
 
 
 def test_pins_publish_once_and_a_bad_pin_refresh_keeps_last_good_data() -> None:

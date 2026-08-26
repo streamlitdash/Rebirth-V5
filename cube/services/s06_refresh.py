@@ -115,6 +115,8 @@ from cube.services.s02_state import (
 # Keep the operational logger name stable while V3 imports use the facade.
 LOGGER = logging.getLogger("cube.services.s06_refresh")
 
+_RISK_RETRIES = 1
+_RISK_RETRY_DELAY_SECONDS = 0.5
 _MARKET_MAX_WORKERS = 1
 _MARKET_RETRIES = 0
 _MARKET_RETRY_DELAY_SECONDS = 0.5
@@ -364,6 +366,8 @@ class RiskRefreshManager(_RefreshStateMixin):
         clock: Callable[[], datetime] | None = None,
         trading_timezone: str = "UTC",
         max_history_days: int = 3650,
+        risk_retries: int = _RISK_RETRIES,
+        risk_retry_delay_seconds: float = _RISK_RETRY_DELAY_SECONDS,
         market_max_workers: int = _MARKET_MAX_WORKERS,
         market_retries: int = _MARKET_RETRIES,
         market_retry_delay_seconds: float = _MARKET_RETRY_DELAY_SECONDS,
@@ -506,6 +510,7 @@ class RiskRefreshManager(_RefreshStateMixin):
             raise ValueError("stage delays must be zero or greater")
         self._stage_delays = {"risk_product": risk_product_delay}
         for value, label, minimum in (
+            (risk_retries, "risk_retries", 0),
             (market_max_workers, "market_max_workers", 1),
             (market_retries, "market_retries", 0),
         ):
@@ -514,18 +519,24 @@ class RiskRefreshManager(_RefreshStateMixin):
             if value < minimum:
                 comparator = "greater than zero" if minimum == 1 else "zero or greater"
                 raise ValueError(f"{label} must be {comparator}")
-        if isinstance(market_retry_delay_seconds, (bool, np.bool_)) or not isinstance(
-            market_retry_delay_seconds, Real
+        retry_delays: dict[str, float] = {}
+        for value, label in (
+            (risk_retry_delay_seconds, "risk_retry_delay_seconds"),
+            (market_retry_delay_seconds, "market_retry_delay_seconds"),
         ):
-            raise TypeError("market_retry_delay_seconds must be a real number")
-        retry_delay = float(market_retry_delay_seconds)
-        if not np.isfinite(retry_delay):
-            raise ValueError("market_retry_delay_seconds must be finite")
-        if retry_delay < 0:
-            raise ValueError("market_retry_delay_seconds must be zero or greater")
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+                raise TypeError(f"{label} must be a real number")
+            retry_delay = float(value)
+            if not np.isfinite(retry_delay):
+                raise ValueError(f"{label} must be finite")
+            if retry_delay < 0:
+                raise ValueError(f"{label} must be zero or greater")
+            retry_delays[label] = retry_delay
+        self._risk_retries = risk_retries
+        self._risk_retry_delay_seconds = retry_delays["risk_retry_delay_seconds"]
         self._market_max_workers = market_max_workers
         self._market_retries = market_retries
-        self._market_retry_delay_seconds = retry_delay
+        self._market_retry_delay_seconds = retry_delays["market_retry_delay_seconds"]
         timeout_settings = (
             (
                 connector_call_timeout_seconds,
@@ -992,28 +1003,61 @@ class RiskRefreshManager(_RefreshStateMixin):
         # ``risk_loader(date, source_type)`` handles only uncovered source types.
         adapter = self._connector_adapters.get(spec.source_type)
         connector = adapter.risk if adapter is not None else self._risk_loader
-        self._progress_step(
-            _callable_name(connector),
-            "risk",
-            source_type=spec.source_type,
-            product_label=_product_progress_label(spec),
-            product_index=product_index,
-            product_total=product_total,
-            message="Loading connector risk.",
-        )
-        if adapter is not None:
-            result = self._call_connector(
-                ("risk", spec.source_type),
-                lambda: adapter.risk(risk_date),
-                budget=budget,
+
+        def load() -> pd.DataFrame:
+            if adapter is not None:
+                return adapter.risk(risk_date)
+            return self._risk_loader(risk_date, spec.source_type)
+
+        product_label = _product_progress_label(spec)
+        for retry in range(self._risk_retries + 1):
+            progress = self._progress_step if retry == 0 else self._progress_activity
+            retry_message = (
+                "Loading connector risk."
+                if retry == 0
+                else f"Retrying connector risk. Retry {retry} of {self._risk_retries}."
             )
-        else:
-            result = self._call_connector(
-                ("risk", spec.source_type),
-                lambda: self._risk_loader(risk_date, spec.source_type),
-                budget=budget,
+            progress(
+                _callable_name(connector),
+                "risk",
+                source_type=spec.source_type,
+                product_label=product_label,
+                product_index=product_index,
+                product_total=product_total,
+                message=retry_message,
             )
-        return result
+            try:
+                return self._call_connector(
+                    ("risk", spec.source_type),
+                    load,
+                    budget=budget,
+                )
+            except Exception as error:
+                retryable = self._is_operational_connector_error(
+                    error
+                ) and not isinstance(
+                    error,
+                    (
+                        ConnectorCallTimeoutError,
+                        ConnectorCallBusyError,
+                        ConnectorRefreshBudgetError,
+                    ),
+                )
+                retryable = retryable and (budget is None or not budget.is_exhausted)
+                if not retryable or retry == self._risk_retries:
+                    raise
+                self._logger.warning(
+                    "Risk connector call failed; retrying. source=%s retry=%d/%d "
+                    "reason=%s",
+                    spec.source_type,
+                    retry + 1,
+                    self._risk_retries,
+                    _bounded_failure_reason(error),
+                )
+                if self._risk_retry_delay_seconds > 0:
+                    self._sleep(self._risk_retry_delay_seconds)
+
+        raise AssertionError("Risk retry loop completed without a result")
 
     def _load_market_frames(
         self,
