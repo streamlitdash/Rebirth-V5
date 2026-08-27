@@ -311,6 +311,12 @@ The App Logs button remains beside the other header utilities. It opens a
 centered modal with **Refresh** and **Close** actions rather than inserting a
 box into the page flow.
 
+The current V3 desktop header is shown below. **Clear Cache** appears dim in
+this cold-start capture because it is disabled until the first snapshot is
+available; when enabled it uses the same styling as **App Logs**.
+
+![V3 header utilities](v3-header-buttons.png)
+
 ### Captured output
 
 `cube/app/s03_logging.py` keeps one bounded process-local log buffer. Logger
