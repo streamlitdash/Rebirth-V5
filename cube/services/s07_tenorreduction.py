@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from cube.domain.s11_tenorreduction import CREDIT_TENOR_MAPPING_COLUMNS
+
 
 DATA_DIRECTORY = Path(__file__).resolve().parents[2] / "data"
 REDUCED_TENOR_CATALOG_SOURCE = DATA_DIRECTORY / "s11_matrix.csv"
@@ -23,6 +25,16 @@ def _matrix(
         index=[f"{_TEMP}{value}" for value in index],
         columns=[f"{_TEMP}{value}" for value in columns],
         dtype=float,
+    )
+
+
+def _tenor_mapping(pairs: list[tuple[str, str]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            (f"{_TEMP}{full_tenor}", f"{_TEMP}{reduced_tenor}")
+            for full_tenor, reduced_tenor in pairs
+        ],
+        columns=CREDIT_TENOR_MAPPING_COLUMNS,
     )
 
 
@@ -45,6 +57,20 @@ _TEMP_REDUCTION_MATRICES = {
         columns=["1M", "3M", "6M"],
     ),
 }
+# Fixture example only. A real deployment replaces these exact labels with its
+# common 15-full-tenor to 5-reduced-tenor Credit definition.
+_TEMP_CREDIT_TENOR_MAPPINGS = {
+    "CREDIT_STANDARD": _tenor_mapping(
+        [
+            ("1Y", "1Y"),
+            ("3Y", "3Y"),
+            ("4Y", "5Y"),
+            ("5Y", "5Y"),
+            ("7Y", "7Y"),
+            ("10Y", "10Y"),
+        ]
+    ),
+}
 
 
 def get_reduced_tenor_catalog_source() -> Path:
@@ -54,15 +80,18 @@ def get_reduced_tenor_catalog_source() -> Path:
 
 
 def get_reduced_tenor_matrix(matrix_name: str) -> pd.DataFrame:
-    """Return one caller-owned matrix selected by ``MatrixName``.
+    """Return one caller-owned reduction definition selected by ``MatrixName``.
 
-    Production deployments replace this function with the real matrix service;
-    the Risk Explorer and reducer keep the same provider contract.
+    The legacy function name is retained for compatibility. Non-Credit names
+    return numeric matrices; Credit names return the two-column mapping used by
+    the direct map-and-sum path.
     """
 
     if not isinstance(matrix_name, str) or not matrix_name.strip():
         raise ValueError("matrix_name must be nonblank text")
     normalized = matrix_name.strip()
+    if normalized in _TEMP_CREDIT_TENOR_MAPPINGS:
+        return get_credit_tenor_mapping(normalized)
     try:
         matrix = _TEMP_REDUCTION_MATRICES[normalized]
     except KeyError as exc:
@@ -70,8 +99,22 @@ def get_reduced_tenor_matrix(matrix_name: str) -> pd.DataFrame:
     return matrix.copy()
 
 
+def get_credit_tenor_mapping(mapping_name: str) -> pd.DataFrame:
+    """Return one caller-owned Credit Full Tenor to Reduced Tenor mapping."""
+
+    if not isinstance(mapping_name, str) or not mapping_name.strip():
+        raise ValueError("mapping_name must be nonblank text")
+    normalized = mapping_name.strip()
+    try:
+        mapping = _TEMP_CREDIT_TENOR_MAPPINGS[normalized]
+    except KeyError as exc:
+        raise KeyError(f"Unknown Credit tenor mapping {normalized!r}") from exc
+    return mapping.copy()
+
+
 __all__ = [
     "REDUCED_TENOR_CATALOG_SOURCE",
+    "get_credit_tenor_mapping",
     "get_reduced_tenor_catalog_source",
     "get_reduced_tenor_matrix",
 ]

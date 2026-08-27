@@ -10,10 +10,14 @@ import pytest
 
 from cube.domain import s11_tenorreduction as reduction_module
 from cube.domain.s11_tenorreduction import (
+    CREDIT_FULL_TENOR,
+    CREDIT_REDUCED_TENOR,
+    CREDIT_TENOR_MAPPING_COLUMNS,
     MATRIX_NAME,
     REDUCED_TENOR_CATALOG_COLUMNS,
     ReducedTenorReducer,
     load_reduced_tenor_catalog,
+    validate_credit_tenor_mapping,
     validate_reduction_matrix,
 )
 
@@ -40,6 +44,27 @@ def _matrix() -> pd.DataFrame:
         [[1.0, 1.0, 0.0], [0.0, 0.5, 1.0]],
         index=["2Y", "Long"],
         columns=["1Y", "2Y", "5Y"],
+    )
+
+
+def _credit_catalog() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Risk Type": "Credit",
+                "Risk Greek": "Delta",
+                "Underlying": "CDX IG",
+                MATRIX_NAME: "CREDIT_STANDARD",
+            }
+        ],
+        columns=REDUCED_TENOR_CATALOG_COLUMNS,
+    )
+
+
+def _credit_mapping() -> pd.DataFrame:
+    return pd.DataFrame(
+        [("3Y", "3Y"), ("4Y", "5Y"), ("5Y", "5Y")],
+        columns=CREDIT_TENOR_MAPPING_COLUMNS,
     )
 
 
@@ -93,6 +118,32 @@ def _market_frame() -> pd.DataFrame:
     )
 
 
+def _credit_frame() -> pd.DataFrame:
+    frame = _full_frame().replace(
+        {
+            "Source Type": {"ir/delta": "credit/delta"},
+            "Risk Type": {"IR": "Credit"},
+            "Underlying": {"USD SOFR": "CDX IG"},
+            "Tenor Swap": {"1Y": "3Y", "2Y": "4Y"},
+        }
+    )
+    frame["Risk SP01"] = frame["Risk"] * 2.0
+    frame["dRisk SP01"] = frame["dRisk"] * 2.0
+    frame["Risk JTD"] = np.nan
+    frame["dRisk JTD"] = np.nan
+    return frame
+
+
+def _credit_market_frame() -> pd.DataFrame:
+    return _market_frame().replace(
+        {
+            "Source Type": {"ir/delta": "credit/delta"},
+            "Underlying": {"USD SOFR": "CDX IG"},
+            "Tenor Swap": {"1Y": "3Y", "2Y": "4Y"},
+        }
+    )
+
+
 def test_catalog_is_exact_unique_and_limited_to_one_axis_swap_products() -> None:
     loaded = load_reduced_tenor_catalog(_catalog())
     assert tuple(loaded.columns) == REDUCED_TENOR_CATALOG_COLUMNS
@@ -131,6 +182,32 @@ def test_matrix_contract_requires_finite_numeric_unique_labelled_axes() -> None:
         validate_reduction_matrix(nonfinite)
 
 
+def test_credit_mapping_requires_unique_full_tenors_and_allows_shared_targets() -> None:
+    validated = validate_credit_tenor_mapping(
+        _credit_mapping(),
+        mapping_name="CREDIT_STANDARD",
+    )
+    assert tuple(validated.columns) == CREDIT_TENOR_MAPPING_COLUMNS
+    assert validated[CREDIT_REDUCED_TENOR].tolist() == ["3Y", "5Y", "5Y"]
+
+    duplicate_full = pd.concat(
+        [
+            _credit_mapping(),
+            pd.DataFrame(
+                [("3Y", "Long")],
+                columns=CREDIT_TENOR_MAPPING_COLUMNS,
+            ),
+        ],
+        ignore_index=True,
+    )
+    with pytest.raises(ValueError, match="full tenors must be unique"):
+        validate_credit_tenor_mapping(duplicate_full)
+
+    wrong_columns = _credit_mapping().rename(columns={CREDIT_FULL_TENOR: "Old Tenor"})
+    with pytest.raises(ValueError, match="columns must be exactly"):
+        validate_credit_tenor_mapping(wrong_columns)
+
+
 def test_reducer_batches_positions_and_transforms_all_additive_measures() -> None:
     calls: list[str] = []
 
@@ -163,6 +240,131 @@ def test_reducer_batches_positions_and_transforms_all_additive_measures() -> Non
     assert by_position.loc[("P1", "2Y"), "Risk Hedges"] == pytest.approx(7.5)
     assert by_position.loc[("P2", "Long"), "PL Expo"] == pytest.approx(63.75)
     assert by_position.loc[("P2", "Long"), "PL Hedges"] == pytest.approx(21.25)
+
+
+def test_credit_reducer_maps_and_sums_post_pl_measures_by_position() -> None:
+    calls: list[str] = []
+
+    def provider(name: str) -> pd.DataFrame:
+        calls.append(name)
+        return _credit_mapping()
+
+    reducer = ReducedTenorReducer(_credit_catalog(), provider)
+    reduced = reducer.reduce(
+        _credit_frame(),
+        market_frame=_credit_market_frame(),
+    )
+    reducer.reduce(_credit_frame(), market_frame=_credit_market_frame())
+
+    assert calls == ["CREDIT_STANDARD"]
+    assert reduced[["Portfolio", "Tenor Swap"]].to_records(index=False).tolist() == [
+        ("P1", "3Y"),
+        ("P1", "5Y"),
+        ("P2", "3Y"),
+        ("P2", "5Y"),
+    ]
+    assert reduced["Tenor Swap Order"].tolist() == [0, 1, 0, 1]
+
+    by_position = reduced.set_index(["Portfolio", "Tenor Swap"])
+    assert by_position.loc[("P1", "3Y"), "Risk"] == pytest.approx(10.0)
+    assert by_position.loc[("P1", "5Y"), "Risk"] == pytest.approx(50.0)
+    assert by_position.loc[("P1", "5Y"), "dRisk"] == pytest.approx(5.0)
+    assert by_position.loc[("P1", "5Y"), "PL"] == pytest.approx(500.0)
+    assert by_position.loc[("P1", "5Y"), "Risk SP01"] == pytest.approx(100.0)
+    assert by_position.loc[("P1", "5Y"), "dRisk SP01"] == pytest.approx(10.0)
+    assert by_position.loc[("P1", "5Y"), "Risk Expo"] == pytest.approx(37.5)
+    assert by_position.loc[("P1", "5Y"), "Risk Hedges"] == pytest.approx(12.5)
+    assert by_position.loc[("P2", "5Y"), "Risk"] == pytest.approx(11.0)
+    assert reduced["Risk JTD"].isna().all()
+    assert reduced["dRisk JTD"].isna().all()
+
+    # Market quotes are exact target-label lookups, never sums of 4Y and 5Y.
+    assert by_position.loc[("P1", "3Y"), "Open"] == pytest.approx(1.0)
+    assert by_position.loc[("P1", "5Y"), "Open"] == pytest.approx(5.0)
+    assert by_position.loc[("P1", "5Y"), "Current"] == pytest.approx(5.5)
+    assert by_position.loc[("P1", "5Y"), "Move"] == pytest.approx(0.5)
+
+
+def test_credit_common_fifteen_tenors_collapse_to_five_summed_tenors() -> None:
+    full_tenors = [f"FULL_{number:02d}" for number in range(1, 16)]
+    reduced_tenors = [
+        f"REDUCED_{((position - 1) // 3) + 1}" for position in range(1, 16)
+    ]
+    mapping = pd.DataFrame(
+        zip(full_tenors, reduced_tenors, strict=True),
+        columns=CREDIT_TENOR_MAPPING_COLUMNS,
+    )
+    template = _credit_frame().iloc[0].to_dict()
+    rows = []
+    for order, tenor in enumerate(full_tenors):
+        value = float(order + 1)
+        rows.append(
+            {
+                **template,
+                "Tenor Swap": tenor,
+                "Tenor Swap Order": order,
+                "Risk": value,
+                "dRisk": value / 10.0,
+                "PL": value * 10.0,
+            }
+        )
+
+    reduced = ReducedTenorReducer(_credit_catalog(), lambda _: mapping).reduce(
+        pd.DataFrame(rows)
+    )
+
+    assert reduced["Tenor Swap"].tolist() == [
+        "REDUCED_1",
+        "REDUCED_2",
+        "REDUCED_3",
+        "REDUCED_4",
+        "REDUCED_5",
+    ]
+    assert reduced["Tenor Swap Order"].tolist() == [0, 1, 2, 3, 4]
+    assert reduced["Risk"].tolist() == [6.0, 15.0, 24.0, 33.0, 42.0]
+    assert reduced["dRisk"].tolist() == pytest.approx([0.6, 1.5, 2.4, 3.3, 4.2])
+    assert reduced["PL"].tolist() == [60.0, 150.0, 240.0, 330.0, 420.0]
+
+
+def test_incomplete_credit_mapping_keeps_the_full_tenor_batch() -> None:
+    incomplete = _credit_mapping().loc[lambda frame: frame[CREDIT_FULL_TENOR].ne("5Y")]
+    frame = _credit_frame()
+    result = ReducedTenorReducer(_credit_catalog(), lambda _: incomplete).reduce(frame)
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_credit_target_without_an_exact_market_quote_stays_blank() -> None:
+    mapping = _credit_mapping().replace({CREDIT_REDUCED_TENOR: {"5Y": "Long"}})
+    reduced = ReducedTenorReducer(_credit_catalog(), lambda _: mapping).reduce(
+        _credit_frame(),
+        market_frame=_credit_market_frame(),
+    )
+    long_rows = reduced.loc[reduced["Tenor Swap"].eq("Long")]
+
+    assert long_rows["Risk"].tolist() == [50.0, 11.0]
+    assert long_rows["Open"].isna().all()
+    assert long_rows["Current"].isna().all()
+    assert long_rows["Move"].isna().all()
+    assert long_rows["Market Available"].eq(False).all()
+    assert long_rows["Market Data Status"].eq("").all()
+
+
+def test_unavailable_credit_mapping_is_cached_as_full_tenor_passthrough() -> None:
+    calls: list[str] = []
+
+    def provider(name: str) -> pd.DataFrame:
+        calls.append(name)
+        raise ConnectionError("mapping service unavailable")
+
+    frame = _credit_frame()
+    reducer = ReducedTenorReducer(_credit_catalog(), provider)
+    first = reducer.reduce(frame)
+    second = reducer.reduce(frame)
+
+    pd.testing.assert_frame_equal(first, frame)
+    pd.testing.assert_frame_equal(second, frame)
+    assert calls == ["CREDIT_STANDARD"]
 
 
 def test_shared_matrix_name_batches_each_underlying_and_fetches_provider_once() -> None:

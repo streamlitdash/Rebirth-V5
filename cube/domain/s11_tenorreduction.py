@@ -1,10 +1,10 @@
 """Pure post-P&L reduction of one-axis Tenor Swap risk vectors.
 
 The matrix catalogue selects a named matrix by the reported risk identity.  A
-matrix provider owns how that named matrix is obtained; this module only
-validates the matrix contract and applies it.  Matrix rows are reduced tenors,
-matrix columns are the full tenors, and only additive risk measures are
-multiplied.  Market quotes are never multiplied: a reduced tenor receives an
+provider owns how that named definition is obtained; this module only validates
+and applies it.  Non-Credit products use the existing numeric matrices. Credit
+uses a direct Full Tenor to Reduced Tenor mapping and sums additive measures.
+Market quotes are never multiplied or summed: a reduced tenor receives an
 existing quote only when its label exactly matches a full-tenor quote.
 """
 
@@ -45,6 +45,9 @@ from cube.domain.s02_products import (
 
 
 MATRIX_NAME = "MatrixName"
+CREDIT_FULL_TENOR = "Full Tenor"
+CREDIT_REDUCED_TENOR = "Reduced Tenor"
+CREDIT_TENOR_MAPPING_COLUMNS = (CREDIT_FULL_TENOR, CREDIT_REDUCED_TENOR)
 REDUCED_TENOR_CATALOG_COLUMNS = (
     RISK_TYPE,
     RISK_GREEK,
@@ -109,6 +112,11 @@ _ELIGIBLE_RISK_PAIRS = frozenset(
     (spec.risk_type, spec.risk_greek)
     for spec in PRODUCT_SPECS_BY_SOURCE_TYPE.values()
     if spec.axes == (SWAP_AXIS,)
+)
+_CREDIT_REDUCTION_SOURCE_TYPES = frozenset(
+    source_type
+    for source_type, spec in PRODUCT_SPECS_BY_SOURCE_TYPE.items()
+    if spec.axes == (SWAP_AXIS,) and spec.risk_type == "Credit"
 )
 _REDUCTION_WORKING_SET_BYTES = 32 * 1024 * 1024
 _LOGGER = logging.getLogger(__name__)
@@ -246,6 +254,52 @@ def validate_reduction_matrix(
     return frame
 
 
+def validate_credit_tenor_mapping(
+    raw: pd.DataFrame,
+    *,
+    mapping_name: str = "mapping",
+) -> pd.DataFrame:
+    """Validate an ordered Credit full-tenor to reduced-tenor mapping."""
+
+    if not isinstance(raw, pd.DataFrame):
+        raise TypeError(f"Credit tenor mapping {mapping_name!r} must be a DataFrame")
+    if raw.empty:
+        raise ValueError(f"Credit tenor mapping {mapping_name!r} must not be empty")
+    if _duplicates(raw.columns):
+        raise ValueError(
+            f"Credit tenor mapping {mapping_name!r} has duplicate columns: "
+            f"{_duplicates(raw.columns)}"
+        )
+    if tuple(raw.columns) != CREDIT_TENOR_MAPPING_COLUMNS:
+        raise ValueError(
+            f"Credit tenor mapping {mapping_name!r} columns must be exactly "
+            f"{list(CREDIT_TENOR_MAPPING_COLUMNS)} in that order"
+        )
+
+    frame = raw.copy()
+    for column in CREDIT_TENOR_MAPPING_COLUMNS:
+        values = frame[column]
+        invalid_type = ~values.map(lambda value: isinstance(value, str))
+        cleaned = values.astype("string").str.strip()
+        invalid = invalid_type | cleaned.isna() | cleaned.eq("")
+        if invalid.any():
+            rows = values.index[invalid].tolist()[:5]
+            raise ValueError(
+                f"Credit tenor mapping {mapping_name!r} column {column!r} "
+                f"is blank at rows {rows}"
+            )
+        frame[column] = cleaned.astype(str)
+
+    duplicated = frame[CREDIT_FULL_TENOR].duplicated(keep=False)
+    if duplicated.any():
+        labels = frame.loc[duplicated, CREDIT_FULL_TENOR].unique().tolist()[:5]
+        raise ValueError(
+            f"Credit tenor mapping {mapping_name!r} full tenors must be unique: "
+            f"{labels}"
+        )
+    return frame.reset_index(drop=True)
+
+
 def _temporary_column(columns: pd.Index, stem: str) -> str:
     candidate = stem
     suffix = 1
@@ -316,7 +370,12 @@ class ReducedTenorReducer:
         self._matrix_provider = matrix_provider
         self._matrix_cache: dict[str, pd.DataFrame] = {}
         self._unavailable_matrices: set[str] = set()
+        self._credit_mapping_cache: dict[str, pd.DataFrame] = {}
+        self._unavailable_credit_mappings: set[str] = set()
         self._matrix_names = frozenset(self._catalog[MATRIX_NAME])
+        self._credit_mapping_names = frozenset(
+            self._catalog.loc[self._catalog[RISK_TYPE].eq("Credit"), MATRIX_NAME]
+        )
         self._cache_lock = RLock()
 
     @property
@@ -348,6 +407,32 @@ class ReducedTenorReducer:
                     )
                     return None
                 self._matrix_cache[matrix_name] = cached
+            return cached
+
+    def _credit_mapping(self, mapping_name: str) -> pd.DataFrame | None:
+        if mapping_name not in self._credit_mapping_names:  # pragma: no cover
+            raise KeyError(f"Unknown Credit tenor mapping {mapping_name!r}")
+        with self._cache_lock:
+            if mapping_name in self._unavailable_credit_mappings:
+                return None
+            cached = self._credit_mapping_cache.get(mapping_name)
+            if cached is None:
+                try:
+                    raw = self._matrix_provider(mapping_name)
+                    cached = validate_credit_tenor_mapping(
+                        raw,
+                        mapping_name=mapping_name,
+                    )
+                except Exception as exc:
+                    self._unavailable_credit_mappings.add(mapping_name)
+                    _LOGGER.warning(
+                        "Reduced-tenor Credit mapping %r is unavailable; "
+                        "keeping full tenors: %s",
+                        mapping_name,
+                        exc,
+                    )
+                    return None
+                self._credit_mapping_cache[mapping_name] = cached
             return cached
 
     def _batches(
@@ -560,6 +645,99 @@ class ReducedTenorReducer:
             np.concatenate(origin_parts),
         )
 
+    def _reduce_credit_batch(
+        self,
+        frame: pd.DataFrame,
+        positions: np.ndarray,
+        mapping: pd.DataFrame,
+        market_frame: pd.DataFrame,
+        *,
+        source_type: str,
+        underlying: object,
+    ) -> tuple[pd.DataFrame, np.ndarray] | None:
+        """Map and sum one Credit batch without matrix multiplication."""
+
+        batch = frame.iloc[positions].copy()
+        old_labels = _normalized_tenor_labels(batch[TENOR_SWAP])
+        if len(old_labels) != len(batch):
+            return None
+
+        target_by_full_tenor = pd.Series(
+            mapping[CREDIT_REDUCED_TENOR].to_numpy(),
+            index=mapping[CREDIT_FULL_TENOR],
+        )
+        mapped_tenors = target_by_full_tenor.reindex(old_labels)
+        # As with matrices, an incomplete definition must retain the entire
+        # authoritative full-tenor batch rather than dropping an exposure.
+        if mapped_tenors.isna().any():
+            return None
+
+        used_full_tenors = frozenset(old_labels)
+        new_tenors = pd.Index(
+            mapping.loc[
+                mapping[CREDIT_FULL_TENOR].isin(used_full_tenors),
+                CREDIT_REDUCED_TENOR,
+            ].drop_duplicates()
+        )
+        target_codes = new_tenors.get_indexer(mapped_tenors.to_numpy())
+        if (target_codes < 0).any():  # pragma: no cover - derived from mapping
+            return None
+
+        additive_columns = [
+            column for column in ADDITIVE_REDUCTION_COLUMNS if column in batch
+        ]
+        excluded = {
+            TENOR_SWAP,
+            TENOR_SWAP_ORDER,
+            *additive_columns,
+            *MARKET_QUOTE_COLUMNS,
+            *[column for column in _CARRIED_COLUMNS if column in batch],
+        }
+        position_columns = [
+            column for column in batch.columns if column not in excluded
+        ]
+        position_codes, first_rows = _position_codes(batch, position_columns)
+        values = _validated_additive_values(batch, additive_columns)
+
+        grouped_values = pd.DataFrame(values, columns=additive_columns)
+        grouped_values["__position__"] = position_codes
+        grouped_values["__tenor__"] = target_codes
+        summed = grouped_values.groupby(
+            ["__position__", "__tenor__"],
+            sort=False,
+            observed=True,
+        )[additive_columns].sum(min_count=1)
+
+        output_pairs = (
+            grouped_values[["__position__", "__tenor__"]]
+            .drop_duplicates()
+            .sort_values(["__position__", "__tenor__"], kind="stable")
+        )
+        output_index = pd.MultiIndex.from_frame(output_pairs)
+        summed = summed.reindex(output_index)
+        output_position_codes = output_pairs["__position__"].to_numpy(dtype=np.intp)
+        output_tenor_codes = output_pairs["__tenor__"].to_numpy(dtype=np.intp)
+
+        template_rows = first_rows[output_position_codes]
+        reduced = batch.iloc[template_rows].reset_index(drop=True)
+        reduced[TENOR_SWAP] = new_tenors.take(output_tenor_codes).to_numpy()
+        reduced[TENOR_SWAP_ORDER] = output_tenor_codes
+        for column in additive_columns:
+            reduced[column] = summed[column].to_numpy()
+        for column in MARKET_QUOTE_COLUMNS:
+            if column not in batch:
+                continue
+            quote_values = self._quote_values(
+                market_frame,
+                source_type=source_type,
+                underlying=underlying,
+                reduced_tenors=new_tenors,
+                column=column,
+            )
+            reduced[column] = quote_values[output_tenor_codes]
+
+        return reduced, positions[first_rows[output_position_codes]]
+
     def reduce(
         self,
         frame: pd.DataFrame,
@@ -568,10 +746,10 @@ class ReducedTenorReducer:
     ) -> pd.DataFrame:
         """Return a reduced copy while preserving all ineligible/unmapped rows.
 
-        Reduction is batched by catalogue mapping and source type.  Each batch
-        performs one matrix multiplication across every independent position
-        and every present additive measure.  A mapped batch whose real full
-        tenors are not all represented by the matrix is retained unchanged.
+        Reduction is batched by catalogue mapping and source type. Non-Credit
+        batches use the existing matrix calculation. Credit batches directly
+        map and sum tenors. A mapped batch whose real full tenors are not all
+        represented by its definition is retained unchanged.
         """
 
         if not isinstance(frame, pd.DataFrame):
@@ -606,17 +784,30 @@ class ReducedTenorReducer:
         reduced_parts: list[pd.DataFrame] = []
         origin_parts: list[np.ndarray] = []
         for matrix_name, source_type, underlying, positions in self._batches(working):
-            matrix = self._matrix(matrix_name)
-            if matrix is None:
-                continue
-            reduced = self._reduce_batch(
-                working,
-                positions,
-                matrix,
-                quotes,
-                source_type=source_type,
-                underlying=underlying,
-            )
+            if source_type in _CREDIT_REDUCTION_SOURCE_TYPES:
+                mapping = self._credit_mapping(matrix_name)
+                if mapping is None:
+                    continue
+                reduced = self._reduce_credit_batch(
+                    working,
+                    positions,
+                    mapping,
+                    quotes,
+                    source_type=source_type,
+                    underlying=underlying,
+                )
+            else:
+                matrix = self._matrix(matrix_name)
+                if matrix is None:
+                    continue
+                reduced = self._reduce_batch(
+                    working,
+                    positions,
+                    matrix,
+                    quotes,
+                    source_type=source_type,
+                    underlying=underlying,
+                )
             if reduced is None:
                 continue
             part, origins = reduced
@@ -666,6 +857,9 @@ def reduce_tenor_swap(
 __all__ = [
     "ADDITIVE_REDUCTION_COLUMNS",
     "CatalogSource",
+    "CREDIT_FULL_TENOR",
+    "CREDIT_REDUCED_TENOR",
+    "CREDIT_TENOR_MAPPING_COLUMNS",
     "MATRIX_NAME",
     "MARKET_QUOTE_COLUMNS",
     "MatrixProvider",
@@ -675,5 +869,6 @@ __all__ = [
     "ReducedTenorReducer",
     "load_reduced_tenor_catalog",
     "reduce_tenor_swap",
+    "validate_credit_tenor_mapping",
     "validate_reduction_matrix",
 ]

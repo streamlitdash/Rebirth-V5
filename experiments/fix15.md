@@ -21,6 +21,7 @@ V3 contains:
   errors, tracebacks, and `print()` output from the current process;
 - one configurable retry for quick product Risk/dRisk connector failures;
 - product-level market connector failure isolation;
+- direct Credit reduced-tenor mapping and post-P&L summation;
 - simpler release-frame ownership and cache-first dashboard preparation.
 
 V3 deliberately does **not** add:
@@ -68,6 +69,11 @@ Cold-path simplification
   cube/services/s02_state.py
   cube/domain/s07_governance.py
   cube/app/s07_factory.py
+
+Credit reduced tenor
+  data/s11_matrix.csv
+  cube/domain/s11_tenorreduction.py
+  cube/services/s07_tenorreduction.py
 ```
 
 The V3 regression tests live in `tests/`; they do not run in production, but
@@ -481,7 +487,138 @@ CPU/memory/thread instrumentation, or Gunicorn edit is part of V3.
 
 ---
 
-## 6. SOG/Portfolio P&L diagnosis — not implemented
+## 6. Credit reduced-tenor mapping
+
+Credit does not need a numeric reduction matrix. It uses a direct, ordered
+mapping and sums additive values after P&L has already been calculated:
+
+```text
+Full tenor   Reduced tenor
+3Y           3Y
+4Y           5Y
+5Y           5Y
+
+Risk at 3Y = original 3Y Risk
+Risk at 5Y = original 4Y Risk + original 5Y Risk
+```
+
+The same grouping and summation applies independently to Risk, dRisk, P&L,
+Expo/Hedges breakdowns, and present Credit measures such as SP01 or JTD. It is
+performed within each existing position identity, so Portfolios, Groups,
+Splits, and reporting dimensions are not combined with each other.
+
+### Step 1 — select the mapping in `data/s11_matrix.csv`
+
+Keep the existing four-column contract. Add one row for each exact raw Credit
+Underlying which should be reducible:
+
+```csv
+Risk Type,Risk Greek,Underlying,MatrixName
+Credit,Delta,CDX IG,CREDIT_STANDARD
+```
+
+`Underlying` must be the raw connector value, not Reported Underlying. Several
+Underlyings may share the same mapping name. The legacy column remains named
+`MatrixName` to avoid a schema and UI migration; for Credit it selects a tenor
+mapping rather than a numeric matrix.
+
+### Step 2 — supply the ordered mapping
+
+The temporary integration point is
+`cube/services/s07_tenorreduction.py::_TEMP_CREDIT_TENOR_MAPPINGS`:
+
+```python
+_TEMP_CREDIT_TENOR_MAPPINGS = {
+    "CREDIT_STANDARD": _tenor_mapping(
+        [
+            ("3Y", "3Y"),
+            ("4Y", "5Y"),
+            ("5Y", "5Y"),
+        ]
+    ),
+}
+```
+
+For the real common 15-to-5 structure, use one shared mapping name for all
+Credit catalogue rows and provide 15 pairs with only five distinct targets.
+This is a structural example—replace every placeholder with the exact labels
+returned by the connector:
+
+```python
+credit_15_to_5 = [
+    ("FULL_01", "REDUCED_1"),
+    ("FULL_02", "REDUCED_1"),
+    ("FULL_03", "REDUCED_1"),
+    ("FULL_04", "REDUCED_2"),
+    ("FULL_05", "REDUCED_2"),
+    ("FULL_06", "REDUCED_2"),
+    ("FULL_07", "REDUCED_3"),
+    ("FULL_08", "REDUCED_3"),
+    ("FULL_09", "REDUCED_3"),
+    ("FULL_10", "REDUCED_4"),
+    ("FULL_11", "REDUCED_4"),
+    ("FULL_12", "REDUCED_4"),
+    ("FULL_13", "REDUCED_5"),
+    ("FULL_14", "REDUCED_5"),
+    ("FULL_15", "REDUCED_5"),
+]
+```
+
+For your stated sub-example, the relevant entries are simply:
+
+```python
+("3Y", "3Y")
+("4Y", "5Y")
+("5Y", "5Y")
+```
+
+If their Risk values are `10`, `20`, and `30`, the reduced output is `3Y = 10`
+and `5Y = 50`. The identical grouping is independently applied to dRisk and
+already-calculated P&L.
+
+The checked-in `_tenor_mapping()` adds `TEMP_REPLACE_ME - ` because the seed
+connectors use temporary labels. A real provider must return a DataFrame with
+the connector's exact labels and exactly these columns, in this order:
+
+```text
+Full Tenor, Reduced Tenor
+```
+
+Every full tenor actually present for a configured Underlying must have one
+mapping row. Full tenors are unique; repeated reduced tenors are intentional.
+The first occurrence of each reduced tenor controls its display order. Labels
+are exact after surrounding whitespace is stripped—there is no tenor parsing
+or guessed ordering.
+
+### Calculation and failure behavior
+
+`cube/domain/s11_tenorreduction.py::ReducedTenorReducer` chooses the path from
+the authoritative Credit ProductSpec:
+
+```text
+Credit catalogue match
+  -> load and validate the two-column mapping once
+  -> map each full Tenor Swap to its reduced label
+  -> sum additive post-P&L columns per existing position and reduced tenor
+  -> reuse an exact target-label market quote where one exists
+```
+
+Open, Current, and Move are never summed or averaged. A reduced `5Y` uses the
+real `5Y` quote; a target such as `Long` with no exact old quote stays blank and
+unavailable. If the mapping is missing, malformed, or does not cover every
+actual full tenor, the complete Credit batch remains at full tenor and a
+warning is logged. Non-Credit IR/FX matrix behavior is unchanged.
+
+Mappings are loaded lazily on the first Reduced tenor request and cached for
+the process lifetime. Restart the app after editing a mapping definition.
+The temporary Credit Vega rows are not configured because that fixture uses a
+different month-tenor shape. In the real feed, if every Credit Greek has the
+same 15 full labels, point each exact Credit catalogue row to the same
+`CREDIT_STANDARD` mapping.
+
+---
+
+## 7. SOG/Portfolio P&L diagnosis — not implemented
 
 **Nothing in this section changes P&L code on V3.** It records the most likely
 cause, the exact prerequisites, and small future options so the symptom can be
@@ -687,7 +824,7 @@ because the P&L page is also a governed send boundary.
 
 ---
 
-## 7. Manual verification
+## 8. Manual verification
 
 ### Pins and Top Promotions
 
@@ -734,12 +871,24 @@ because the P&L page is also a governed send boundary.
 9. Confirm the cold shell, validated dashboard, modal, and detail panels all
    open and close normally.
 
-## 8. Automated checks
+### Credit reduced tenor
+
+1. Configure one exact Credit Delta Underlying in `data/s11_matrix.csv`.
+2. Supply `3Y -> 3Y`, `4Y -> 5Y`, and `5Y -> 5Y` in its named mapping.
+3. Restart the app and open the full-tenor view; confirm all original rows are
+   unchanged.
+4. Select **Reduced tenor**; confirm 3Y remains separate and 4Y plus 5Y become
+   one 5Y Risk, dRisk, and P&L row for each Portfolio.
+5. Confirm the reduced 5Y market values equal the original 5Y quote only.
+6. Remove the 4Y mapping, restart, and confirm the complete Underlying safely
+   remains at full tenor rather than losing its 4Y exposure.
+
+## 9. Automated checks
 
 Use the repository environment and run focused tests first:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\s06_ui.py tests\s07_integration.py tests\s12_startup.py tests\s19_riskfilters.py tests\s46_applogs.py tests\s48_jtd.py tests\s48_pinnedpromotions.py -q
+.\.venv\Scripts\python.exe -m pytest tests\s06_ui.py tests\s07_integration.py tests\s12_startup.py tests\s19_riskfilters.py tests\s43_reducedtenor.py tests\s44_tenorreductionsource.py tests\s46_applogs.py tests\s48_jtd.py tests\s48_pinnedpromotions.py -q
 ```
 
 Then run the whole suite and repository checks:
@@ -752,7 +901,7 @@ git diff --check
 git diff --stat
 ```
 
-## 9. Rollback
+## 10. Rollback
 
 For a complete rollback, revert the V3 commit rather than deleting individual
 helpers. That keeps source registration, manager arguments, release logic, UI
@@ -762,6 +911,8 @@ For a data-only rollback:
 
 - leave `data/s12_pinned.csv` header-only to disable pins;
 - leave `data/s13_jtd.csv` header-only to return “No JTD reference rows”;
+- remove the Credit rows from `data/s11_matrix.csv` to disable only Credit
+  reduced tenor without changing the full-tenor view;
 - no restart is required for an `s13_jtd.csv` edit once its file modification
   time/size changes, while `s12_pinned.csv` is picked up on the next governed
   refresh.

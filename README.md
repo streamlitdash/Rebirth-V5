@@ -83,10 +83,14 @@ Credit also retains its Single/Multi presentation.
 Its action row is four columns: Split; Underlying ordering by Risk/dRisk/P&L;
 one Region/Promotion/Reduced tenor checklist; and the current promotion level
 with its recompute/reset actions. Reduced tenor is immediate and reversible.
-For catalogue matches in `data/s11_matrix.csv`, the selected matrix is applied
-after P&L to additive Risk, dRisk, and P&L vectors. Unmatched identities pass
-through unchanged. Market quotes are never multiplied: an exact reduced-tenor
-label reuses the matching full-tenor quote and otherwise remains blank.
+For catalogue matches in `data/s11_matrix.csv`, non-Credit products apply the
+selected matrix after P&L. Credit instead applies an ordered Full Tenor to
+Reduced Tenor mapping and directly sums Risk, dRisk, P&L, breakdowns, and
+Credit measures within each existing position. Unmatched identities pass
+through unchanged. A common 15-to-5 Credit definition can be shared by every
+configured Credit Underlying. Market quotes are never multiplied or summed: an
+exact reduced-tenor label reuses the matching full-tenor quote and otherwise
+remains blank.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
 baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
 Category, and Sub Category, with explicit include/exclude semantics. Saved
@@ -314,7 +318,7 @@ The checked-in files document the live connector boundaries:
 | `s07_thresholds.csv` | unique Risk Type + Risk Greek with positive P&L, Risk, and dRisk thresholds |
 | `s08_concerto.csv` | unique Risk Type + Risk Greek to ConcertoField |
 | `s09_reported.csv` | unique Risk Type + Risk Greek + Underlying to Reported Underlying |
-| `s11_matrix.csv` | unique Risk Type + Risk Greek + Underlying to reduced-tenor MatrixName |
+| `s11_matrix.csv` | unique Risk Type + Risk Greek + Underlying to a named reduced-tenor matrix, or Credit tenor mapping |
 
 The Stock connector returns exactly `CRDS, CPTY, Portfolio, Instrument,
 Currency, Quantity, Market Value`. Colossus history returns exactly `Portfolio,
@@ -381,7 +385,7 @@ cube/
 │   ├── s08_pnl.py             P&L mapping/send/adjustment rules
 │   ├── s09_stock.py           Stock comparison and mapping
 │   ├── s10_search.py          exact Quick identity catalogue
-│   └── s11_tenorreduction.py  post-P&L reduced-tenor transform
+│   └── s11_tenorreduction.py  post-P&L matrix or Credit map-and-sum transform
 ├── history/
 │   ├── s01_models.py          Data requests and canonical bundles
 │   ├── s02_contracts.py       archive schemas and manifests
@@ -442,7 +446,7 @@ cube/
 │   ├── s04_savedviews.py      atomic shared saved-view JSON
 │   ├── s05_sources.py         source wiring and fixture connectors
 │   ├── s06_refresh.py         refresh orchestration
-│   └── s07_tenorreduction.py  matrix provider composition boundary
+│   └── s07_tenorreduction.py  matrix and Credit tenor-map provider boundary
 └── ui/
     ├── s01_constants.py       shared field/hierarchy registry
     ├── s02_aggregation.py     shared financial aggregation
