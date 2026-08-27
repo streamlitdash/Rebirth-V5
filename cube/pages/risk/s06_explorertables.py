@@ -757,12 +757,12 @@ def build_credit_multi_table(
         availability_note = (
             "Unavailable connector measures are blank: "
             + ", ".join(missing_measures)
-            + ". Any XGamma source sensitivities retain generic Risk."
+            + ". Any XGamma source sensitivities retain generic Risk and dRisk."
         )
     else:
         availability_note = (
             "Connector measure columns drive ordinary Credit rows. Any XGamma "
-            "source sensitivities retain generic Risk."
+            "source sensitivities retain generic Risk and dRisk."
         )
     return html.Div(
         [

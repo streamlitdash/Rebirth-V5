@@ -1,4 +1,4 @@
-"""Strict Cross Gamma sensitivity adapter with deterministic Credit fixtures."""
+"""Strict Cross Gamma Risk/dRisk adapter with deterministic Credit fixtures."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from cube.domain.s04_crossgamma import (
     XGAMMA_VEGA_RISK_GREEK,
     validate_cross_gamma_rows,
 )
-from cube.domain.s02_products import GROUP, PORTFOLIO, RISK_GREEK
+from cube.domain.s02_products import DRISK, GROUP, PORTFOLIO, RISK_GREEK
 
 
 class CrossGammaSource(Protocol):
@@ -84,6 +84,7 @@ def _temp_cross_gamma(_risk_date: pd.Timestamp) -> pd.DataFrame:
                 OUTPUT_TENOR_SWAP: "TEMP_REPLACE_ME - 5Y",
                 OUTPUT_TENOR_OPTION: "",
                 CROSS_GAMMA_SENSITIVITY: 12_500.0,
+                DRISK: 1_250.0,
             },
             {
                 PORTFOLIO: "TEMP_REPLACE_ME - BOOK_A",
@@ -100,6 +101,7 @@ def _temp_cross_gamma(_risk_date: pd.Timestamp) -> pd.DataFrame:
                 OUTPUT_TENOR_SWAP: "TEMP_REPLACE_ME - 5Y",
                 OUTPUT_TENOR_OPTION: "",
                 CROSS_GAMMA_SENSITIVITY: -7_500.0,
+                DRISK: -750.0,
             },
             {
                 PORTFOLIO: "TEMP_REPLACE_ME - BOOK_C",
@@ -116,6 +118,7 @@ def _temp_cross_gamma(_risk_date: pd.Timestamp) -> pd.DataFrame:
                 OUTPUT_TENOR_SWAP: "TEMP_REPLACE_ME - 5Y",
                 OUTPUT_TENOR_OPTION: "",
                 CROSS_GAMMA_SENSITIVITY: 4_000.0,
+                DRISK: 400.0,
             },
         ],
         columns=list(CROSS_GAMMA_COLUMNS),

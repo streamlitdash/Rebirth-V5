@@ -86,6 +86,7 @@ def _matrix_row(
     output_underlying: str = "OUTPUT",
     output_tenor: str = "5Y",
     sensitivity: float = 10.0,
+    drisk: float = 1.0,
 ) -> dict[str, object]:
     return {
         PORTFOLIO: "BOOK-A",
@@ -102,6 +103,7 @@ def _matrix_row(
         OUTPUT_TENOR_SWAP: output_tenor,
         OUTPUT_TENOR_OPTION: "",
         CROSS_GAMMA_SENSITIVITY: sensitivity,
+        DRISK: drisk,
     }
 
 
@@ -354,6 +356,10 @@ def test_validator_enforces_product_axes_and_full_matrix_uniqueness() -> None:
     with pytest.raises(ValueError, match="duplicate full matrix cells"):
         validate_cross_gamma_rows(duplicate)
 
+    invalid_drisk = _matrix(_matrix_row(drisk=np.nan))
+    with pytest.raises(ValueError, match="'dRisk' must contain finite numbers"):
+        validate_cross_gamma_rows(invalid_drisk)
+
     cash_flow = _matrix(_matrix_row())
     cash_flow.loc[0, INPUT_RISK_TYPE] = "Cash Flow"
     cash_flow.loc[0, INPUT_RISK_GREEK] = "New"
@@ -435,7 +441,7 @@ def test_development_uses_stored_move_and_sums_distinct_inputs() -> None:
     assert source[MARKET_MOVE].tolist() == pytest.approx([2.0, -3.0])
     assert source[SOURCE_TYPE].eq("credit/delta").all()
     assert source[PL].eq(0.0).all()
-    assert source[DRISK].isna().all()
+    assert source[DRISK].tolist() == pytest.approx([1.0, 1.0])
 
     developed = result.loc[result[SPLIT].eq(XGAMMA_SPLIT)]
     assert len(developed) == 1
@@ -535,6 +541,7 @@ def test_missing_output_quote_retains_developed_risk_as_unavailable() -> None:
     assert source[MARKET_MOVE] == 2.5
     row = result.loc[result[SPLIT].eq(XGAMMA_SPLIT)].iloc[0]
     assert row[RISK] == 20.0
+    assert pd.isna(row[DRISK])
     assert bool(row[MARKET_AVAILABLE]) is False
     assert row[MARKET_DATA_STATUS] == "No matching market row"
     assert pd.isna(row[OPEN])
@@ -561,6 +568,7 @@ def test_cross_product_output_resolves_its_own_spec_without_a_quote() -> None:
     assert source[MARKET_MOVE] == 4.0
     row = result.loc[result[SPLIT].eq(XGAMMA_SPLIT)].iloc[0]
     assert row[RISK] == 12.0
+    assert pd.isna(row[DRISK])
     assert row[SOURCE_TYPE] == "fx/delta"
     assert row[RISK_TYPE] == "FX"
     assert row[UNDERLYING] == "EUR/USD"
@@ -629,10 +637,10 @@ def test_manager_loads_raw_matrix_before_market_and_publishes_summed_xgamma() ->
     assert row[UNDERLYING] == XGAMMA_OUTPUT
     assert row[RISK] == pytest.approx(32.0)
     assert row["Risk SP01"] == pytest.approx(32.0)
+    assert row[DRISK] == 0.0
     assert row["dRisk SP01"] == 0.0
     assert row[SPLIT] == "XGAMMA"
     assert row[PL] == 0.0
-    assert row[DRISK] == 0.0
 
 
 def test_ir_xgamma_sources_are_last_in_delta_and_vega_families() -> None:
@@ -697,7 +705,7 @@ def test_credit_cross_gamma_source_uses_generic_risk_without_measure_pollution(
     displayed = apply_credit_measure(credit_risk, measure)
 
     assert displayed.loc[source_mask, "risk"].tolist() == pytest.approx([10.0, -4.0])
-    assert displayed.loc[source_mask, "drisk"].isna().all()
+    assert displayed.loc[source_mask, "drisk"].tolist() == pytest.approx([1.0, 1.0])
     assert displayed.loc[source_mask, selected_column].isna().all()
     assert displayed.loc[connector_mask, "risk"].tolist() == pytest.approx(
         credit_risk.loc[connector_mask, selected_column].tolist()
@@ -716,6 +724,9 @@ def test_credit_developed_output_keeps_ordinary_measure_handling() -> None:
     assert developed["risk greek"].eq("Delta").all()
     assert apply_credit_measure(developed, "SP01")["risk"].tolist() == pytest.approx(
         developed["risk sp01"].tolist()
+    )
+    assert apply_credit_measure(developed, "SP01")["drisk"].tolist() == pytest.approx(
+        developed["drisk sp01"].tolist()
     )
     assert apply_credit_measure(developed, "PSP01")["risk"].eq(0.0).all()
 

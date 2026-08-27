@@ -287,6 +287,79 @@ def test_baseline_promotion_scopes_calculation_without_dropping_rows() -> None:
     assert by_row.loc["chf-unmapped", "Promotion Score"] == 0.0
 
 
+def test_destination_promotion_combines_all_developed_and_trade_splits() -> None:
+    positions = pd.DataFrame(
+        [
+            ["Risk", "RAW-1", 40.0, 20.0, 20.0],
+            ["XGAMMA", "RAW-2", 20.0, pd.NA, 0.0],
+            ["Gamma", "RAW-3", 15.0, pd.NA, 0.0],
+            ["New Trades", "RAW-4", 25.0, pd.NA, 85.0],
+        ],
+        columns=["Split", "Underlying", "Risk", "dRisk", "PL"],
+    )
+    positions = positions.assign(
+        **{
+            "Risk Type": "FX",
+            "Risk Greek": "Delta",
+            REPORTED_UNDERLYING: "EUR/USD",
+            "Group": "G10",
+            "Portfolio Mapped": True,
+            "Activity": "Activity 1",
+        }
+    )
+    thresholds = pd.DataFrame(
+        [["FX", "Delta", 100.0, 20.0, 100.0]],
+        columns=[
+            "Risk Type",
+            "Risk Greek",
+            "Risk Threshold",
+            "dRisk Threshold",
+            "PL Threshold",
+        ],
+    )
+
+    promoted = apply_baseline_promotions(positions, thresholds)
+
+    assert promoted["Risk"].sum() == pytest.approx(100.0)
+    assert promoted["Display Bucket"].eq("EUR/USD").all()
+    assert promoted["Promotion Reason"].eq("Big Risk, Big dRisk, Big PL").all()
+    assert promoted["Promotion Score"].eq(1.05).all()
+    assert promoted["Promotion Score"].notna().all()
+
+
+def test_xgamma_source_drisk_contributes_to_its_source_promotion() -> None:
+    source = pd.DataFrame(
+        [
+            {
+                "Risk Type": "Credit",
+                "Risk Greek": "XGamma",
+                REPORTED_UNDERLYING: "CDX IG",
+                "Group": "Index",
+                "Portfolio Mapped": True,
+                "Activity": "Activity 1",
+                "Risk": 10.0,
+                "dRisk": 25.0,
+                "PL": 0.0,
+            }
+        ]
+    )
+    thresholds = pd.DataFrame(
+        [["Credit", "XGamma", 100.0, 20.0, 100.0]],
+        columns=[
+            "Risk Type",
+            "Risk Greek",
+            "Risk Threshold",
+            "dRisk Threshold",
+            "PL Threshold",
+        ],
+    )
+
+    promoted = apply_baseline_promotions(source, thresholds)
+
+    assert promoted.loc[0, "Promotion Reason"] == "Big dRisk"
+    assert promoted.loc[0, "Promotion Score"] == pytest.approx(1.25)
+
+
 def test_quick_risk_uses_reported_identity_but_quick_market_stays_raw() -> None:
     market = pd.DataFrame(
         [

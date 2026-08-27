@@ -975,9 +975,10 @@ def _with_supplemental_credit_sp01(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach the default Credit measure without inventing alternate measures.
 
     New Trades and XGAMMA carry the same generic Credit Delta sensitivity as
-    the normal Risk adapter.  In the Credit UI that sensitivity is SP01.  dRisk
-    remains unavailable for these supplemental rows and is not replaced with a
-    fabricated zero.
+    the normal Risk adapter. In the Credit UI that sensitivity is SP01.
+    Connector-owned source XGAMMA dRisk is preserved. Developed XGAMMA and New
+    Trades dRisk remain unavailable rather than being replaced with a
+    fabricated value.
     """
 
     if frame.empty:

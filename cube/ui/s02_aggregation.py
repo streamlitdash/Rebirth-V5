@@ -336,6 +336,10 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
         frame["promotion reason"] = ""
     if "promotion score" not in frame:
         frame["promotion score"] = 0.0
+    else:
+        # Older committed snapshots can contain a genuinely missing neutral
+        # score. Bad text and infinities still fail the numeric guard below.
+        frame["promotion score"] = frame["promotion score"].fillna(0.0)
     if "vol score" not in frame:
         frame["vol score"] = 0.0
     else:
@@ -686,10 +690,10 @@ def credit_measure_available(frame: pd.DataFrame, measure: str) -> bool:
     """Whether at least one complete metric is available for a Credit measure.
 
     Credit Cross Gamma source sensitivities deliberately have generic Risk and
-    no connector-measure values.  They are excluded from connector completeness
-    so their intentional blanks do not disable a complete ordinary Credit
-    measure.  :func:`credit_measure_values` overlays generic Risk only for those
-    exact source rows and leaves their connector columns untouched.
+    dRisk rather than connector-measure values. They are excluded from connector
+    completeness so their intentional blanks do not disable a complete ordinary
+    Credit measure. :func:`credit_measure_values` overlays those two generic
+    values only for the exact source rows and leaves connector columns untouched.
     """
 
     connector_rows = frame.loc[~_credit_cross_gamma_source_mask(frame)]
@@ -728,8 +732,7 @@ def credit_measure_values(
     selected = pd.Series(np.nan, index=frame.index, dtype=float)
     if use_connector:
         selected.loc[connector_mask] = frame.loc[connector_mask, column].astype(float)
-    if metric == "risk":
-        selected.loc[source_mask] = frame.loc[source_mask, "risk"].astype(float)
+    selected.loc[source_mask] = frame.loc[source_mask, metric].astype(float)
     return selected
 
 

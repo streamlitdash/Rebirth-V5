@@ -1,11 +1,12 @@
 """Pure validation and dual-leg development of portfolio Cross Gamma risk.
 
-Cross Gamma sensitivities are expressed per unit of the existing product
-MarketBook ``Move``.  The calculator therefore consumes that stored value
+Cross Gamma Risk sensitivities are expressed per unit of the existing product
+MarketBook ``Move``. The calculator therefore consumes that stored value
 directly: it does not infer direction, rescale basis points, or manufacture a
-separate bump convention.  Every raw matrix cell releases its input sensitivity
-under the adapter-authoritative ``Risk Greek`` and also
-contributes to the aggregated ``XGAMMA`` output-risk leg.
+separate bump convention. Every raw matrix cell also releases its authoritative
+connector dRisk under the adapter-owned source Greek. Developed output dRisk is
+unavailable because no separate development formula is implied by that source
+value.
 """
 
 from __future__ import annotations
@@ -82,10 +83,13 @@ CROSS_GAMMA_COLUMNS = (
     OUTPUT_TENOR_SWAP,
     OUTPUT_TENOR_OPTION,
     CROSS_GAMMA_SENSITIVITY,
+    DRISK,
 )
 
 CROSS_GAMMA_CELL_COLUMNS = tuple(
-    column for column in CROSS_GAMMA_COLUMNS if column != CROSS_GAMMA_SENSITIVITY
+    column
+    for column in CROSS_GAMMA_COLUMNS
+    if column not in (CROSS_GAMMA_SENSITIVITY, DRISK)
 )
 
 CROSS_GAMMA_RELEASE_COLUMNS = (
@@ -231,22 +235,19 @@ def validate_cross_gamma_rows(raw: object) -> pd.DataFrame:
     for column in _TENOR_COLUMNS:
         _require_text(result, column, allow_blank=True)
 
-    raw_sensitivity = result[CROSS_GAMMA_SENSITIVITY]
-    boolean_sensitivity = raw_sensitivity.map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    )
-    converted_sensitivity = pd.to_numeric(raw_sensitivity, errors="coerce")
-    invalid_sensitivity = (
-        boolean_sensitivity
-        | converted_sensitivity.isna()
-        | ~converted_sensitivity.map(np.isfinite)
-    )
-    if invalid_sensitivity.any():
-        rows = result.index[invalid_sensitivity].tolist()[:5]
-        raise ValueError(
-            f"{CROSS_GAMMA_SENSITIVITY!r} must contain finite numbers at rows {rows}"
+    for column in (CROSS_GAMMA_SENSITIVITY, DRISK):
+        raw_values = result[column]
+        boolean_values = raw_values.map(
+            lambda value: isinstance(value, (bool, np.bool_))
         )
-    result[CROSS_GAMMA_SENSITIVITY] = converted_sensitivity.astype(float)
+        converted = pd.to_numeric(raw_values, errors="coerce")
+        invalid = boolean_values | converted.isna() | ~converted.map(np.isfinite)
+        if invalid.any():
+            rows = result.index[invalid].tolist()[:5]
+            raise ValueError(
+                f"{column!r} must contain finite numbers at rows {rows}"
+            )
+        result[column] = converted.astype(float)
 
     pair_catalogue = _product_by_pair()
     for row_index, row in result.iterrows():
@@ -436,7 +437,6 @@ def _build_input_legs(
         source[RISK_GREEK] = source[_SOURCE_RISK_GREEK]
         source[SOURCE_TYPE] = spec.source_type
         source[SPLIT] = CROSS_GAMMA_SOURCE_SPLIT
-        source[DRISK] = np.nan
         source[PL] = 0.0
         source = _complete_tenor_release_columns(source, spec)
         source_rows.append(source.loc[:, list(CROSS_GAMMA_RELEASE_COLUMNS)])
@@ -484,6 +484,8 @@ def _attach_output_market(
 
     result[SOURCE_TYPE] = spec.source_type
     result[SPLIT] = XGAMMA_SPLIT
+    # Connector dRisk belongs to the raw XGamma source sensitivity. As with a
+    # Gamma-developed Delta, no authoritative developed-output dRisk exists.
     result[DRISK] = np.nan
     result[PL] = 0.0
     result = _complete_tenor_release_columns(result, spec)
@@ -498,13 +500,13 @@ def build_cross_gamma_rows(
 
     Each validated full matrix cell first releases one source row under its
     Input Risk Type with the exact adapter-supplied sensitivity Greek
-    (``XGamma`` or ``XGamma Vega``), ``Split = Risk``, and raw sensitivity as
-    Risk.  The actual ``Input Risk Greek`` remains the ProductSpec and MarketBook
-    join driver.  Contributions from distinct input cells are then summed when
-    Portfolio, Group, and the complete output identity agree and are released
-    under the real output pair with ``Split = XGAMMA``.  Input quotes are
-    mandatory because both the source market context and developed risk use
-    their stored ``Move``.  An absent output quote retains calculated risk with
+    (``XGamma`` or ``XGamma Vega``), ``Split = Risk``, and connector Risk/dRisk.
+    The actual ``Input Risk Greek`` remains the ProductSpec and MarketBook join
+    driver. Risk contributions from distinct input cells are then summed when
+    Portfolio, Group, and the complete output identity agree and released under
+    the real output pair with ``Split = XGAMMA``. Input quotes are mandatory
+    because developed Risk uses their stored ``Move``. Developed output dRisk
+    remains unavailable. An absent output quote retains calculated Risk with
     market data marked unavailable.
     """
 

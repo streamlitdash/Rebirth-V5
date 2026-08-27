@@ -766,7 +766,7 @@ def _validate_dashboard_release(frame: pd.DataFrame) -> None:
         blank = values.isna() | values.astype("string").str.strip().eq("")
         invalid = boolean | (~blank & numeric.isna())
         invalid |= numeric.notna() & ~np.isfinite(numeric)
-        if column == RISK or column in threshold_columns:
+        if column in (RISK, PROMOTION_SCORE) or column in threshold_columns:
             invalid |= numeric.isna()
         if invalid.any():
             rows = frame.index[invalid].tolist()[:5]

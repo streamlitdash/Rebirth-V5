@@ -448,6 +448,15 @@ def test_prepare_keeps_numeric_and_named_portfolios_as_internal_text() -> None:
     assert absent_column["portfolio"].eq("Unspecified").all()
 
 
+def test_prepare_zero_fills_a_missing_neutral_promotion_score() -> None:
+    raw = _raw_risk_frame()
+    raw["Promotion Score"] = [pd.NA, 0.5]
+
+    prepared = prepare_risk_data(raw)
+
+    assert prepared["promotion score"].tolist() == pytest.approx([0.0, 0.5])
+
+
 @pytest.mark.parametrize("values", ([True, False], [10.0, True]))
 def test_prepare_rejects_boolean_numeric_values_for_native_and_mixed_dtypes(
     values,
@@ -493,6 +502,11 @@ def test_dashboard_release_zero_fills_one_missing_metric_without_blanking_view()
     assert prepared.loc[1, ["drisk", "drisk expo", "drisk hedges"]].eq(0.0).all()
     assert prepared.loc[1, ["pl", "pl expo", "pl hedges", "move"]].eq(0.0).all()
     assert credit_measure_values(prepared, "drisk", "SP01").tolist() == [1.0, 0.0]
+
+    invalid_release = released.copy()
+    invalid_release.loc[0, "Promotion Score"] = pd.NA
+    with pytest.raises(ValueError, match="'Promotion Score'.*missing"):
+        _validate_dashboard_release(invalid_release)
 
 
 def test_dashboard_release_accepts_zero_filled_move_with_available_quotes() -> None:
