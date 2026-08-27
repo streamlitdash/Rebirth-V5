@@ -102,6 +102,15 @@ def get_reduced_tenor_matrix(matrix_name: str) -> pd.DataFrame:
     return matrix.copy()
 
 
+def get_reduced_tenor_matrix_bundle() -> dict[str, pd.DataFrame]:
+    """Return the fixture's one-response non-Credit matrix secondary file."""
+
+    return {
+        matrix_name: matrix.copy()
+        for matrix_name, matrix in _TEMP_REDUCTION_MATRICES.items()
+    }
+
+
 def get_credit_tenor_mapping(mapping_name: str) -> pd.DataFrame:
     """Return one caller-owned Credit Full Tenor to Reduced Tenor mapping."""
 
@@ -120,4 +129,5 @@ __all__ = [
     "get_credit_tenor_mapping",
     "get_reduced_tenor_catalog_source",
     "get_reduced_tenor_matrix",
+    "get_reduced_tenor_matrix_bundle",
 ]

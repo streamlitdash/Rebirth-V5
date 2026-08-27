@@ -248,6 +248,56 @@ def test_reducer_batches_positions_and_transforms_all_additive_measures() -> Non
     assert by_position.loc[("P2", "Long"), "PL Hedges"] == pytest.approx(21.25)
 
 
+def test_committed_matrix_is_authoritative_and_missing_peer_stays_full() -> None:
+    first = _full_frame()
+    second = _full_frame().assign(Underlying="EUR ESTR")
+    catalog = pd.DataFrame(
+        [
+            {
+                "Risk Type": "IR",
+                "Risk Greek": "Delta",
+                "Underlying": "USD SOFR",
+                MATRIX_NAME: "USD_MATRIX",
+            },
+            {
+                "Risk Type": "IR",
+                "Risk Greek": "Delta",
+                "Underlying": "EUR ESTR",
+                MATRIX_NAME: "EUR_MATRIX",
+            },
+        ],
+        columns=REDUCED_TENOR_CATALOG_COLUMNS,
+    )
+    provider_calls: list[str] = []
+    reducer = ReducedTenorReducer(
+        catalog,
+        lambda name: provider_calls.append(name) or _matrix(),
+    )
+
+    reduced = reducer.reduce(
+        pd.concat([first, second], ignore_index=True),
+        market_frame=_market_frame(),
+        committed_matrices={("ir/delta", "USD_MATRIX"): _matrix()},
+        authoritative_source_types={"ir/delta"},
+    )
+
+    assert provider_calls == []
+    assert reduced.loc[reduced["Underlying"].eq("USD SOFR"), "Tenor Swap"].tolist() == [
+        "2Y",
+        "Long",
+        "2Y",
+        "Long",
+    ]
+    assert reduced.loc[reduced["Underlying"].eq("EUR ESTR"), "Tenor Swap"].tolist() == [
+        "1Y",
+        "2Y",
+        "5Y",
+        "1Y",
+        "2Y",
+        "5Y",
+    ]
+
+
 def test_credit_reducer_maps_and_sums_post_pl_measures_by_position() -> None:
     calls: list[str] = []
 

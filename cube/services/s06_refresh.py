@@ -18,6 +18,12 @@ import numpy as np
 import pandas as pd
 
 from cube.domain.s10_search import SearchCatalog
+from cube.domain.s11_tenorreduction import (
+    CatalogSource,
+    load_reduced_tenor_catalog,
+    required_reduction_matrix_names,
+    validate_reduction_matrix,
+)
 from cube.domain.s04_crossgamma import (
     CROSS_GAMMA_COLUMNS,
     build_cross_gamma_rows,
@@ -92,6 +98,8 @@ from cube.domain.s02_products import (
     MarketStatusResolver,
     PortfolioConfigSource,
     ProductConnectorAdapter,
+    ProductRiskBundle,
+    ProductRiskResult,
     ProductSpec,
     ProductionIntegrationError,
     RiskCheckerResult,
@@ -360,6 +368,7 @@ class RiskRefreshManager(_RefreshStateMixin):
         market_status_loader: GenericMarketConnector | None = None,
         # PRODUCTION INTEGRATION POINT: preferred per-source connector mapping.
         connector_adapters: Mapping[str, ProductConnectorAdapter] | None = None,
+        reduced_tenor_catalog: CatalogSource | None = None,
         multipliers: Mapping[str, float] | None = None,
         stage_delays: Mapping[str, float] | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -490,6 +499,12 @@ class RiskRefreshManager(_RefreshStateMixin):
         self._market_open_loader = market_open_loader or get_market_open
         self._market_status_loader = market_status_loader or get_market_status
         self._connector_adapters = adapters
+        self._reduced_tenor_catalog_source = (
+            reduced_tenor_catalog.copy()
+            if isinstance(reduced_tenor_catalog, pd.DataFrame)
+            else reduced_tenor_catalog
+        )
+        self._reduced_tenor_catalog: pd.DataFrame | None = None
         self._multipliers = _validate_multipliers(multipliers)
         configured_delays = dict(stage_delays or {})
         unknown_delays = sorted(set(configured_delays) - {"risk_product"})
@@ -625,6 +640,8 @@ class RiskRefreshManager(_RefreshStateMixin):
         self._market_frames: dict[str, pd.DataFrame] = {}
         self._pl_frames: dict[str, pd.DataFrame] = {}
         self._overlay_frames: dict[str, pd.DataFrame] = {}
+        self._reduction_matrices: dict[tuple[str, str], pd.DataFrame] = {}
+        self._reduction_matrix_source_types: set[str] = set()
         self._risk_dates: dict[str, pd.Timestamp] = {}
         self._market_date: pd.Timestamp | None = None
         self._search_catalog: SearchCatalog | None = None
@@ -686,6 +703,76 @@ class RiskRefreshManager(_RefreshStateMixin):
                 VOL_SCORE: "float64",
             }
         )
+
+    def _reduction_catalog_frame(self) -> pd.DataFrame | None:
+        """Load the small selector only after a bundled Risk response needs it."""
+
+        if self._reduced_tenor_catalog_source is None:
+            return None
+        if self._reduced_tenor_catalog is None:
+            self._reduced_tenor_catalog = load_reduced_tenor_catalog(
+                self._reduced_tenor_catalog_source
+            )
+        return self._reduced_tenor_catalog
+
+    def _validated_bundle_matrices(
+        self,
+        spec: ProductSpec,
+        risk: pd.DataFrame,
+        raw_matrices: object,
+        *,
+        product_label: str,
+    ) -> dict[tuple[str, str], pd.DataFrame]:
+        """Keep only relevant, valid matrices without discarding valid Risk."""
+
+        try:
+            if not isinstance(raw_matrices, Mapping):
+                raise TypeError("ProductRiskBundle.matrices must be a mapping")
+            catalog = self._reduction_catalog_frame()
+            if catalog is None:
+                required_names = tuple(
+                    name
+                    for name in raw_matrices
+                    if isinstance(name, str) and name.strip()
+                )
+            else:
+                required_names = required_reduction_matrix_names(
+                    catalog,
+                    spec,
+                    risk,
+                )
+        except Exception as error:
+            self._log_operational_failure(
+                boundary="Reduced tenor matrices",
+                source_type=spec.source_type,
+                product_label=product_label,
+                stage="risk",
+                error=error,
+            )
+            return {}
+
+        validated: dict[tuple[str, str], pd.DataFrame] = {}
+        for matrix_name in required_names:
+            try:
+                if matrix_name not in raw_matrices:
+                    raise KeyError(
+                        f"Risk bundle did not contain matrix {matrix_name!r}"
+                    )
+                matrix = validate_reduction_matrix(
+                    raw_matrices[matrix_name],
+                    matrix_name=matrix_name,
+                )
+            except Exception as error:
+                self._log_operational_failure(
+                    boundary=f"Reduced tenor matrix {matrix_name}",
+                    source_type=spec.source_type,
+                    product_label=product_label,
+                    stage="risk",
+                    error=error,
+                )
+                continue
+            validated[(spec.source_type, matrix_name)] = matrix
+        return validated
 
     @staticmethod
     def _is_operational_connector_error(error: BaseException) -> bool:
@@ -998,13 +1085,13 @@ class RiskRefreshManager(_RefreshStateMixin):
         product_index: int = 0,
         product_total: int = 0,
         budget: _ConnectorRefreshBudget | None = None,
-    ) -> pd.DataFrame:
+    ) -> ProductRiskResult:
         # PRODUCTION INTEGRATION POINT: a per-source adapter wins; the generic
         # ``risk_loader(date, source_type)`` handles only uncovered source types.
         adapter = self._connector_adapters.get(spec.source_type)
         connector = adapter.risk if adapter is not None else self._risk_loader
 
-        def load() -> pd.DataFrame:
+        def load() -> ProductRiskResult:
             if adapter is not None:
                 return adapter.risk(risk_date)
             return self._risk_loader(risk_date, spec.source_type)
@@ -1623,6 +1710,8 @@ class RiskRefreshManager(_RefreshStateMixin):
                 market_frames = dict(self._market_frames)
                 pl_frames = dict(self._pl_frames)
                 overlay_frames = dict(self._overlay_frames)
+                reduction_matrices = dict(self._reduction_matrices)
+                reduction_matrix_source_types = set(self._reduction_matrix_source_types)
                 risk_dates = dict(self._risk_dates)
                 market_date = self._market_date
             if base_thresholds is None or market_date is None:
@@ -1739,6 +1828,8 @@ class RiskRefreshManager(_RefreshStateMixin):
                     market_frames=market_frames,
                     pl_frames=pl_frames,
                     overlay_frames=overlay_frames,
+                    reduction_matrices=reduction_matrices,
+                    reduction_matrix_source_types=reduction_matrix_source_types,
                     risk_dates=risk_dates,
                     market_date=market_date,
                     search_catalog=search_catalog,
@@ -1883,6 +1974,10 @@ class RiskRefreshManager(_RefreshStateMixin):
                 base_market_frames = dict(self._market_frames)
                 base_pl_frames = dict(self._pl_frames)
                 base_overlay_frames = dict(self._overlay_frames)
+                base_reduction_matrices = dict(self._reduction_matrices)
+                base_reduction_matrix_source_types = set(
+                    self._reduction_matrix_source_types
+                )
                 base_risk_dates = dict(self._risk_dates)
                 base_market_date = self._market_date
             connector_budget = _ConnectorRefreshBudget(
@@ -2221,6 +2316,14 @@ class RiskRefreshManager(_RefreshStateMixin):
                 next_open = {} if force_risk else base_market_open_frames
                 next_status = {} if force_risk else base_market_status_frames
                 next_market = {} if force_risk else base_market_frames
+                next_reduction_matrices = {
+                    key: matrix
+                    for key, matrix in base_reduction_matrices.items()
+                    if key[0] not in changed_source_types
+                }
+                next_reduction_matrix_source_types = (
+                    base_reduction_matrix_source_types - changed_source_types
+                )
 
                 stage_durations["readiness"] = time.monotonic() - refresh_started
                 risk_started = time.monotonic()
@@ -2277,7 +2380,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         continue
                     try:
                         risk_connector_calls += 1
-                        raw_risk = self._load_product_risk(
+                        risk_result = self._load_product_risk(
                             spec,
                             risk_date,
                             product_index=product_index,
@@ -2321,7 +2424,24 @@ class RiskRefreshManager(_RefreshStateMixin):
                         hold_seconds=risk_product_delay,
                         message=f"Loading and validating Risk/dRisk for {product_label}.",
                     )
-                    next_risk[source_type] = get_product_risk(spec, risk_date, raw_risk)
+                    if isinstance(risk_result, ProductRiskBundle):
+                        raw_risk = risk_result.risk
+                        raw_matrices: object = risk_result.matrices
+                    else:
+                        raw_risk = risk_result
+                        raw_matrices = None
+                    validated_risk = get_product_risk(spec, risk_date, raw_risk)
+                    next_risk[source_type] = validated_risk
+                    if isinstance(risk_result, ProductRiskBundle):
+                        next_reduction_matrix_source_types.add(source_type)
+                        next_reduction_matrices.update(
+                            self._validated_bundle_matrices(
+                                spec,
+                                validated_risk,
+                                raw_matrices,
+                                product_label=product_label,
+                            )
+                        )
                     if risk_product_delay > 0:
                         self._sleep(risk_product_delay)
 
@@ -2800,6 +2920,8 @@ class RiskRefreshManager(_RefreshStateMixin):
                     market_frames=next_market,
                     pl_frames=next_pl,
                     overlay_frames=next_overlay_frames,
+                    reduction_matrices=next_reduction_matrices,
+                    reduction_matrix_source_types=(next_reduction_matrix_source_types),
                     risk_dates=next_dates,
                     market_date=market_date,
                     search_catalog=search_catalog,

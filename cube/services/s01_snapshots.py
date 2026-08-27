@@ -110,6 +110,15 @@ class FrameRead:
 
 
 @dataclass(frozen=True)
+class ReductionMatrixRead:
+    """Small dated matrix book published with one committed Risk revision."""
+
+    revision: int
+    matrices: dict[tuple[str, str], pd.DataFrame]
+    authoritative_source_types: frozenset[str]
+
+
+@dataclass(frozen=True)
 class RefreshProgressSnapshot:
     """Non-sensitive, independently readable progress for one refresh attempt."""
 

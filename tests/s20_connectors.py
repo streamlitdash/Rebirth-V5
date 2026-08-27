@@ -9,6 +9,7 @@ import pandas as pd
 from cube.adapters.s04_credit import build_credit_adapter
 from cube.adapters.s03_fx import build_fx_adapters
 from cube.adapters.s02_ir import build_ir_adapters
+from cube.domain.s02_products import ProductRiskBundle
 from cube.services import s05_sources as sources
 
 
@@ -66,8 +67,11 @@ def test_active_product_registration_reads_the_temp_csv_boundary() -> None:
     assert adapter.market_open.__module__ == "cube.services.s05_sources"
     assert adapter.market_status.__module__ == "cube.services.s05_sources"
 
-    risk = adapter.risk(pd.Timestamp("2026-08-14"))
+    bundle = adapter.risk(pd.Timestamp("2026-08-14"))
+    assert isinstance(bundle, ProductRiskBundle)
+    risk = bundle.risk
     assert not risk.empty
+    assert bundle.matrices
     assert risk["Underlying"].str.contains("TEMP_REPLACE_ME", regex=False).all()
     assert risk["Portfolio"].str.contains("TEMP_REPLACE_ME", regex=False).all()
 
@@ -84,7 +88,9 @@ def test_only_fx_delta_registers_bulk_market_hooks() -> None:
         if source_type != "fx/delta"
     )
 
-    risk = fx_delta.risk(pd.Timestamp("2026-08-14"))
+    bundle = fx_delta.risk(pd.Timestamp("2026-08-14"))
+    assert isinstance(bundle, ProductRiskBundle)
+    risk = bundle.risk
     underlyings = tuple(risk["Underlying"].drop_duplicates())
     opened = fx_delta.market_open_bulk(
         pd.Timestamp("2026-08-13"),

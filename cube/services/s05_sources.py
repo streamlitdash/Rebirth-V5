@@ -35,6 +35,7 @@ from cube.domain.s02_products import (
     UNDERLYING,
     VOL_SCORE,
     ProductConnectorAdapter,
+    ProductRiskBundle,
 )
 from cube.domain.s01_schema import (
     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
@@ -44,6 +45,10 @@ from cube.domain.s01_schema import (
 )
 from cube.history import COLOSSUS_COLUMNS
 from cube.services.s06_refresh import RiskRefreshManager
+from cube.services.s07_tenorreduction import (
+    get_reduced_tenor_catalog_source,
+    get_reduced_tenor_matrix_bundle,
+)
 
 
 TEMP_DATA_DIRECTORY = Path(__file__).resolve().parents[2] / "data"
@@ -705,8 +710,11 @@ def _get_csv_product_connector_adapters() -> Mapping[str, ProductConnectorAdapte
 
         def risk(
             risk_date: pd.Timestamp, *, _source: str = source_type
-        ) -> pd.DataFrame:
-            return get_risk(risk_date, _source)
+        ) -> ProductRiskBundle:
+            return ProductRiskBundle(
+                risk=get_risk(risk_date, _source),
+                matrices=get_reduced_tenor_matrix_bundle(),
+            )
 
         def market_open(
             open_date: pd.Timestamp,
@@ -790,6 +798,7 @@ def build_production_refresh_manager(
         market_open_loader=get_market_open,
         market_status_loader=get_market_status,
         connector_adapters=get_product_connector_adapters(),
+        reduced_tenor_catalog=get_reduced_tenor_catalog_source(),
         stage_delays=stage_delays,
         trading_timezone=trading_timezone,
         logger=logger,

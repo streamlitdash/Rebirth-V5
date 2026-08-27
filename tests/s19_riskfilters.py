@@ -789,6 +789,61 @@ def test_reduced_tenor_book_is_built_once_then_reused_across_filters(
     )
 
 
+def test_reduced_click_uses_committed_matrix_memory_without_provider_calls() -> None:
+    prepared = prepare_risk_data(_reducible_raw_frame())
+    provider_calls: list[str] = []
+    matrix_reads = 0
+    health = SimpleNamespace(revision=7)
+
+    def read_matrices() -> SimpleNamespace:
+        nonlocal matrix_reads
+        matrix_reads += 1
+        return SimpleNamespace(
+            revision=7,
+            matrices={("ir/delta", "IR_STANDARD"): _reduced_tenor_matrix()},
+            authoritative_source_types=frozenset({"ir/delta"}),
+        )
+
+    manager = SimpleNamespace(
+        health=health,
+        read_frame=lambda _name: SimpleNamespace(
+            revision=7,
+            frame=_reducible_raw_frame(),
+        ),
+        read_reduction_matrices=read_matrices,
+    )
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda name: (
+            provider_calls.append(name) or _reduced_tenor_matrix()
+        ),
+    )
+
+    first = cache.filtered(
+        manager,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Core"]},
+        reduced_tenor=True,
+    )
+    second = cache.filtered(
+        manager,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Hedge"]},
+        reduced_tenor=True,
+    )
+
+    assert first["tenor swap"].tolist() == ["2Y", "Long"]
+    assert second["tenor swap"].tolist() == ["2Y", "Long"]
+    assert matrix_reads == 1
+    assert provider_calls == []
+
+
 def test_shared_reduced_book_matches_filter_then_reduce_with_unmapped_rows() -> None:
     raw = _reducible_raw_frame()
     unmapped = raw.loc[raw["Portfolio"].eq("BOOK-A")].copy()

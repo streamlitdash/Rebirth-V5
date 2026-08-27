@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Protocol
+from typing import Callable, Collection, Mapping, Protocol
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,7 @@ from cube.domain.s02_products import (
     PL,
     PL_THRESHOLD,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
+    ProductSpec,
     PROMOTION_REASON,
     PROMOTION_SCORE,
     RISK,
@@ -207,6 +208,27 @@ def load_reduced_tenor_catalog(source: CatalogSource) -> pd.DataFrame:
         )
 
     return frame.reset_index(drop=True)
+
+
+def required_reduction_matrix_names(
+    catalog: pd.DataFrame,
+    spec: ProductSpec,
+    risk: pd.DataFrame,
+) -> tuple[str, ...]:
+    """Return distinct catalogue matrices needed by this validated Risk frame."""
+
+    # Every Credit one-axis product uses the shared map-and-sum definition and
+    # deliberately needs no per-Underlying s11 catalogue row.
+    if spec.source_type in CREDIT_REDUCTION_SOURCE_TYPES:
+        return ()
+
+    active_underlyings = risk[UNDERLYING].drop_duplicates()
+    selected = catalog.loc[
+        catalog[RISK_TYPE].eq(spec.risk_type)
+        & catalog[RISK_GREEK].eq(spec.risk_greek)
+        & catalog[UNDERLYING].isin(active_underlyings)
+    ]
+    return tuple(selected[MATRIX_NAME].drop_duplicates().tolist())
 
 
 def _clean_matrix_labels(labels: pd.Index, *, axis: str) -> pd.Index:
@@ -773,13 +795,16 @@ class ReducedTenorReducer:
         frame: pd.DataFrame,
         *,
         market_frame: pd.DataFrame | None = None,
+        committed_matrices: Mapping[tuple[str, str], pd.DataFrame] | None = None,
+        authoritative_source_types: Collection[str] = (),
     ) -> pd.DataFrame:
         """Return a reduced copy while preserving all ineligible/unmapped rows.
 
         Reduction is batched by mapping and source type. Non-Credit batches use
-        the catalogue-selected matrix calculation. Every one-axis Credit batch
-        uses the shared Credit map-and-sum definition. A batch whose real full
-        tenors are not all represented by its definition is retained unchanged.
+        the catalogue-selected matrix calculation. When a source returned a
+        Risk bundle, its committed matrix is authoritative and a missing matrix
+        leaves that batch at full tenor; it never falls back to temp data.
+        Every one-axis Credit batch uses the shared Credit map-and-sum definition.
         """
 
         if not isinstance(frame, pd.DataFrame):
@@ -794,6 +819,11 @@ class ReducedTenorReducer:
             )
         if frame.empty:
             return frame.copy()
+        if committed_matrices is not None and not isinstance(
+            committed_matrices, Mapping
+        ):
+            raise TypeError("committed_matrices must be a mapping or None")
+        authoritative_sources = frozenset(authoritative_source_types)
 
         quotes = frame if market_frame is None else market_frame
         if not isinstance(quotes, pd.DataFrame):
@@ -827,7 +857,10 @@ class ReducedTenorReducer:
                     underlying=underlying,
                 )
             else:
-                matrix = self._matrix(matrix_name)
+                if source_type in authoritative_sources:
+                    matrix = (committed_matrices or {}).get((source_type, matrix_name))
+                else:
+                    matrix = self._matrix(matrix_name)
                 if matrix is None:
                     continue
                 reduced = self._reduce_batch(
@@ -901,6 +934,7 @@ __all__ = [
     "REDUCED_TENOR_CATALOG_KEY",
     "ReducedTenorReducer",
     "load_reduced_tenor_catalog",
+    "required_reduction_matrix_names",
     "reduce_tenor_swap",
     "validate_credit_tenor_mapping",
     "validate_reduction_matrix",

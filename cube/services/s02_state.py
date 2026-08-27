@@ -47,6 +47,7 @@ from cube.services.s01_snapshots import (
     ControlSnapshot,
     FrameRead,
     PLSnapshot,
+    ReductionMatrixRead,
     RefreshHealthSnapshot,
     RefreshProgressSnapshot,
     RefreshSnapshot,
@@ -183,6 +184,24 @@ class _RefreshStateMixin:
             checker_date=committed.checker_date,
             risk_checker_enabled=committed.risk_checker_enabled,
             frame=frame.copy(deep=True),
+        )
+
+    def read_reduction_matrices(self) -> ReductionMatrixRead:
+        """Return small caller-owned matrices from the committed Risk revision."""
+
+        with self._state_lock:
+            if self._snapshot is None:
+                raise RuntimeError("RiskRefreshManager has not been refreshed yet")
+            revision = self._snapshot.revision
+            matrices = {
+                key: frame.copy(deep=True)
+                for key, frame in self._reduction_matrices.items()
+            }
+            source_types = frozenset(self._reduction_matrix_source_types)
+        return ReductionMatrixRead(
+            revision=revision,
+            matrices=matrices,
+            authoritative_source_types=source_types,
         )
 
     def combine_udl_options(
@@ -701,6 +720,8 @@ class _RefreshStateMixin:
         market_frames: dict[str, pd.DataFrame],
         pl_frames: dict[str, pd.DataFrame],
         overlay_frames: dict[str, pd.DataFrame],
+        reduction_matrices: dict[tuple[str, str], pd.DataFrame],
+        reduction_matrix_source_types: set[str],
         risk_dates: dict[str, pd.Timestamp],
         market_date: pd.Timestamp,
         search_catalog: SearchCatalog,
@@ -721,6 +742,8 @@ class _RefreshStateMixin:
             self._market_frames = market_frames
             self._pl_frames = pl_frames
             self._overlay_frames = overlay_frames
+            self._reduction_matrices = reduction_matrices
+            self._reduction_matrix_source_types = reduction_matrix_source_types
             self._risk_dates = risk_dates
             self._market_date = market_date
             self._search_catalog = search_catalog

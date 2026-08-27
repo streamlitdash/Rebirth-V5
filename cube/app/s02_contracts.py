@@ -299,6 +299,20 @@ class FrameReadProtocol(Protocol):
 
 
 @runtime_checkable
+class ReductionMatrixReadProtocol(Protocol):
+    """Revision-bound matrix book used by the Reduced Tenor presentation."""
+
+    @property
+    def revision(self) -> int: ...
+
+    @property
+    def matrices(self) -> Mapping[tuple[str, str], pd.DataFrame]: ...
+
+    @property
+    def authoritative_source_types(self) -> frozenset[str]: ...
+
+
+@runtime_checkable
 class RefreshManagerProtocol(Protocol):
     """Operations the Dash layer requires from any refresh manager."""
 
@@ -312,6 +326,8 @@ class RefreshManagerProtocol(Protocol):
     def pl_snapshot(self) -> PLSnapshotProtocol: ...
 
     def read_frame(self, name: FrameName) -> FrameReadProtocol: ...
+
+    def read_reduction_matrices(self) -> ReductionMatrixReadProtocol: ...
 
     @property
     def health(self) -> RefreshHealthProtocol: ...
@@ -437,6 +453,7 @@ __all__ = [
     "FrameName",
     "FrameReadProtocol",
     "PLSnapshotProtocol",
+    "ReductionMatrixReadProtocol",
     "RefreshHealthProtocol",
     "RefreshManagerProtocol",
     "RefreshProgressProtocol",

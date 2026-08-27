@@ -368,6 +368,22 @@ def _validate_multipliers(
 
 
 @dataclass(frozen=True)
+class ProductRiskBundle:
+    """One dated adapter response containing Risk and optional tenor matrices.
+
+    The adapter receives one ``risk_date`` and is responsible for using that
+    same date for both parts of the response. Matrix names are the exact
+    ``MatrixName`` values from the reduced-tenor catalogue.
+    """
+
+    risk: pd.DataFrame
+    matrices: Mapping[str, pd.DataFrame]
+
+
+ProductRiskResult = pd.DataFrame | ProductRiskBundle
+
+
+@dataclass(frozen=True)
 class ProductConnectorAdapter:
     """Product-specific connector hooks for sources with different APIs/shapes.
 
@@ -378,8 +394,9 @@ class ProductConnectorAdapter:
     REAL CONNECTOR INTEGRATION POINT
     --------------------------------
     Construct one adapter per source type and pass the mapping to
-    ``RiskRefreshManager(connector_adapters=...)``. Every callable must return a
-    ``pandas.DataFrame``; returning ``None``, dictionaries, or lists is rejected.
+    ``RiskRefreshManager(connector_adapters=...)``. Existing Risk callables may
+    return a ``pandas.DataFrame``. A connector which supplies dated reduced-tenor
+    matrices returns ``ProductRiskBundle`` instead.
 
     ``risk(risk_date)``
         ``risk_date`` is a normalized, timezone-naive ``pandas.Timestamp``.
@@ -392,7 +409,9 @@ class ProductConnectorAdapter:
         restrict its values. ``Risk Type`` and ``Risk Greek`` may be supplied
         and are checked when present. Credit sources may also return the
         optional ``Risk/ dRisk`` measure columns listed in
-        ``CREDIT_MEASURE_COLUMNS``.
+        ``CREDIT_MEASURE_COLUMNS``. If matrices are supplied, fetch them in this
+        same call (or one bulk sub-call) with this exact ``risk_date`` and return
+        ``ProductRiskBundle(risk=..., matrices={MatrixName: DataFrame})``.
 
     ``market_open(open_date, underlying, *, market_status)``
         ``open_date`` is exactly one pandas business day before the resolved
@@ -424,7 +443,7 @@ class ProductConnectorAdapter:
     source-specific identity before anything reaches aggregation or P&L.
     """
 
-    risk: Callable[[pd.Timestamp], pd.DataFrame]
+    risk: Callable[[pd.Timestamp], ProductRiskResult]
     # Open receives T-1; Current receives the resolved Market Date. Neither
     # receives a product's potentially older readiness/forced Risk date.
     market_open: ProductMarketConnector

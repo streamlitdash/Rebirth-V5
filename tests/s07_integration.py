@@ -10,7 +10,11 @@ from time import monotonic, sleep
 import pandas as pd
 import pytest
 
-from cube.domain.s02_products import PRODUCT_SPECS, ProductConnectorAdapter
+from cube.domain.s02_products import (
+    PRODUCT_SPECS,
+    ProductConnectorAdapter,
+    ProductRiskBundle,
+)
 from cube.services.s06_refresh import (
     ConnectorCallTimeoutError,
     RiskRefreshManager,
@@ -25,6 +29,7 @@ from cube.services.s05_sources import (
     get_risk_checker,
     get_risk_thresholds,
 )
+from cube.services.s07_tenorreduction import get_reduced_tenor_catalog_source
 
 
 def _market_test_manager(
@@ -218,6 +223,82 @@ def test_refresh_uses_one_checker_date_for_checker_portfolios_and_risk_plan() ->
     )
     assert portfolio_snapshot.market_status == "OFFICIAL"
     assert len(market_status_calls) == 2
+
+
+def test_dated_risk_matrices_are_reused_then_replaced_with_their_source() -> None:
+    adapters = dict(get_product_connector_adapters())
+    original = adapters["ir/delta"]
+    risk_dates: list[pd.Timestamp] = []
+
+    def dated_ir_delta(risk_date: pd.Timestamp) -> ProductRiskBundle:
+        risk_dates.append(pd.Timestamp(risk_date))
+        result = original.risk(risk_date)
+        assert isinstance(result, ProductRiskBundle)
+        matrices = {name: frame.copy() for name, frame in result.matrices.items()}
+        matrices["IR_DELTA_STANDARD"].iloc[0, 0] = float(risk_date.day)
+        return ProductRiskBundle(risk=result.risk, matrices=matrices)
+
+    adapters["ir/delta"] = ProductConnectorAdapter(
+        risk=dated_ir_delta,
+        market_open=original.market_open,
+        market_status=original.market_status,
+        market_open_bulk=original.market_open_bulk,
+        market_status_bulk=original.market_status_bulk,
+    )
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: "OFFICIAL",
+        connector_adapters=adapters,
+        reduced_tenor_catalog=get_reduced_tenor_catalog_source(),
+        clock=lambda: datetime(2026, 8, 16, 12, tzinfo=timezone.utc),
+        trading_timezone="Europe/London",
+    )
+
+    first = manager.refresh(force_risk=True, force_pl=True)
+    first_read = manager.read_reduction_matrices()
+    first_ir = first_read.matrices[("ir/delta", "IR_DELTA_STANDARD")].copy()
+    first_fx = first_read.matrices[("fx/vega", "FX_VEGA_STANDARD")].copy()
+    assert risk_dates == [first.risk_dates["ir/delta"]]
+    assert set(first_read.matrices) == {
+        ("ir/delta", "IR_DELTA_STANDARD"),
+        ("fx/vega", "FX_VEGA_STANDARD"),
+    }
+
+    # The read is defensive, while a P&L-only refresh reuses the committed book.
+    first_read.matrices[("ir/delta", "IR_DELTA_STANDARD")].iloc[0, 0] = -1.0
+    pd.testing.assert_frame_equal(
+        manager.read_reduction_matrices().matrices[("ir/delta", "IR_DELTA_STANDARD")],
+        first_ir,
+    )
+    second = manager.refresh(force_pl=True, expected_revision=first.revision)
+    assert risk_dates == [first.risk_dates["ir/delta"]]
+    pd.testing.assert_frame_equal(
+        manager.read_reduction_matrices().matrices[("ir/delta", "IR_DELTA_STANDARD")],
+        first_ir,
+    )
+
+    new_ir_date = first.risk_dates["ir/delta"] - pd.offsets.BDay(1)
+    third = manager.refresh(
+        force_pl=True,
+        forced_dates={"ir/delta": new_ir_date},
+        expected_revision=second.revision,
+    )
+    third_read = manager.read_reduction_matrices()
+    assert third.changed_source_types == ("ir/delta",)
+    assert risk_dates == [first.risk_dates["ir/delta"], new_ir_date]
+    assert third_read.matrices[("ir/delta", "IR_DELTA_STANDARD")].iloc[0, 0] == float(
+        new_ir_date.day
+    )
+    pd.testing.assert_frame_equal(
+        third_read.matrices[("fx/vega", "FX_VEGA_STANDARD")],
+        first_fx,
+    )
+
+    portfolio = manager.refresh_portfolios(expected_revision=third.revision)
+    assert risk_dates == [first.risk_dates["ir/delta"], new_ir_date]
+    assert manager.read_reduction_matrices().revision == portfolio.revision
 
 
 def test_configured_market_calls_overlap_and_keep_underlying_result_order() -> None:

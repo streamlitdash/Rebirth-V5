@@ -25,6 +25,7 @@ from cube.domain.s02_products import (
 )
 from cube.domain.s11_tenorreduction import (
     ADDITIVE_REDUCTION_COLUMNS,
+    CREDIT_REDUCTION_SOURCE_TYPES,
     MARKET_QUOTE_COLUMNS,
     REDUCED_TENOR_SOURCE_TYPES,
     CatalogSource,
@@ -647,6 +648,9 @@ class _RiskDataCache:
         self._reduced_frames: dict[tuple[int, str | None], pd.DataFrame] = {}
         self._market_quote_revision: int | None = None
         self._market_quotes: pd.DataFrame | None = None
+        self._reduction_matrix_revision: int | None = None
+        self._reduction_matrices: Mapping[tuple[str, str], pd.DataFrame] | None = None
+        self._reduction_matrix_source_types: frozenset[str] = frozenset()
         self._filtered: OrderedDict[tuple[Any, ...], tuple[pd.DataFrame, int]] = (
             OrderedDict()
         )
@@ -696,6 +700,9 @@ class _RiskDataCache:
                 self._reduced_frames.clear()
                 self._market_quote_revision = None
                 self._market_quotes = None
+                self._reduction_matrix_revision = None
+                self._reduction_matrices = None
+                self._reduction_matrix_source_types = frozenset()
                 return prepared
 
     def clear_reconstructable(self) -> None:
@@ -796,6 +803,41 @@ class _RiskDataCache:
                 self._market_quotes = compact
                 return compact
 
+    def _reduction_matrices_for_revision(
+        self,
+        manager: RefreshManagerProtocol | None,
+        *,
+        revision: int,
+    ) -> tuple[Mapping[tuple[str, str], pd.DataFrame] | None, frozenset[str]] | None:
+        """Read the small committed matrix book once for this UI revision."""
+
+        reader = (
+            getattr(manager, "read_reduction_matrices", None)
+            if manager is not None
+            else None
+        )
+        if not callable(reader):
+            return None, frozenset()
+        with self._reducer_load_lock:
+            with self._lock:
+                if self._reduction_matrix_revision == revision:
+                    return (
+                        self._reduction_matrices,
+                        self._reduction_matrix_source_types,
+                    )
+            committed = reader()
+            if int(committed.revision) != revision:
+                return None
+            matrices = dict(committed.matrices)
+            source_types = frozenset(committed.authoritative_source_types)
+            with self._lock:
+                if self._revision != revision:
+                    return None
+                self._reduction_matrix_revision = revision
+                self._reduction_matrices = matrices
+                self._reduction_matrix_source_types = source_types
+                return matrices, source_types
+
     def _reduce_filtered(
         self,
         filtered: pd.DataFrame,
@@ -820,9 +862,28 @@ class _RiskDataCache:
             column for column in ("abs pl", "rows") if column in filtered
         ]
         reducible = filtered.drop(columns=derived_columns)
+        canonical_reducible = _to_reducer_columns(reducible)
+        matrix_book: tuple[
+            Mapping[tuple[str, str], pd.DataFrame] | None,
+            frozenset[str],
+        ] = (None, frozenset())
+        non_credit = canonical_reducible[SOURCE_TYPE].isin(
+            REDUCED_TENOR_SOURCE_TYPES - CREDIT_REDUCTION_SOURCE_TYPES
+        )
+        if non_credit.any():
+            loaded_matrix_book = self._reduction_matrices_for_revision(
+                manager,
+                revision=revision,
+            )
+            if loaded_matrix_book is None:
+                return None
+            matrix_book = loaded_matrix_book
+        committed_matrices, authoritative_source_types = matrix_book
         reduced = reducer.reduce(
-            _to_reducer_columns(reducible),
+            canonical_reducible,
             market_frame=market_quotes,
+            committed_matrices=committed_matrices,
+            authoritative_source_types=authoritative_source_types,
         )
         prepared = _from_reducer_columns(reduced)
         if "abs pl" in derived_columns:
