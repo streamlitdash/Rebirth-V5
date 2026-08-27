@@ -34,6 +34,7 @@ from cube.ui.s02_aggregation import (
     credit_measure_values,
     detail_frame,
     dimension_title,
+    filter_ir_family,
     prepare_risk_data,
     row_key,
     selected_dimension,
@@ -692,7 +693,9 @@ def test_full_tenor_mode_does_not_read_catalog_or_call_matrix_provider() -> None
     assert calls == []
 
 
-def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
+def test_reduced_tenor_book_is_built_once_then_reused_across_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prepared = prepare_risk_data(_reducible_raw_frame())
     calls: list[str] = []
     cache = _RiskDataCache(
@@ -701,6 +704,17 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
         reduced_tenor_catalog=_reduced_tenor_catalog(),
         matrix_provider=lambda name: calls.append(name) or _reduced_tenor_matrix(),
     )
+    reducer = cache._reducer()
+    assert reducer is not None
+    reduce_calls = 0
+    original_reduce = reducer.reduce
+
+    def counted_reduce(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return original_reduce(*args, **kwargs)
+
+    monkeypatch.setattr(reducer, "reduce", counted_reduce)
 
     full = cache.filtered(
         None,
@@ -731,6 +745,27 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
     assert reduced["market data status"].tolist() == ["Available", ""]
     assert "Source Type" not in reduced
     assert "source type" in reduced
+    hedge = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Hedge"]},
+        reduced_tenor=True,
+    )
+    assert hedge["portfolio"].tolist() == ["BOOK-B", "BOOK-B"]
+    assert hedge["risk"].tolist() == [5.0, 9.0]
+    excluded = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Core"]},
+        exclude_selected=True,
+        reduced_tenor=True,
+    )
+    pd.testing.assert_frame_equal(excluded, hedge)
+    assert reduce_calls == 1
     assert (
         cache.filtered(
             None,
@@ -742,9 +777,76 @@ def test_reduced_tenor_is_lazy_and_runs_after_position_filters() -> None:
         )
         is reduced
     )
+    assert (
+        cache.filtered(
+            None,
+            "IR",
+            "delta",
+            ["Risk"],
+            {"category": ["Core"]},
+        )
+        is full
+    )
 
 
-def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> None:
+def test_shared_reduced_book_matches_filter_then_reduce_with_unmapped_rows() -> None:
+    raw = _reducible_raw_frame()
+    unmapped = raw.loc[raw["Portfolio"].eq("BOOK-A")].copy()
+    unmapped["Portfolio"] = "BOOK-C"
+    unmapped["Category"] = "Satellite"
+    unmapped["Underlying"] = "UNMAPPED"
+    unmapped["Reported Underlying"] = "Unmapped Reported"
+    prepared = prepare_risk_data(pd.concat([raw, unmapped], ignore_index=True))
+    filters = {"category": ["Core"]}
+
+    # This is the former order: filter the positions, then reduce that subset.
+    reference = _RiskDataCache(
+        prepared,
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda _name: _reduced_tenor_matrix(),
+    )
+    filtered_first = apply_filters(
+        filter_ir_family(prepared, "IR", "delta"),
+        ["IR"],
+        ["Risk"],
+        filters,
+        exclude_selected=True,
+    )
+    expected = reference._reduce_filtered(
+        filtered_first,
+        None,
+        revision=7,
+        fallback=prepared,
+    )
+    assert expected is not None
+
+    # The cached order reduces once, then applies the same filter.
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda _name: _reduced_tenor_matrix(),
+    )
+    actual = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        filters,
+        exclude_selected=True,
+        reduced_tenor=True,
+    )
+
+    pd.testing.assert_frame_equal(
+        actual.reset_index(drop=True),
+        expected.reset_index(drop=True),
+    )
+
+
+def test_reduced_book_and_marketbook_are_invalidated_on_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     raw = _reducible_raw_frame()
     prepared = prepare_risk_data(raw)
     calls: list[str] = []
@@ -754,6 +856,17 @@ def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> No
         reduced_tenor_catalog=_reduced_tenor_catalog(),
         matrix_provider=lambda name: calls.append(name) or _reduced_tenor_matrix(),
     )
+    reducer = cache._reducer()
+    assert reducer is not None
+    reduce_calls = 0
+    original_reduce = reducer.reduce
+
+    def counted_reduce(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return original_reduce(*args, **kwargs)
+
+    monkeypatch.setattr(reducer, "reduce", counted_reduce)
     health = SimpleNamespace(revision=7)
     reads: list[tuple[str, int]] = []
 
@@ -795,22 +908,30 @@ def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> No
     assert book_view.loc[book_view["tenor swap"].eq("2Y"), "open"].eq(200).all()
     assert reads == [("market_frame", 7)]
     assert calls == ["IR_STANDARD"]
+    assert reduce_calls == 1
 
     cache.clear_reconstructable()
     cache.filtered(manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True)
     assert reads == [("market_frame", 7), ("market_frame", 7)]
+    assert reduce_calls == 2
 
     health.revision = 8
     cache.replace_frame(raw, revision=8)
     revised = cache.filtered(manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True)
     assert revised.loc[revised["tenor swap"].eq("2Y"), "open"].eq(300).all()
     assert reads[-1] == ("market_frame", 8)
+    assert reduce_calls == 3
 
 
 def test_automatic_credit_reduction_never_reads_catalog_and_keeps_market_quotes(
     tmp_path: Path,
 ) -> None:
-    raw = _automatic_credit_raw_frame()
+    # The committed book also contains IR. Scoping the canonical reduced book
+    # to the active Credit tab must still avoid opening the non-Credit CSV.
+    raw = pd.concat(
+        [_automatic_credit_raw_frame(), _reducible_raw_frame()],
+        ignore_index=True,
+    )
     prepared = prepare_risk_data(raw)
     calls: list[str] = []
     cache = _RiskDataCache(
@@ -853,6 +974,76 @@ def test_automatic_credit_reduction_never_reads_catalog_and_keeps_market_quotes(
     assert reduced["open"].tolist() == [200.0, 200.0]
     assert reduced["current"].tolist() == [202.0, 202.0]
     assert reduced["move"].tolist() == [2.0, 2.0]
+
+
+def test_reduced_book_does_not_cache_a_session_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _reducible_raw_frame()
+    raw[["Risk Threshold", "dRisk Threshold", "PL Threshold"]] = 1.0
+    cache = _RiskDataCache(
+        prepare_risk_data(raw),
+        revision=7,
+        reduced_tenor_catalog=_reduced_tenor_catalog(),
+        matrix_provider=lambda _name: _reduced_tenor_matrix(),
+    )
+    reducer = cache._reducer()
+    assert reducer is not None
+    reduce_calls = 0
+    original_reduce = reducer.reduce
+
+    def counted_reduce(*args, **kwargs):
+        nonlocal reduce_calls
+        reduce_calls += 1
+        return original_reduce(*args, **kwargs)
+
+    monkeypatch.setattr(reducer, "reduce", counted_reduce)
+    baseline = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {},
+        reduced_tenor=True,
+    )
+    basis = PromotionBasis.build(
+        7,
+        risk_type="IR",
+        ir_family="delta",
+        splits=["Risk"],
+        filters={field.key: [] for field in FILTER_DIMENSION_FIELDS},
+        reduced_tenor=True,
+    )
+    generation = calculate_current_view_promotion(
+        baseline,
+        basis,
+        identifier="reduced-generation",
+    )
+    generation_store = cache.publish_promotion_generation(generation)
+
+    promoted = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Core"]},
+        promotion_generation=generation_store,
+        reduced_tenor=True,
+    )
+    baseline_again = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"category": ["Hedge"]},
+        reduced_tenor=True,
+    )
+
+    assert promoted["display bucket"].eq("USD-SOFR").all()
+    assert promoted["promotion reason"].str.contains("Big Risk").all()
+    assert baseline_again["display bucket"].eq("Other").all()
+    assert baseline_again["promotion reason"].eq("").all()
+    assert reduce_calls == 1
 
 
 def test_risk_promotion_changes_only_after_explicit_generation() -> None:

@@ -82,7 +82,10 @@ Risk Type/Greek families as expandable, chevron-driven financial hierarchies;
 Credit also retains its Single/Multi presentation.
 Its action row is four columns: Split; Underlying ordering by Risk/dRisk/P&L;
 one Region/Promotion/Reduced tenor checklist; and the current promotion level
-with its recompute/reset actions. Reduced tenor is immediate and reversible.
+with its recompute/reset actions. Reduced tenor is reversible and lazy: the
+first use builds one reduced book for the active Risk Type and committed
+revision. Later Reduced requests across filters reuse it; Full mode continues
+to use the authoritative full book.
 For non-Credit catalogue matches in `data/s11_matrix.csv`, products apply the
 selected matrix after P&L. Every registered one-axis Credit product and raw
 Underlying automatically uses the shared code-defined `CREDIT_STANDARD`
@@ -93,15 +96,16 @@ position. Market quotes are never multiplied or summed: an exact
 reduced-tenor label reuses the matching full-tenor quote and otherwise remains
 blank.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
-baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
-Category, and Sub Category, with explicit include/exclude semantics. Saved
-Views is a form: selecting a named view or changing a selector edits a draft;
+baseline scope. The Risk filter row is Activity, Signoff Group, Category, and
+Sub Category, with explicit include/exclude semantics. Portfolio remains an
+internal position boundary and is still available to Stock and P&L. Saved Views
+is a form: selecting a named view or changing a selector edits a draft;
 only **Apply filters** changes Risk outputs, and **Cancel changes** restores the
 last committed selection. Stock and P&L use the same small contract while
 keeping independent page state. On the first visit to each page, Base is
 resolved from that page's authoritative data and committed once automatically;
 later draft changes still require Apply. Clear Cache invalidates data caches but
-preserves the page's committed view.
+preserves the page's committed view; the reduced book is rebuilt on its next use.
 
 Promotions are computed against thresholds at exact Risk Type + Risk Greek
 grain. The baseline generation uses Activities 1-3 and is committed with the

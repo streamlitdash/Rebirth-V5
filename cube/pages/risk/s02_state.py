@@ -60,7 +60,7 @@ RESET_GENERATION_STORE_ID = "reset-generation-store"
 CLEAR_CACHE_COMPLETE_STORE_ID = "clear-cache-complete-store"
 _UNSET = object()
 _FILTER_CACHE_MAX_ENTRIES = 32
-_FILTER_CACHE_MAX_BYTES = 96 * 1024 * 1024
+_FILTER_CACHE_MAX_BYTES = 512 * 1024 * 1024
 
 _REDUCER_CANONICAL_COLUMNS = (
     SOURCE_TYPE,
@@ -644,6 +644,7 @@ class _RiskDataCache:
         self._reduced_tenor_catalog = reduced_tenor_catalog
         self._matrix_provider = matrix_provider
         self._tenor_reducer: ReducedTenorReducer | None = None
+        self._reduced_frames: dict[tuple[int, str | None], pd.DataFrame] = {}
         self._market_quote_revision: int | None = None
         self._market_quotes: pd.DataFrame | None = None
         self._filtered: OrderedDict[tuple[Any, ...], tuple[pd.DataFrame, int]] = (
@@ -692,6 +693,7 @@ class _RiskDataCache:
                 self._filtered_bytes = 0
                 self._rendered.clear()
                 self._promotion_generations.clear()
+                self._reduced_frames.clear()
                 self._market_quote_revision = None
                 self._market_quotes = None
                 return prepared
@@ -704,6 +706,7 @@ class _RiskDataCache:
                 self._filtered_bytes = 0
                 self._rendered.clear()
                 self._promotion_generations.clear()
+                self._reduced_frames.clear()
                 self._market_quote_revision = None
                 self._market_quotes = None
 
@@ -828,6 +831,44 @@ class _RiskDataCache:
             prepared["rows"] = 1
         return prepared
 
+    def _reduced_for_scope(
+        self,
+        frame: pd.DataFrame,
+        manager: RefreshManagerProtocol | None,
+        *,
+        revision: int,
+        active_risk_type: str | None,
+    ) -> pd.DataFrame | None:
+        """Return one lazy reduced book for this revision and Risk Type."""
+
+        key = (revision, active_risk_type)
+        with self._lock:
+            cached = self._reduced_frames.get(key)
+            if cached is not None:
+                return cached
+
+        scoped = (
+            frame
+            if active_risk_type is None
+            else frame.loc[frame["risk type"].eq(active_risk_type)]
+        )
+        reduced = self._reduce_filtered(
+            scoped,
+            manager,
+            revision=revision,
+            fallback=frame,
+        )
+        if reduced is None:
+            return None
+        with self._lock:
+            if self._revision != revision:
+                return None
+            existing = self._reduced_frames.get(key)
+            if existing is not None:
+                return existing
+            self._reduced_frames[key] = reduced
+            return reduced
+
     @property
     def revision(self) -> int:
         with self._lock:
@@ -926,8 +967,18 @@ class _RiskDataCache:
                     if cached is not None:
                         self._filtered.move_to_end(key)
                         return cached[0]
+                selected_book = frame
+                if reduced_tenor:
+                    selected_book = self._reduced_for_scope(
+                        frame,
+                        manager,
+                        revision=revision,
+                        active_risk_type=active_risk_type,
+                    )
+                    if selected_book is None:
+                        continue
                 filtered = apply_filters(
-                    filter_ir_family(frame, active_risk_type, ir_family),
+                    filter_ir_family(selected_book, active_risk_type, ir_family),
                     [active_risk_type] if active_risk_type else [],
                     list(splits or ()),
                     dimension_filters,
@@ -938,16 +989,6 @@ class _RiskDataCache:
                     parsed_generation,
                     revision=revision,
                 )
-                if reduced_tenor:
-                    reduced = self._reduce_filtered(
-                        filtered,
-                        manager,
-                        revision=revision,
-                        fallback=frame,
-                    )
-                    if reduced is None:
-                        continue
-                    filtered = reduced
                 with self._lock:
                     if self._revision != revision:
                         continue
