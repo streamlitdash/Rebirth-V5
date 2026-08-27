@@ -373,17 +373,17 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
     return frame
 
 
-def get_cross_gamma_sensitivities(market_date: pd.Timestamp) -> pd.DataFrame:
+def get_cross_gamma_sensitivities(risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return validated portfolio-level XGAMMA sensitivity matrix rows."""
 
-    selected_date = _normalized_date(market_date, parameter="market_date")
+    selected_date = _normalized_date(risk_date, parameter="risk_date")
     return get_cross_gamma_matrix(selected_date)
 
 
-def get_new_trades(market_date: pd.Timestamp) -> pd.DataFrame:
+def get_new_trades(risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return the validated mixed MARKET/CASHFLOW New Trades blotter."""
 
-    selected_date = _normalized_date(market_date, parameter="market_date")
+    selected_date = _normalized_date(risk_date, parameter="risk_date")
     return get_new_position_blotter(selected_date)
 
 

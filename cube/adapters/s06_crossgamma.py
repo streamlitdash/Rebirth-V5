@@ -31,7 +31,7 @@ from cube.domain.s02_products import GROUP, PORTFOLIO, RISK_GREEK
 class CrossGammaSource(Protocol):
     """Site-owned portfolio sensitivity matrix source."""
 
-    def __call__(self, market_date: pd.Timestamp) -> pd.DataFrame: ...
+    def __call__(self, risk_date: pd.Timestamp) -> pd.DataFrame: ...
 
 
 CrossGammaLoader = Callable[[pd.Timestamp], pd.DataFrame]
@@ -39,13 +39,13 @@ CrossGammaLoader = Callable[[pd.Timestamp], pd.DataFrame]
 
 def _normalized_date(value: object) -> pd.Timestamp:
     if value is None or isinstance(value, (bool, np.bool_)):
-        raise TypeError("market_date must be a date-like value")
+        raise TypeError("risk_date must be a date-like value")
     try:
         selected = pd.Timestamp(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("market_date must be a valid scalar date") from exc
+        raise ValueError("risk_date must be a valid scalar date") from exc
     if pd.isna(selected):
-        raise ValueError("market_date must be a valid scalar date")
+        raise ValueError("risk_date must be a valid scalar date")
     if selected.tzinfo is not None:
         selected = selected.tz_localize(None)
     return selected.normalize()
@@ -57,14 +57,14 @@ def build_cross_gamma_adapter(*, sensitivities: CrossGammaSource) -> CrossGammaL
     if not callable(sensitivities):
         raise TypeError("sensitivities must be callable")
 
-    def get_cross_gamma(market_date: pd.Timestamp) -> pd.DataFrame:
-        selected_date = _normalized_date(market_date)
+    def get_cross_gamma(risk_date: pd.Timestamp) -> pd.DataFrame:
+        selected_date = _normalized_date(risk_date)
         return validate_cross_gamma_rows(sensitivities(selected_date))
 
     return get_cross_gamma
 
 
-def _temp_cross_gamma(_market_date: pd.Timestamp) -> pd.DataFrame:
+def _temp_cross_gamma(_risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return temp Credit cells exercising source release and output summation."""
 
     return pd.DataFrame(
@@ -125,10 +125,10 @@ def _temp_cross_gamma(_market_date: pd.Timestamp) -> pd.DataFrame:
 _DEFAULT_ADAPTER = build_cross_gamma_adapter(sensitivities=_temp_cross_gamma)
 
 
-def get_cross_gamma(market_date: pd.Timestamp) -> pd.DataFrame:
+def get_cross_gamma(risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return deterministic temp Credit Cross Gamma sensitivity rows."""
 
-    return _DEFAULT_ADAPTER(market_date)
+    return _DEFAULT_ADAPTER(risk_date)
 
 
 # Compatibility with the business connector spelling used in design notes.

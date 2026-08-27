@@ -53,7 +53,7 @@ NEW_POSITION_COLUMNS = NEW_TRADE_COLUMNS
 class NewPositionsSource(Protocol):
     """Personal blotter callable bound by :func:`build_new_positions_adapter`."""
 
-    def __call__(self, market_date: pd.Timestamp) -> pd.DataFrame: ...
+    def __call__(self, risk_date: pd.Timestamp) -> pd.DataFrame: ...
 
 
 NewPositionsLoader = Callable[[pd.Timestamp], pd.DataFrame]
@@ -61,13 +61,13 @@ NewPositionsLoader = Callable[[pd.Timestamp], pd.DataFrame]
 
 def _normalized_date(value: object) -> pd.Timestamp:
     if value is None or isinstance(value, (bool, np.bool_)):
-        raise TypeError("market_date must be a date-like value")
+        raise TypeError("risk_date must be a date-like value")
     try:
         date = pd.Timestamp(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("market_date must be a valid scalar date") from exc
+        raise ValueError("risk_date must be a valid scalar date") from exc
     if pd.isna(date):
-        raise ValueError("market_date must be a valid scalar date")
+        raise ValueError("risk_date must be a valid scalar date")
     if date.tzinfo is not None:
         date = date.tz_localize(None)
     return date.normalize()
@@ -394,17 +394,17 @@ def build_new_positions_adapter(
     if not callable(blotter):
         raise TypeError("blotter must be callable")
 
-    def get_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
-        selected_date = _normalized_date(market_date)
+    def get_new_positions(risk_date: pd.Timestamp) -> pd.DataFrame:
+        selected_date = _normalized_date(risk_date)
         return validate_new_positions(blotter(selected_date))
 
     return get_new_positions
 
 
-def _temp_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
+def _temp_new_positions(risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return deterministic illustrative rows; replace this source in production."""
 
-    trade_day = market_date.normalize()
+    trade_day = risk_date.normalize()
     rows = [
         {
             ROW_TYPE: MARKET,
@@ -470,10 +470,10 @@ def _temp_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
 _DEFAULT_ADAPTER = build_new_positions_adapter(blotter=_temp_new_positions)
 
 
-def get_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
+def get_new_positions(risk_date: pd.Timestamp) -> pd.DataFrame:
     """Return the validated deterministic temp new-position blotter."""
 
-    return _DEFAULT_ADAPTER(market_date)
+    return _DEFAULT_ADAPTER(risk_date)
 
 
 # Compatibility with the business connector name supplied by the user. The feed

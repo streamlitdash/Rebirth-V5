@@ -2448,6 +2448,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                 # Raw supplemental sources are loaded exactly once before
                 # MarketBook calls. Their input/target identities expand the
                 # connector scope without becoming ordinary aged Risk rows.
+                supplemental_risk_date = checker_date
                 raw_cross_gamma: pd.DataFrame | None = None
                 raw_new_trades: pd.DataFrame | None = None
                 supplemental_market_scope: dict[str, list[str]] = {}
@@ -2476,7 +2477,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     try:
                         raw_cross_gamma = self._call_connector(
                             ("supplemental", "cross_gamma"),
-                            lambda: loader(market_date),
+                            lambda: loader(supplemental_risk_date),
                             budget=connector_budget,
                         )
                     except Exception as error:
@@ -2505,7 +2506,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                     try:
                         raw_new_trades = self._call_connector(
                             ("supplemental", "new_trades"),
-                            lambda: loader(market_date),
+                            lambda: loader(supplemental_risk_date),
                             budget=connector_budget,
                         )
                     except Exception as error:
@@ -2824,7 +2825,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         )
                     )
                     if not cross_gamma.empty:
-                        cross_gamma[RISK_DATE] = market_date
+                        cross_gamma[RISK_DATE] = supplemental_risk_date
                         cross_gamma[MARKET_DATE] = market_date
                     next_overlay_frames["xgamma"] = cross_gamma
 
@@ -2845,7 +2846,7 @@ class RiskRefreshManager(_RefreshStateMixin):
                         )
                     )
                     if not new_trades.empty:
-                        new_trades[RISK_DATE] = market_date
+                        new_trades[RISK_DATE] = supplemental_risk_date
                         new_trades[MARKET_DATE] = market_date
                     next_overlay_frames["new_trades"] = new_trades
 

@@ -13,6 +13,7 @@ from cube.domain.s02_products import (
     DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE,
     DIRECT_PL_RISK_PAIRS,
     DRISK_THRESHOLD,
+    MARKET_DATE as MARKET_DATE_COLUMN,
     MARKET_MOVE,
     NEW_POSITION_CASH_FLOW_CLASSIFICATION,
     OFFICIAL,
@@ -21,6 +22,7 @@ from cube.domain.s02_products import (
     PL_THRESHOLD,
     RELEASE_RISK_PAIRS,
     RISK,
+    RISK_DATE,
     RISK_THRESHOLD,
     SOURCE_TYPE,
     SPLIT,
@@ -84,23 +86,44 @@ def test_cashflow_identity_authority_remains_product_spec_backed() -> None:
 
 
 def test_manager_releases_raw_supplemental_rows_and_positive_thresholds() -> None:
+    cross_gamma_dates: list[pd.Timestamp] = []
+    new_trade_dates: list[pd.Timestamp] = []
+
+    def cross_gamma(risk_date: pd.Timestamp) -> pd.DataFrame:
+        cross_gamma_dates.append(pd.Timestamp(risk_date))
+        return get_cross_gamma_sensitivities(risk_date)
+
+    def new_trades(risk_date: pd.Timestamp) -> pd.DataFrame:
+        new_trade_dates.append(pd.Timestamp(risk_date))
+        return get_new_trades(risk_date)
+
     manager = RiskRefreshManager(
         get_portfolio_config,
         thresholds=get_risk_thresholds,
         reported_underlyings=get_reported_underlyings,
         risk_checker_loader=get_risk_checker,
         market_status_resolver=lambda _date: OFFICIAL,
-        cross_gamma_matrix_loader=get_cross_gamma_sensitivities,
-        new_trades_loader=get_new_trades,
+        cross_gamma_matrix_loader=cross_gamma,
+        new_trades_loader=new_trades,
         connector_adapters=get_product_connector_adapters(),
         clock=lambda: datetime(2026, 7, 20, 12, tzinfo=timezone.utc),
     )
 
     snapshot = manager.refresh(force_risk=True, force_pl=True)
 
+    expected_risk_date = pd.Timestamp("2026-07-17")
     assert snapshot.errors == ()
+    assert snapshot.market_date == MARKET_DATE
+    assert snapshot.checker_date == expected_risk_date
+    assert cross_gamma_dates == [expected_risk_date]
+    assert new_trade_dates == [expected_risk_date]
     assert snapshot.dashboard_frame[SPLIT].eq(XGAMMA_SPLIT).any()
     assert snapshot.dashboard_frame[SPLIT].eq(NEW_TRADES_SPLIT).any()
+    for split in (XGAMMA_SPLIT, NEW_TRADES_SPLIT):
+        overlay = snapshot.combined_pl.loc[snapshot.combined_pl[SPLIT].eq(split)]
+        assert not overlay.empty
+        assert overlay[RISK_DATE].eq(expected_risk_date).all()
+        assert overlay[MARKET_DATE_COLUMN].eq(MARKET_DATE).all()
     cashflow = snapshot.dashboard_frame.loc[
         snapshot.dashboard_frame[SOURCE_TYPE].eq("new-position/cash-flow")
     ]
