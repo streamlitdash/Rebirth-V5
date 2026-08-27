@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from dash import html
 
+from cube.pages.risk.s02_state import _jtd_underlying_for_context
 from cube.pages.risk.s13_workspacetables import build_jtd_reference_table
 from cube.services.s08_jtd import JTDReferenceError, jtd_reference_rows
 
@@ -77,3 +78,24 @@ def test_jtd_table_is_flat_and_uses_the_detail_table_style() -> None:
     assert "detail-table" in table.className
     assert headers == ["Underlying", "Sector", "Comment"]
     assert cells == ["ACME", "Industrials", "Watch"]
+
+
+def test_jtd_identity_accepts_a_promoted_issuer_row() -> None:
+    assert _jtd_underlying_for_context({"display bucket": "ACME"}) == "ACME"
+    assert _jtd_underlying_for_context({"display bucket": "Other"}) is None
+    assert (
+        _jtd_underlying_for_context(
+            {"display bucket": "PROMOTED", "reported underlying": "REPORTED"}
+        )
+        == "REPORTED"
+    )
+    assert (
+        _jtd_underlying_for_context(
+            {
+                "display bucket": "PROMOTED",
+                "reported underlying": "REPORTED",
+                "underlying": "RAW",
+            }
+        )
+        == "RAW"
+    )

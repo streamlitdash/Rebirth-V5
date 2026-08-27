@@ -16,7 +16,6 @@ from cube.ui.s02_aggregation import (
     filter_ir_family,
     ordered_unique,
     parse_row_key,
-    row_key,
     selected_underlying_sort_metric,
 )
 from cube.ui.s01_constants import (
@@ -47,6 +46,7 @@ from .s11_promotion import PROMOTION_GENERATION_STORE_ID
 from .s02_state import (
     CLEAR_CACHE_COMPLETE_STORE_ID,
     _is_current_risk_action,
+    _jtd_underlying_for_context,
     _new_trade_detail_requested,
     _new_trade_details_for_selection,
     _RiskDataCache,
@@ -59,7 +59,6 @@ from .s06_explorertables import (
     build_credit_multi_table,
     build_risk_table,
 )
-from .s13_workspacetables import NEW_TRADE_SPLIT
 from .s16_view import build_unmapped_books_table
 
 
@@ -482,28 +481,17 @@ def register_explorer_callbacks(
         ):
             filtered = apply_credit_measure(filtered, credit_measure)
 
-        filtered_splits = (
-            set(filtered["split"].dropna().astype(str))
-            if "split" in filtered
-            else set()
-        )
         new_trades_selected = _new_trade_detail_requested(
-            selected_context, splits
-        ) or filtered_splits == {NEW_TRADE_SPLIT}
-        detail_selection = selection
-        if new_trades_selected and "split" not in selected_context:
-            detail_selection = dict(selection)
-            detail_selection["key"] = row_key(
-                {**selected_context, "split": NEW_TRADE_SPLIT}
-            )
+            filtered,
+            selected_context,
+        )
 
         new_trade_details = None
         if new_trades_selected:
             combined = refresh_manager.read_frame("combined_pl").frame
-            detail_context = parse_row_key(detail_selection.get("key"))
             new_trade_details = _new_trade_details_for_selection(
                 combined,
-                detail_context,
+                selected_context,
                 detail_risk_type,
                 ir_family,
                 splits,
@@ -524,9 +512,7 @@ def register_explorer_callbacks(
             and table_view != "alt"
             and effective_credit_measure == "JTD"
         ):
-            jtd_underlying = selected_context.get("underlying") or selected_context.get(
-                "reported underlying"
-            )
+            jtd_underlying = _jtd_underlying_for_context(selected_context)
             if jtd_underlying:
                 try:
                     jtd_reference = jtd_reference_rows(jtd_underlying)
@@ -539,7 +525,7 @@ def register_explorer_callbacks(
                 jtd_error = "Select an Underlying row to show its JTD reference."
         return build_detail_panel_with_state(
             filtered,
-            detail_selection,
+            selection,
             compose_detail_metric(plot_measure, plot_component),
             tenor_view,
             new_trade_details=new_trade_details,

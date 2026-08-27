@@ -329,15 +329,59 @@ def test_production_manager_publishes_new_trades_and_combined_trace_rows() -> No
     )
     assert named_details[TRADE_ID].tolist() == [OPEN_CREDIT_ID]
 
-
-def test_detail_is_requested_from_row_path_or_exact_new_trades_filter() -> None:
-    assert _new_trade_detail_requested({"split": NEW_TRADES_SPLIT}, None)
-    assert _new_trade_detail_requested(
-        {"risk greek": "Delta", "display bucket": "CDX IG"},
+    cashflow_details = _new_trade_details_for_selection(
+        refreshed.combined_pl,
+        {"risk greek": "New", "display bucket": "Cash Flow"},
+        "Cash Flow",
+        None,
         [NEW_TRADES_SPLIT],
+        {},
+    )
+    assert cashflow_details[TRADE_ID].tolist() == [CASHFLOW_ID]
+    displayed_cashflow = new_trade_detail_frame(
+        cashflow_details,
+        {"risk greek": "New", "display bucket": "Cash Flow"},
+    )
+    assert displayed_cashflow.columns.tolist() == [
+        "trade id",
+        "row type",
+        "underlying",
+        "risk",
+        "notional",
+        "traded level",
+        "portfolio",
+        "trader code",
+        "trader name",
+        "trade time",
+    ]
+    assert displayed_cashflow.loc[0, "row type"] == CASHFLOW
+    assert displayed_cashflow.loc[0, "underlying"] == "Cash Flow"
+    assert displayed_cashflow.loc[0, "risk"] == 50_000.0
+    assert displayed_cashflow.loc[0, "portfolio"] == "TEMP_REPLACE_ME - BOOK_A"
+
+
+def test_detail_is_requested_for_any_selected_ancestor_with_new_trades() -> None:
+    filtered = pd.DataFrame(
+        {
+            "risk greek": ["Delta", "Delta", "Delta", "Vega"],
+            "reported underlying": ["CDX IG", "CDX IG", "Other", "CDX IG"],
+            "split": ["Risk", NEW_TRADES_SPLIT, "Risk", "Risk"],
+        }
+    )
+
+    assert _new_trade_detail_requested(filtered, {})
+    assert _new_trade_detail_requested(filtered, {"risk greek": "Delta"})
+    assert _new_trade_detail_requested(
+        filtered,
+        {"risk greek": "Delta", "reported underlying": "CDX IG"},
     )
     assert not _new_trade_detail_requested(
-        {"risk greek": "Delta"},
-        ["Risk", NEW_TRADES_SPLIT],
+        filtered,
+        {"risk greek": "Delta", "reported underlying": "Other"},
     )
-    assert not _new_trade_detail_requested({"split": "Risk"}, [NEW_TRADES_SPLIT])
+    assert not _new_trade_detail_requested(filtered, {"risk greek": "Vega"})
+    assert not _new_trade_detail_requested(filtered, {"split": "Risk"})
+    assert not _new_trade_detail_requested(
+        filtered.loc[filtered["split"].eq("Risk")],
+        {},
+    )

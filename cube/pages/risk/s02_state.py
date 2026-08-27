@@ -111,15 +111,29 @@ def _from_reducer_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _new_trade_detail_requested(
+    filtered: pd.DataFrame,
     selected_context: Mapping[str, str],
-    splits: Sequence[str] | None,
 ) -> bool:
-    """Recognize New Trades from either the row path or its exact page filter."""
+    """Whether the selected hierarchy scope contains any New Trades rows."""
 
-    selected_split = selected_context.get("split")
-    return selected_split == NEW_TRADE_SPLIT or (
-        selected_split is None and tuple(splits or ()) == (NEW_TRADE_SPLIT,)
+    scoped = frame_for_context(filtered, dict(selected_context))
+    return bool("split" in scoped and scoped["split"].eq(NEW_TRADE_SPLIT).any())
+
+
+def _jtd_underlying_for_context(
+    selected_context: Mapping[str, str],
+) -> str | None:
+    """Resolve the clicked raw, reported, or promoted issuer identity."""
+
+    underlying = selected_context.get("underlying") or selected_context.get(
+        "reported underlying"
     )
+    if underlying:
+        return str(underlying)
+    promoted = selected_context.get("display bucket")
+    if promoted and promoted != "Other":
+        return str(promoted)
+    return None
 
 
 def _new_trade_details_for_selection(

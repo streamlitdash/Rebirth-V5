@@ -651,6 +651,8 @@ def test_new_trade_detail_table_filters_selected_context_and_is_empty_safe() -> 
     details = pd.DataFrame(
         {
             "Trade ID": ["TRADE-001", "TRADE-002"],
+            "Row Type": ["MARKET", "MARKET"],
+            "Underlying": ["ACME", "BETA"],
             "Risk": [10_000.0, -25_000.0],
             "Notional": [1_000_000.0, 2_500_000.0],
             "Traded Level": [101.5, 127.25],
@@ -674,25 +676,37 @@ def test_new_trade_detail_table_filters_selected_context_and_is_empty_safe() -> 
 
     assert component is not None
     assert _table_headers(component) == [
-        "Trade ID",
+        "TradeID",
+        "TypeTrade",
+        "Underlying",
         "Risk",
-        "Notional Traded",
-        "Traded Spread / Level",
-        "Trade Time",
-        "Trader Code",
-        "Trader Name",
+        "NotionalTraded",
+        "TradedSpread",
+        "Portfolio",
+        "TraderCode",
+        "TraderName",
+        "TradeTime",
     ]
     assert _table_row_values(component) == [
         [
             "TRADE-002",
+            "MARKET",
+            "BETA",
             "-25,000",
             "2,500,000",
             "127.25",
-            "2026-08-16 09:45:00",
+            "BOOK_B",
             "BB2",
             "Blair Beta",
+            "2026-08-16 09:45:00",
         ]
     ]
+    parent_component = build_new_trade_detail_table(
+        details,
+        {"risk type": "Credit", "portfolio": "BOOK_B"},
+    )
+    assert parent_component is not None
+    assert _table_row_values(parent_component) == _table_row_values(component)
     assert (
         build_new_trade_detail_table(
             details,
@@ -707,40 +721,94 @@ def test_new_trade_detail_table_filters_selected_context_and_is_empty_safe() -> 
         for item in _walk(empty)
         if isinstance(item, html.Td) and item.children == "No matching new trades"
     )
-    assert empty_cell.colSpan == 7
+    assert empty_cell.colSpan == 10
 
     without_notional = build_new_trade_detail_table(
         details.drop(columns="Notional"),
         context,
     )
-    assert _table_row_values(without_notional)[0][2] == ""
+    assert _table_row_values(without_notional)[0][4] == ""
+
+
+def test_cash_flow_detail_uses_the_same_trade_table_columns() -> None:
+    details = pd.DataFrame(
+        {
+            "Trade ID": ["CASHFLOW-001"],
+            "Row Type": ["CASHFLOW"],
+            "Underlying": ["Cash Flow"],
+            "Risk": [50_000.0],
+            "Notional": [pd.NA],
+            "Traded Level": [pd.NA],
+            "Portfolio": ["BOOK_A"],
+            "Trader Code": [""],
+            "Trader Name": [""],
+            "Trade Time": [pd.NaT],
+            "Risk Type": ["Cash Flow"],
+        }
+    )
+
+    component = build_new_trade_detail_table(
+        details,
+        {"risk type": "Cash Flow"},
+    )
+
+    assert component is not None
+    assert _table_headers(component) == [
+        "TradeID",
+        "TypeTrade",
+        "Underlying",
+        "Risk",
+        "NotionalTraded",
+        "TradedSpread",
+        "Portfolio",
+        "TraderCode",
+        "TraderName",
+        "TradeTime",
+    ]
+    assert _table_row_values(component) == [
+        [
+            "CASHFLOW-001",
+            "CASHFLOW",
+            "Cash Flow",
+            "50,000",
+            "",
+            "—",
+            "BOOK_A",
+            "—",
+            "—",
+            "—",
+        ]
+    ]
 
 
 def test_new_trade_table_sits_above_existing_tenor_detail() -> None:
     risk = pd.DataFrame(
         {
-            "risk type": ["Credit"],
-            "risk greek": ["Delta"],
-            "source type": ["credit/delta"],
-            "underlying": ["ACME"],
-            "tenor swap": ["5Y"],
-            "tenor swap order": [1],
-            "tenor option": ["N/A"],
-            "tenor option order": [0],
-            "split": ["New Trades"],
-            "open": [100.0],
-            "current": [101.0],
-            "move": [1.0],
-            "risk": [25_000.0],
-            "risk expo": [25_000.0],
-            "risk hedges": [0.0],
+            "risk type": ["Credit", "Credit"],
+            "risk greek": ["Delta", "Delta"],
+            "source type": ["credit/delta", "credit/delta"],
+            "underlying": ["ACME", "ACME"],
+            "tenor swap": ["3Y", "5Y"],
+            "tenor swap order": [0, 1],
+            "tenor option": ["N/A", "N/A"],
+            "tenor option order": [0, 0],
+            "split": ["Risk", "New Trades"],
+            "open": [100.0, 100.0],
+            "current": [101.0, 101.0],
+            "move": [1.0, 1.0],
+            "risk": [10_000.0, 25_000.0],
+            "risk expo": [10_000.0, 25_000.0],
+            "risk hedges": [0.0, 0.0],
         }
     )
     details = pd.DataFrame(
         {
             "Trade ID": ["TRADE-001"],
+            "Row Type": ["MARKET"],
+            "Underlying": ["ACME"],
             "Risk": [25_000.0],
             "Traded Level": [99.75],
+            "Portfolio": ["BOOK_A"],
             "Trade Time": ["2026-08-16 09:30:00"],
             "Trader Code": ["AA1"],
             "Trader Name": ["Alex Alpha"],
@@ -750,7 +818,7 @@ def test_new_trade_table_sits_above_existing_tenor_detail() -> None:
     panel, _options, _view = build_detail_panel_with_state(
         risk,
         {
-            "key": row_key({"split": "New Trades"}),
+            "key": row_key({"risk greek": "Delta"}),
             "metric": "risk",
         },
         "risk",
@@ -760,6 +828,7 @@ def test_new_trade_table_sits_above_existing_tenor_detail() -> None:
     assert panel.children[1].className == "detail-chart-card"
     assert panel.children[1].children[0].children == "New trades"
     assert panel.children[2].className == "detail-grid"
+    assert panel.children[0].children[1].children.startswith("2 source rows")
 
 
 def test_market_surface_and_table_follow_both_connector_rank_axes() -> None:

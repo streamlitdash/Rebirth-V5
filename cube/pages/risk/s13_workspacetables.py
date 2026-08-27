@@ -32,21 +32,27 @@ from .s06_explorertables import build_tree_rows, metric_class
 NEW_TRADE_SPLIT = NEW_TRADES_SPLIT
 NEW_TRADE_DETAIL_COLUMNS = (
     "trade id",
+    "row type",
+    "underlying",
     "risk",
     "notional",
     "traded level",
-    "trade time",
+    "portfolio",
     "trader code",
     "trader name",
+    "trade time",
 )
 NEW_TRADE_DETAIL_LABELS = {
-    "trade id": "Trade ID",
+    "trade id": "TradeID",
+    "row type": "TypeTrade",
+    "underlying": "Underlying",
     "risk": "Risk",
-    "notional": "Notional Traded",
-    "traded level": "Traded Spread / Level",
-    "trade time": "Trade Time",
-    "trader code": "Trader Code",
-    "trader name": "Trader Name",
+    "notional": "NotionalTraded",
+    "traded level": "TradedSpread",
+    "portfolio": "Portfolio",
+    "trader code": "TraderCode",
+    "trader name": "TraderName",
+    "trade time": "TradeTime",
 }
 TOP_PROMOTION_SIGNALS = {
     "vol-score": "Vol Score",
@@ -510,8 +516,16 @@ def _normalize_new_trade_detail_columns(frame: pd.DataFrame) -> pd.DataFrame:
             for field in PORTFOLIO_FIELDS
         },
         "portfolio": "portfolio",
+        "tradeid": "trade id",
+        "typetrade": "row type",
+        "type trade": "row type",
+        "notionaltraded": "notional",
         "notional traded": "notional",
+        "tradedspread": "traded level",
         "traded spread": "traded level",
+        "tradercode": "trader code",
+        "tradername": "trader name",
+        "tradetime": "trade time",
     }
     normalized = frame.copy()
     normalized.columns = [
@@ -541,7 +555,7 @@ def new_trade_detail_frame(
     *,
     split: str = NEW_TRADE_SPLIT,
 ) -> pd.DataFrame:
-    """Return display columns for the selected New Trades hierarchy cell.
+    """Return New Trades display rows for the selected hierarchy scope.
 
     Every selected-context column carried by the detail frame is applied as an
     exact identity filter.  The manager should therefore enrich this frame
@@ -552,7 +566,8 @@ def new_trade_detail_frame(
     if not isinstance(context, Mapping):
         raise TypeError("context must be a mapping")
     normalized = _normalize_new_trade_detail_columns(frame)
-    if str(context.get("split", "")) != split:
+    selected_split = str(context.get("split", ""))
+    if selected_split and selected_split != split:
         return normalized.iloc[0:0].loc[:, list(NEW_TRADE_DETAIL_COLUMNS)]
 
     scoped = normalized
@@ -648,9 +663,10 @@ def build_new_trade_detail_table(
     *,
     split: str = NEW_TRADE_SPLIT,
 ) -> html.Div | None:
-    """Build the descriptive trade table for an explicit New Trades cell."""
+    """Build the descriptive trade table for a scope containing New Trades."""
 
-    if str(context.get("split", "")) != split:
+    selected_split = str(context.get("split", ""))
+    if selected_split and selected_split != split:
         return None
     scoped = new_trade_detail_frame(frame, context, split=split)
     header = html.Thead(
@@ -678,6 +694,8 @@ def build_new_trade_detail_table(
                 html.Tr(
                     [
                         html.Td(_format_new_trade_text(record["trade id"])),
+                        html.Td(_format_new_trade_text(record["row type"])),
+                        html.Td(_format_new_trade_text(record["underlying"])),
                         html.Td(
                             _format_new_trade_number(record["risk"], decimals=1),
                             className="detail-number",
@@ -694,9 +712,10 @@ def build_new_trade_detail_table(
                             ),
                             className="detail-number",
                         ),
-                        html.Td(_format_new_trade_text(record["trade time"])),
+                        html.Td(_format_new_trade_text(record["portfolio"])),
                         html.Td(_format_new_trade_text(record["trader code"])),
                         html.Td(_format_new_trade_text(record["trader name"])),
+                        html.Td(_format_new_trade_text(record["trade time"])),
                     ]
                 )
             )
