@@ -83,14 +83,15 @@ Credit also retains its Single/Multi presentation.
 Its action row is four columns: Split; Underlying ordering by Risk/dRisk/P&L;
 one Region/Promotion/Reduced tenor checklist; and the current promotion level
 with its recompute/reset actions. Reduced tenor is immediate and reversible.
-For catalogue matches in `data/s11_matrix.csv`, non-Credit products apply the
-selected matrix after P&L. Credit instead applies an ordered Full Tenor to
-Reduced Tenor mapping and directly sums Risk, dRisk, P&L, breakdowns, and
-Credit measures within each existing position. Unmatched identities pass
-through unchanged. A common 15-to-5 Credit definition can be shared by every
-configured Credit Underlying. Market quotes are never multiplied or summed: an
-exact reduced-tenor label reuses the matching full-tenor quote and otherwise
-remains blank.
+For non-Credit catalogue matches in `data/s11_matrix.csv`, products apply the
+selected matrix after P&L. Every registered one-axis Credit product and raw
+Underlying automatically uses the shared code-defined `CREDIT_STANDARD`
+Full-Tenor-to-Reduced-Tenor mapping. A Credit-only request does not read the
+catalogue; it is loaded lazily only for non-Credit reduction. Risk,
+dRisk, P&L, breakdowns, and Credit measures are summed within each existing
+position. Market quotes are never multiplied or summed: an exact
+reduced-tenor label reuses the matching full-tenor quote and otherwise remains
+blank.
 The default governed view is Activity, with Activities 1, 2, and 3 as the
 baseline scope. The shared filter row is Activity, Signoff Group, Portfolio,
 Category, and Sub Category, with explicit include/exclude semantics. Saved
@@ -318,7 +319,7 @@ The checked-in files document the live connector boundaries:
 | `s07_thresholds.csv` | unique Risk Type + Risk Greek with positive P&L, Risk, and dRisk thresholds |
 | `s08_concerto.csv` | unique Risk Type + Risk Greek to ConcertoField |
 | `s09_reported.csv` | unique Risk Type + Risk Greek + Underlying to Reported Underlying |
-| `s11_matrix.csv` | unique Risk Type + Risk Greek + Underlying to a named reduced-tenor matrix, or Credit tenor mapping |
+| `s11_matrix.csv` | unique non-Credit Risk Type + Risk Greek + Underlying to a named reduced-tenor matrix; Credit uses the shared code mapping |
 
 The Stock connector returns exactly `CRDS, CPTY, Portfolio, Instrument,
 Currency, Quantity, Market Value`. Colossus history returns exactly `Portfolio,

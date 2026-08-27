@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from cube.domain.s11_tenorreduction import CREDIT_TENOR_MAPPING_COLUMNS
+from cube.domain.s11_tenorreduction import (
+    CREDIT_STANDARD_MAPPING_NAME,
+    CREDIT_TENOR_MAPPING_COLUMNS,
+)
 
 
 DATA_DIRECTORY = Path(__file__).resolve().parents[2] / "data"
@@ -60,7 +63,7 @@ _TEMP_REDUCTION_MATRICES = {
 # Fixture example only. A real deployment replaces these exact labels with its
 # common 15-full-tenor to 5-reduced-tenor Credit definition.
 _TEMP_CREDIT_TENOR_MAPPINGS = {
-    "CREDIT_STANDARD": _tenor_mapping(
+    CREDIT_STANDARD_MAPPING_NAME: _tenor_mapping(
         [
             ("1Y", "1Y"),
             ("3Y", "3Y"),

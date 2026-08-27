@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from cube.domain import s11_tenorreduction as reduction_module
 from cube.domain.s11_tenorreduction import (
     CREDIT_FULL_TENOR,
     CREDIT_REDUCED_TENOR,
+    CREDIT_STANDARD_MAPPING_NAME,
     CREDIT_TENOR_MAPPING_COLUMNS,
     MATRIX_NAME,
     REDUCED_TENOR_CATALOG_COLUMNS,
@@ -59,6 +61,10 @@ def _credit_catalog() -> pd.DataFrame:
         ],
         columns=REDUCED_TENOR_CATALOG_COLUMNS,
     )
+
+
+def _empty_catalog() -> pd.DataFrame:
+    return pd.DataFrame(columns=REDUCED_TENOR_CATALOG_COLUMNS)
 
 
 def _credit_mapping() -> pd.DataFrame:
@@ -285,6 +291,54 @@ def test_credit_reducer_maps_and_sums_post_pl_measures_by_position() -> None:
     assert by_position.loc[("P1", "5Y"), "Move"] == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize(
+    ("source_type", "risk_greek"),
+    (("credit/delta", "Delta"), ("credit/vega", "Vega")),
+)
+def test_every_credit_source_and_underlying_uses_one_mapping_without_catalog_rows(
+    source_type: str,
+    risk_greek: str,
+) -> None:
+    calls: list[str] = []
+    frames = []
+    markets = []
+    for underlying in ("RAW CREDIT A", "RAW CREDIT B"):
+        frames.append(
+            _credit_frame().assign(
+                **{
+                    "Source Type": source_type,
+                    "Risk Greek": risk_greek,
+                    "Underlying": underlying,
+                }
+            )
+        )
+        markets.append(
+            _credit_market_frame().assign(
+                **{
+                    "Source Type": source_type,
+                    "Underlying": underlying,
+                }
+            )
+        )
+
+    reduced = ReducedTenorReducer(
+        _empty_catalog(),
+        lambda name: calls.append(name) or _credit_mapping(),
+    ).reduce(
+        pd.concat(frames, ignore_index=True),
+        market_frame=pd.concat(markets, ignore_index=True),
+    )
+
+    assert calls == [CREDIT_STANDARD_MAPPING_NAME]
+    assert len(reduced) == 8
+    for underlying in ("RAW CREDIT A", "RAW CREDIT B"):
+        selected = reduced.loc[reduced["Underlying"].eq(underlying)]
+        assert selected["Tenor Swap"].tolist() == ["3Y", "5Y", "3Y", "5Y"]
+        by_position = selected.set_index(["Portfolio", "Tenor Swap"])
+        assert by_position.loc[("P1", "5Y"), "Risk"] == pytest.approx(50.0)
+        assert by_position.loc[("P2", "5Y"), "Risk"] == pytest.approx(11.0)
+
+
 def test_credit_common_fifteen_tenors_collapse_to_five_summed_tenors() -> None:
     full_tenors = [f"FULL_{number:02d}" for number in range(1, 16)]
     reduced_tenors = [
@@ -326,12 +380,19 @@ def test_credit_common_fifteen_tenors_collapse_to_five_summed_tenors() -> None:
     assert reduced["PL"].tolist() == [60.0, 150.0, 240.0, 330.0, 420.0]
 
 
-def test_incomplete_credit_mapping_keeps_the_full_tenor_batch() -> None:
+def test_incomplete_credit_mapping_keeps_the_full_tenor_batch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     incomplete = _credit_mapping().loc[lambda frame: frame[CREDIT_FULL_TENOR].ne("5Y")]
     frame = _credit_frame()
-    result = ReducedTenorReducer(_credit_catalog(), lambda _: incomplete).reduce(frame)
+    with caplog.at_level(logging.WARNING):
+        result = ReducedTenorReducer(_empty_catalog(), lambda _: incomplete).reduce(
+            frame
+        )
 
     pd.testing.assert_frame_equal(result, frame)
+    assert "does not cover" in caplog.text
+    assert "5Y" in caplog.text
 
 
 def test_credit_target_without_an_exact_market_quote_stays_blank() -> None:
@@ -508,3 +569,4 @@ def test_seed_catalog_has_only_the_governed_four_column_contract() -> None:
     seed = load_reduced_tenor_catalog(PROJECT / "data" / "s11_matrix.csv")
     assert tuple(seed.columns) == REDUCED_TENOR_CATALOG_COLUMNS
     assert not seed.empty
+    assert not seed["Risk Type"].eq("Credit").any()

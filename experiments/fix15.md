@@ -513,22 +513,15 @@ Expo/Hedges breakdowns, and present Credit measures such as SP01 or JTD. It is
 performed within each existing position identity, so Portfolios, Groups,
 Splits, and reporting dimensions are not combined with each other.
 
-### Step 1 — select the mapping in `data/s11_matrix.csv`
+### Step 1 — no Credit catalogue rows
 
-Keep the existing four-column contract. Add one row for each exact raw Credit
-Underlying which should be reducible:
+Credit does not use `data/s11_matrix.csv`. Every registered one-axis Credit
+source and raw Underlying automatically selects the shared
+`CREDIT_STANDARD` mapping. Keep `s11_matrix.csv` only for non-Credit IR/FX
+matrix selection. A Credit-only request does not open that file; the catalogue
+is loaded lazily only when a non-Credit reduced-tenor batch needs it.
 
-```csv
-Risk Type,Risk Greek,Underlying,MatrixName
-Credit,Delta,CDX IG,CREDIT_STANDARD
-```
-
-`Underlying` must be the raw connector value, not Reported Underlying. Several
-Underlyings may share the same mapping name. The legacy column remains named
-`MatrixName` to avoid a schema and UI migration; for Credit it selects a tenor
-mapping rather than a numeric matrix.
-
-### Step 2 — supply the ordered mapping
+### Step 2 — supply the one shared ordered mapping
 
 The temporary integration point is
 `cube/services/s07_tenorreduction.py::_TEMP_CREDIT_TENOR_MAPPINGS`:
@@ -545,8 +538,9 @@ _TEMP_CREDIT_TENOR_MAPPINGS = {
 }
 ```
 
-For the real common 15-to-5 structure, use one shared mapping name for all
-Credit catalogue rows and provide 15 pairs with only five distinct targets.
+For the real common 15-to-5 structure, provide 15 pairs with only five
+distinct targets. This one definition applies to Credit Delta, Credit Vega,
+every raw Credit Underlying, and future registered one-axis Credit products.
 This is a structural example—replace every placeholder with the exact labels
 returned by the connector:
 
@@ -590,8 +584,8 @@ the connector's exact labels and exactly these columns, in this order:
 Full Tenor, Reduced Tenor
 ```
 
-Every full tenor actually present for a configured Underlying must have one
-mapping row. Full tenors are unique; repeated reduced tenors are intentional.
+Every full tenor actually present in Credit must have one mapping row. Full
+tenors are unique; repeated reduced tenors are intentional.
 The first occurrence of each reduced tenor controls its display order. Labels
 are exact after surrounding whitespace is stripped—there is no tenor parsing
 or guessed ordering.
@@ -602,7 +596,8 @@ or guessed ordering.
 the authoritative Credit ProductSpec:
 
 ```text
-Credit catalogue match
+Registered one-axis Credit source
+  -> automatically select CREDIT_STANDARD
   -> load and validate the two-column mapping once
   -> map each full Tenor Swap to its reduced label
   -> sum additive post-P&L columns per existing position and reduced tenor
@@ -616,11 +611,9 @@ actual full tenor, the complete Credit batch remains at full tenor and a
 warning is logged. Non-Credit IR/FX matrix behavior is unchanged.
 
 Mappings are loaded lazily on the first Reduced tenor request and cached for
-the process lifetime. Restart the app after editing a mapping definition.
-The temporary Credit Vega rows are not configured because that fixture uses a
-different month-tenor shape. In the real feed, if every Credit Greek has the
-same 15 full labels, point each exact Credit catalogue row to the same
-`CREDIT_STANDARD` mapping.
+the process lifetime. Restart the app after editing a mapping definition. The
+temporary Credit Vega fixture uses a different month-tenor shape, so it safely
+stays full-tenor until the fixture itself is aligned with the shared mapping.
 
 ---
 
@@ -879,8 +872,8 @@ because the P&L page is also a governed send boundary.
 
 ### Credit reduced tenor
 
-1. Configure one exact Credit Delta Underlying in `data/s11_matrix.csv`.
-2. Supply `3Y -> 3Y`, `4Y -> 5Y`, and `5Y -> 5Y` in its named mapping.
+1. Confirm `data/s11_matrix.csv` contains no Credit rows.
+2. Supply `3Y -> 3Y`, `4Y -> 5Y`, and `5Y -> 5Y` in `CREDIT_STANDARD`.
 3. Restart the app and open the full-tenor view; confirm all original rows are
    unchanged.
 4. Select **Reduced tenor**; confirm 3Y remains separate and 4Y plus 5Y become
@@ -917,8 +910,8 @@ For a data-only rollback:
 
 - leave `data/s12_pinned.csv` header-only to disable pins;
 - leave `data/s13_jtd.csv` header-only to return “No JTD reference rows”;
-- remove the Credit rows from `data/s11_matrix.csv` to disable only Credit
-  reduced tenor without changing the full-tenor view;
+- remove or disable `CREDIT_STANDARD` in the provider to disable only Credit
+  reduced tenor without changing the authoritative full-tenor data;
 - no restart is required for an `s13_jtd.csv` edit once its file modification
   time/size changes, while `s12_pinned.csv` is picked up on the next governed
   refresh.

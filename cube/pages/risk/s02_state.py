@@ -26,6 +26,7 @@ from cube.domain.s02_products import (
 from cube.domain.s11_tenorreduction import (
     ADDITIVE_REDUCTION_COLUMNS,
     MARKET_QUOTE_COLUMNS,
+    REDUCED_TENOR_SOURCE_TYPES,
     CatalogSource,
     MatrixProviderLike,
     ReducedTenorReducer,
@@ -722,9 +723,8 @@ class _RiskDataCache:
     def _compact_market_quotes(
         self,
         frame: pd.DataFrame,
-        reducer: ReducedTenorReducer,
     ) -> pd.DataFrame:
-        """Retain only exact quote fields for catalogued reduced underlyings."""
+        """Retain exact quotes for every product eligible for tenor reduction."""
 
         canonical = _to_reducer_columns(frame)
         missing = [
@@ -734,7 +734,6 @@ class _RiskDataCache:
             raise ValueError(
                 f"market frame is missing quote identity columns: {missing}"
             )
-        mapped_underlyings = frozenset(reducer.catalog[UNDERLYING])
         selected_columns = [
             *_MARKET_QUOTE_IDENTITY,
             *[
@@ -743,9 +742,8 @@ class _RiskDataCache:
                 if column in canonical and column not in _MARKET_QUOTE_IDENTITY
             ],
         ]
-        compact = canonical.loc[
-            canonical[UNDERLYING].isin(mapped_underlyings), selected_columns
-        ]
+        selected = canonical[SOURCE_TYPE].isin(REDUCED_TENOR_SOURCE_TYPES)
+        compact = canonical.loc[selected, selected_columns]
         return compact.drop_duplicates(
             list(_MARKET_QUOTE_IDENTITY), keep="first"
         ).reset_index(drop=True)
@@ -756,7 +754,6 @@ class _RiskDataCache:
         *,
         revision: int,
         fallback: pd.DataFrame,
-        reducer: ReducedTenorReducer,
     ) -> pd.DataFrame | None:
         """Return one compact exact-quote cache, or signal a revision race."""
 
@@ -783,7 +780,7 @@ class _RiskDataCache:
                 if int(market.revision) != revision:
                     return None
                 source = market.frame
-            compact = self._compact_market_quotes(source, reducer)
+            compact = self._compact_market_quotes(source)
             with self._lock:
                 if self._revision != revision:
                     return None
@@ -813,7 +810,6 @@ class _RiskDataCache:
             manager,
             revision=revision,
             fallback=fallback,
-            reducer=reducer,
         )
         if market_quotes is None:
             return None

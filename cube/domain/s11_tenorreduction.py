@@ -1,11 +1,11 @@
 """Pure post-P&L reduction of one-axis Tenor Swap risk vectors.
 
-The matrix catalogue selects a named matrix by the reported risk identity.  A
-provider owns how that named definition is obtained; this module only validates
-and applies it.  Non-Credit products use the existing numeric matrices. Credit
-uses a direct Full Tenor to Reduced Tenor mapping and sums additive measures.
-Market quotes are never multiplied or summed: a reduced tenor receives an
-existing quote only when its label exactly matches a full-tenor quote.
+The matrix catalogue selects named non-Credit matrices by exact risk identity.
+Every registered one-axis Credit source instead shares one provider-owned
+mapping without per-Underlying catalogue rows. This module validates and
+applies both forms. Market quotes are never multiplied or summed: a reduced
+tenor receives an existing quote only when its label exactly matches a
+full-tenor quote.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from cube.domain.s02_products import (
 
 
 MATRIX_NAME = "MatrixName"
+CREDIT_STANDARD_MAPPING_NAME = "CREDIT_STANDARD"
 CREDIT_FULL_TENOR = "Full Tenor"
 CREDIT_REDUCED_TENOR = "Reduced Tenor"
 CREDIT_TENOR_MAPPING_COLUMNS = (CREDIT_FULL_TENOR, CREDIT_REDUCED_TENOR)
@@ -103,7 +104,7 @@ _REQUIRED_FRAME_COLUMNS = (
     DRISK,
     PL,
 )
-_ELIGIBLE_SOURCE_TYPES = frozenset(
+REDUCED_TENOR_SOURCE_TYPES = frozenset(
     source_type
     for source_type, spec in PRODUCT_SPECS_BY_SOURCE_TYPE.items()
     if spec.axes == (SWAP_AXIS,)
@@ -113,7 +114,7 @@ _ELIGIBLE_RISK_PAIRS = frozenset(
     for spec in PRODUCT_SPECS_BY_SOURCE_TYPE.values()
     if spec.axes == (SWAP_AXIS,)
 )
-_CREDIT_REDUCTION_SOURCE_TYPES = frozenset(
+CREDIT_REDUCTION_SOURCE_TYPES = frozenset(
     source_type
     for source_type, spec in PRODUCT_SPECS_BY_SOURCE_TYPE.items()
     if spec.axes == (SWAP_AXIS,) and spec.risk_type == "Credit"
@@ -366,23 +367,35 @@ class ReducedTenorReducer:
     ) -> None:
         if not callable(matrix_provider):
             raise TypeError("matrix_provider must be callable")
-        self._catalog = load_reduced_tenor_catalog(catalog)
+        # Keep the non-Credit catalogue lazy. Credit uses the shared mapping
+        # directly, so a Credit-only request never needs to open s11_matrix.csv.
+        self._catalog_source = (
+            catalog.copy() if isinstance(catalog, pd.DataFrame) else catalog
+        )
+        self._catalog: pd.DataFrame | None = None
         self._matrix_provider = matrix_provider
+        self._cache_lock = RLock()
         self._matrix_cache: dict[str, pd.DataFrame] = {}
         self._unavailable_matrices: set[str] = set()
         self._credit_mapping_cache: dict[str, pd.DataFrame] = {}
         self._unavailable_credit_mappings: set[str] = set()
-        self._matrix_names = frozenset(self._catalog[MATRIX_NAME])
-        self._credit_mapping_names = frozenset(
-            self._catalog.loc[self._catalog[RISK_TYPE].eq("Credit"), MATRIX_NAME]
-        )
-        self._cache_lock = RLock()
+        self._matrix_names: frozenset[str] = frozenset()
+        self._credit_mapping_names = frozenset({CREDIT_STANDARD_MAPPING_NAME})
+
+    def _catalog_frame(self) -> pd.DataFrame:
+        """Load the non-Credit selector only when a non-Credit batch needs it."""
+
+        with self._cache_lock:
+            if self._catalog is None:
+                self._catalog = load_reduced_tenor_catalog(self._catalog_source)
+                self._matrix_names = frozenset(self._catalog[MATRIX_NAME])
+            return self._catalog
 
     @property
     def catalog(self) -> pd.DataFrame:
         """Return a caller-owned copy of the validated catalogue."""
 
-        return self._catalog.copy()
+        return self._catalog_frame().copy()
 
     def _matrix(self, matrix_name: str) -> pd.DataFrame | None:
         if matrix_name not in self._matrix_names:  # pragma: no cover - internal guard
@@ -441,7 +454,7 @@ class ReducedTenorReducer:
         """Return matrix/source/underlying batches in first-seen source order."""
 
         eligible_positions = np.flatnonzero(
-            frame[SOURCE_TYPE].isin(_ELIGIBLE_SOURCE_TYPES).to_numpy(dtype=bool)
+            frame[SOURCE_TYPE].isin(REDUCED_TENOR_SOURCE_TYPES).to_numpy(dtype=bool)
         )
         if len(eligible_positions) == 0:
             return []
@@ -449,17 +462,24 @@ class ReducedTenorReducer:
         selected = frame.iloc[eligible_positions][
             [SOURCE_TYPE, *REDUCED_TENOR_CATALOG_KEY]
         ].copy()
-        identities = pd.MultiIndex.from_frame(
-            selected.loc[:, list(REDUCED_TENOR_CATALOG_KEY)]
-        )
-        catalog_identities = pd.MultiIndex.from_frame(
-            self._catalog.loc[:, list(REDUCED_TENOR_CATALOG_KEY)]
-        )
-        matrix_by_identity = pd.Series(
-            self._catalog[MATRIX_NAME].to_numpy(),
-            index=catalog_identities,
-        )
-        selected[MATRIX_NAME] = matrix_by_identity.reindex(identities).to_numpy()
+        automatic_credit = selected[SOURCE_TYPE].isin(CREDIT_REDUCTION_SOURCE_TYPES)
+        selected[MATRIX_NAME] = pd.NA
+        if (~automatic_credit).any():
+            catalog = self._catalog_frame()
+            identities = pd.MultiIndex.from_frame(
+                selected.loc[:, list(REDUCED_TENOR_CATALOG_KEY)]
+            )
+            catalog_identities = pd.MultiIndex.from_frame(
+                catalog.loc[:, list(REDUCED_TENOR_CATALOG_KEY)]
+            )
+            matrix_by_identity = pd.Series(
+                catalog[MATRIX_NAME].to_numpy(),
+                index=catalog_identities,
+            )
+            selected[MATRIX_NAME] = matrix_by_identity.reindex(identities).to_numpy(
+                dtype=object
+            )
+        selected.loc[automatic_credit, MATRIX_NAME] = CREDIT_STANDARD_MAPPING_NAME
         selected["__position__"] = eligible_positions
         selected = selected.loc[selected[MATRIX_NAME].notna()]
         if selected.empty:
@@ -670,6 +690,16 @@ class ReducedTenorReducer:
         # As with matrices, an incomplete definition must retain the entire
         # authoritative full-tenor batch rather than dropping an exposure.
         if mapped_tenors.isna().any():
+            missing_tenors = old_labels[
+                ~old_labels.isin(target_by_full_tenor.index)
+            ].unique()
+            _LOGGER.warning(
+                "Reduced-tenor Credit mapping does not cover source=%r "
+                "underlying=%r tenors=%r; keeping full tenors",
+                source_type,
+                underlying,
+                missing_tenors.tolist()[:10],
+            )
             return None
 
         used_full_tenors = frozenset(old_labels)
@@ -746,10 +776,10 @@ class ReducedTenorReducer:
     ) -> pd.DataFrame:
         """Return a reduced copy while preserving all ineligible/unmapped rows.
 
-        Reduction is batched by catalogue mapping and source type. Non-Credit
-        batches use the existing matrix calculation. Credit batches directly
-        map and sum tenors. A mapped batch whose real full tenors are not all
-        represented by its definition is retained unchanged.
+        Reduction is batched by mapping and source type. Non-Credit batches use
+        the catalogue-selected matrix calculation. Every one-axis Credit batch
+        uses the shared Credit map-and-sum definition. A batch whose real full
+        tenors are not all represented by its definition is retained unchanged.
         """
 
         if not isinstance(frame, pd.DataFrame):
@@ -762,7 +792,7 @@ class ReducedTenorReducer:
             raise ValueError(
                 f"frame is missing required reduced-tenor columns: {missing}"
             )
-        if frame.empty or self._catalog.empty:
+        if frame.empty:
             return frame.copy()
 
         quotes = frame if market_frame is None else market_frame
@@ -784,7 +814,7 @@ class ReducedTenorReducer:
         reduced_parts: list[pd.DataFrame] = []
         origin_parts: list[np.ndarray] = []
         for matrix_name, source_type, underlying, positions in self._batches(working):
-            if source_type in _CREDIT_REDUCTION_SOURCE_TYPES:
+            if source_type in CREDIT_REDUCTION_SOURCE_TYPES:
                 mapping = self._credit_mapping(matrix_name)
                 if mapping is None:
                     continue
@@ -857,11 +887,14 @@ def reduce_tenor_swap(
 __all__ = [
     "ADDITIVE_REDUCTION_COLUMNS",
     "CatalogSource",
+    "CREDIT_REDUCTION_SOURCE_TYPES",
     "CREDIT_FULL_TENOR",
     "CREDIT_REDUCED_TENOR",
+    "CREDIT_STANDARD_MAPPING_NAME",
     "CREDIT_TENOR_MAPPING_COLUMNS",
     "MATRIX_NAME",
     "MARKET_QUOTE_COLUMNS",
+    "REDUCED_TENOR_SOURCE_TYPES",
     "MatrixProvider",
     "MatrixProviderLike",
     "REDUCED_TENOR_CATALOG_COLUMNS",

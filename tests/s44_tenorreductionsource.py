@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from cube.domain.s11_tenorreduction import (
+    CREDIT_STANDARD_MAPPING_NAME,
     load_reduced_tenor_catalog,
     validate_credit_tenor_mapping,
     validate_reduction_matrix,
@@ -27,6 +28,10 @@ def test_temp_provider_covers_every_seed_reduction_name() -> None:
             )
         else:
             validate_reduction_matrix(definition, matrix_name=name)
+    validate_credit_tenor_mapping(
+        get_reduced_tenor_matrix(CREDIT_STANDARD_MAPPING_NAME),
+        mapping_name=CREDIT_STANDARD_MAPPING_NAME,
+    )
 
 
 def test_temp_provider_returns_caller_owned_matrices() -> None:
@@ -38,8 +43,8 @@ def test_temp_provider_returns_caller_owned_matrices() -> None:
 
 
 def test_temp_provider_returns_caller_owned_credit_mappings() -> None:
-    first = get_credit_tenor_mapping("CREDIT_STANDARD")
+    first = get_credit_tenor_mapping(CREDIT_STANDARD_MAPPING_NAME)
     first.iloc[0, 1] = "changed"
 
-    second = get_credit_tenor_mapping("CREDIT_STANDARD")
+    second = get_credit_tenor_mapping(CREDIT_STANDARD_MAPPING_NAME)
     assert second.iloc[0, 1] != "changed"

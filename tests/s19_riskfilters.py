@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable
+from pathlib import Path
 from threading import Event, Lock
 from types import SimpleNamespace
 
@@ -145,6 +146,25 @@ def _reduced_tenor_matrix() -> pd.DataFrame:
         [[0.0, 1.0], [1.0, 1.0]],
         index=["2Y", "Long"],
         columns=["1Y", "2Y"],
+    )
+
+
+def _automatic_credit_raw_frame() -> pd.DataFrame:
+    return _reducible_raw_frame().assign(
+        **{
+            "Source Type": "credit/delta",
+            "Risk Type": "Credit",
+            "Risk Greek": "Delta",
+            "Underlying": "RAW-CREDIT",
+            "Reported Underlying": "Reported Credit",
+        }
+    )
+
+
+def _automatic_credit_mapping() -> pd.DataFrame:
+    return pd.DataFrame(
+        [("1Y", "2Y"), ("2Y", "2Y")],
+        columns=["Full Tenor", "Reduced Tenor"],
     )
 
 
@@ -785,6 +805,54 @@ def test_reduced_tenor_marketbook_is_read_once_and_invalidated_on_resets() -> No
     revised = cache.filtered(manager, "IR", "delta", ["Risk"], {}, reduced_tenor=True)
     assert revised.loc[revised["tenor swap"].eq("2Y"), "open"].eq(300).all()
     assert reads[-1] == ("market_frame", 8)
+
+
+def test_automatic_credit_reduction_never_reads_catalog_and_keeps_market_quotes(
+    tmp_path: Path,
+) -> None:
+    raw = _automatic_credit_raw_frame()
+    prepared = prepare_risk_data(raw)
+    calls: list[str] = []
+    cache = _RiskDataCache(
+        prepared,
+        revision=7,
+        # A Credit-only request must not even try to open the non-Credit CSV.
+        reduced_tenor_catalog=tmp_path / "missing-s11-matrix.csv",
+        matrix_provider=lambda name: calls.append(name) or _automatic_credit_mapping(),
+    )
+    health = SimpleNamespace(revision=7)
+    market = pd.DataFrame(
+        {
+            "Source Type": ["credit/delta", "credit/delta"],
+            "Underlying": ["RAW-CREDIT", "RAW-CREDIT"],
+            "Tenor Swap": ["1Y", "2Y"],
+            "Open": [100.0, 200.0],
+            "Current": [101.0, 202.0],
+            "Move": [1.0, 2.0],
+            "Market Available": [True, True],
+            "Market Data Status": ["Available", "Available"],
+        }
+    )
+    manager = SimpleNamespace(
+        health=health,
+        read_frame=lambda name: SimpleNamespace(revision=7, frame=market),
+    )
+
+    reduced = cache.filtered(
+        manager,
+        "Credit",
+        None,
+        ["Risk"],
+        {},
+        reduced_tenor=True,
+    )
+
+    assert calls == ["CREDIT_STANDARD"]
+    assert reduced["tenor swap"].tolist() == ["2Y", "2Y"]
+    assert reduced["risk"].tolist() == [30.0, 9.0]
+    assert reduced["open"].tolist() == [200.0, 200.0]
+    assert reduced["current"].tolist() == [202.0, 202.0]
+    assert reduced["move"].tolist() == [2.0, 2.0]
 
 
 def test_risk_promotion_changes_only_after_explicit_generation() -> None:

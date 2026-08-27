@@ -28,7 +28,7 @@ STATIC_FILE_LABELS: Mapping[str, str] = {
     "s07_thresholds.csv": "Top Thresholds",
     "s08_concerto.csv": "Concerto Mapping",
     "s09_reported.csv": "Reported Underlying Mapping",
-    "s11_matrix.csv": "Reduced Tenor Matrix Catalogue",
+    "s11_matrix.csv": "Non-Credit Reduced Tenor Matrix Catalogue",
 }
 WRITABLE_STATIC_FILES = (
     "s06_portfolios.csv",
