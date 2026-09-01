@@ -1,22 +1,30 @@
-# Fix 23 — Paginate the JTD reference table and color negative values
+# Fix 23 — Paginate and format the JTD reference table
 
-**Status:** Implementation guide for `v4` at
-`cad45db58854df4893c0f1ab1b869a303db2f7a8`. Adding this document does not
-change runtime behavior.
+**Status:** Revised implementation guide for `v4` after confirming the four
+financial columns are `Risk JTD`, `EaD`, `EPE`, and `CVA`. Adding or updating
+this document does not change runtime behavior.
 
-## Short answer
+## Final recommendation
 
-The easiest safe change is presentation-only:
+Now that the exact fields and comma-formatting requirement are known, the
+easiest correct implementation is:
 
-1. list the exact four signed JTD reference column headers;
-2. replace the non-empty `html.Table` in
-   `build_jtd_reference_table()` with `dash_table.DataTable`;
-3. enable native pagination at ten rows per page;
-4. parse only those four columns for sign detection while preserving the
-   original displayed CSV strings; and
-5. apply `color: var(--negative)` to each negative cell.
+1. make a presentation copy of the selected JTD rows;
+2. convert exactly `Risk JTD`, `EaD`, `EPE`, and `CVA` from CSV strings to real
+   numeric values in that copy;
+3. render the copy with a native-paginated Dash DataTable;
+4. give those four columns the same grouped number presentation used by the
+   app's other native financial tables; and
+5. add one `< 0` conditional-color rule for each of the four columns.
 
-The essential DataTable settings are:
+```python
+JTD_REFERENCE_NUMERIC_COLUMNS = (
+    "Risk JTD",
+    "EaD",
+    "EPE",
+    "CVA",
+)
+```
 
 ```python
 page_action="native",
@@ -24,47 +32,75 @@ page_current=0,
 page_size=10,
 ```
 
-This needs no new callback, store, UUID, connector, cache, promotion
-recalculation, or reduced-tenor work.
-
-## One required input before implementation
-
-The repository does **not** contain the names of the four numeric JTD
-reference columns. The checked-in file contains only:
-
-```csv
-Underlying
+```python
+{
+    "if": {
+        "filter_query": f"{{{column}}} < 0",
+        "column_id": column,
+    },
+    "color": "var(--negative)",
+}
 ```
 
-The current contract requires only `Underlying`; every other CSV field is
-optional and application-owned. Neither the code, tests, experiment history,
-nor Git history establishes a four-column numeric schema. The four descriptive
-example fields in Fix 15 are not numeric and must not be reused.
+This version needs no hidden marker fields, `row_index` rules, custom page
+buttons, callback, store, UUID, connector, promotion recalculation, or
+reduced-tenor change.
 
-Before implementing the change, replace these placeholders with the exact,
-case-sensitive production headers:
+## Number-format decision
+
+The app consistently uses comma grouping and right-aligned financial values.
+It also defines the theme-aware `var(--negative)` semantic token; using that
+token here avoids the hard-coded-red plus dark-mode override used by some older
+DataTables. The intended treatment is:
+
+- commas for thousands and millions;
+- right-aligned financial columns;
+- tabular numerals; and
+- semantic red for negative values.
+
+The business contract is now explicit: all four values are integers. Use the
+same whole-number comma format already used by the app's P&L editor and
+unmapped financial table:
 
 ```python
-JTD_REFERENCE_SIGNED_COLUMNS: tuple[str, str, str, str] = (
-    "<exact production header 1>",
-    "<exact production header 2>",
-    "<exact production header 3>",
-    "<exact production header 4>",
+JTD_REFERENCE_NUMBER_FORMAT = Format(
+    group=",",
+    precision=0,
+    scheme=Scheme.fixed,
 )
 ```
 
-Do not infer the fields by testing every column for numeric-looking values.
-Identifiers, dates, ratings and text codes may also look numeric. The explicit
-tuple ensures that only the intended four columns can become red.
+That serializes to the d3 specifier `,.0f`:
 
-To inspect the deployed header without loading or publishing its rows:
+| Numeric value | Display |
+|---:|---:|
+| `1234` | `1,234` |
+| `1234567` | `1,234,567` |
+| `-2500000` | `-2,500,000` in semantic red |
 
-```powershell
-Get-Content data\s13_jtd.csv -TotalCount 1
-```
+This uses literal comma grouping, not compact SI labels such as `1.2M` or
+`500K`. Fractional values and non-integer source syntax are invalid under this
+contract and must produce an actionable card error; do not silently round or
+reinterpret them as integers.
 
-The implementation is not complete until the placeholders are replaced and a
-test proves the tuple contains four unique, nonblank, real headers.
+## Why this is simpler than the earlier marker design
+
+The earlier draft preserved all four financial values as strings. That made
+comma formatting impossible through DataTable and required separate sign
+markers so red cells would remain correct across native pages.
+
+The clarified requirement explicitly wants those four fields formatted as
+financial numbers. Once their presentation payload is numeric:
+
+- DataTable applies comma formatting natively;
+- `{Risk JTD} < 0`, `{EaD} < 0`, `{EPE} < 0`, and `{CVA} < 0` evaluate correctly;
+- each rule follows its record across every native page;
+- only four conditional rules are needed; and
+- there is no internal marker data or Toggle Columns side effect.
+
+Do not use `row_index` for sign styling. In pinned Dash 4.4.0, `row_index` is
+evaluated within the current native page, so a page-one style can affect the
+wrong page-two row.
 
 ## Current chain
 
@@ -83,294 +119,299 @@ Credit JTD measure plus an existing/clicked hierarchy selection
 
 | Responsibility | Current location |
 |---|---|
-| Lazy file read, cache, validation and exact issuer lookup | `cube/services/s08_jtd.py` |
+| Lazy file read, cache and exact issuer lookup | `cube/services/s08_jtd.py` |
 | Decide whether Credit/JTD detail should load | `cube/pages/risk/s07_explorer.py::render_active_detail()` |
-| Carry the reference data into the detail card | `cube/pages/risk/s05_charts.py::build_detail_panel_with_state()` |
-| Render every matched row as plain HTML | `cube/pages/risk/s13_workspacetables.py::build_jtd_reference_table()` |
+| Carry JTD reference rows into detail | `cube/pages/risk/s05_charts.py::build_detail_panel_with_state()` |
+| Render the current flat HTML table | `cube/pages/risk/s13_workspacetables.py::build_jtd_reference_table()` |
 | JTD card and scroll styling | `assets/s03_risk.css` |
 | JTD regressions | `tests/s48_jtd.py` |
 
-The current service deliberately:
+The current service reads every CSV value with `dtype="string"`, requires only
+`Underlying`, preserves all additional columns dynamically, exact-matches the
+selected issuer, and returns a caller-owned filtered copy.
 
-- reads the file lazily with `dtype="string"`;
-- caches one file revision by path, modification time and size;
-- requires only `Underlying` and rejects duplicate headers;
-- compares Underlying exactly, including case and whitespace;
-- preserves every CSV column and matching row in source order; and
-- returns a caller-owned filtered copy.
+## Scope which must remain unchanged
 
-The current renderer stringifies every value and emits all rows as
-`html.Tr`/`html.Td`. It has no pagination or sign styling.
+This patch changes only JTD reference presentation.
 
-## Scope which must not change
-
-This patch changes only the non-empty JTD reference renderer.
-
+- The service continues to read and cache the file as strings.
+- Conversion happens only in a copy of the rows for the currently selected
+  issuer; the cached source frame is never mutated.
 - JTD reference remains available only for Credit JTD in the Cross/main table;
   the current `table_view != "alt"` guard continues to exclude SplitVA.
 - Raw Underlying still wins over Reported Underlying, which wins over an
   eligible promoted Display Bucket; `Other` remains ineligible.
-- `s13_jtd.csv` remains absent from the Static Data page's read and write
-  allowlists. This patch does not expose it or make it editable there.
-- The reference values never feed financial `Risk JTD`, `dRisk JTD`, P&L,
-  promotion, row ordering, recalculation, or tenor reduction.
-- Missing/unreadable files and empty matches retain their current detail-card
-  messages.
-- Changing Credit measure or clicked issuer still rebuilds the detail card in
-  the existing callback; there is no separate pagination callback.
+- `s13_jtd.csv` remains absent from the Static Data page's read/write allowlists.
+- Reference values never feed financial Risk/dRisk, P&L, promotion, row
+  ordering, recalculation, or tenor reduction.
+- Missing files, no matches, missing required financial headers, and invalid
+  selected-issuer numeric values produce
+  a detail-card message rather than crashing the page.
 
-This distinction matters: the auxiliary JTD CSV is not the financial
+The auxiliary CSV column named `Risk JTD` is reference presentation data. It
+must not be confused with or fed into the dashboard's calculated Credit
 Risk/dRisk JTD measure pair.
 
 ## Intended result
 
 | Behavior | Intended contract |
 |---|---|
-| Component | Dash `DataTable` in the existing JTD reference card |
+| Component | Dash DataTable inside the existing JTD card |
 | Pagination | Native/client-side, 10 rows per page |
-| Data sent to browser | All selected rows plus up to four internal `0`/`1` marker keys |
-| Display values | Original CSV strings, unchanged |
-| Column and row order | Same as the filtered source frame |
-| Signed columns | Exactly the configured four headers when present |
-| Negative color | `var(--negative)` in the negative cells only |
-| Zero, positive, blank or invalid text | Normal text color |
-| Other columns | Preserved and never sign-colored |
-| Empty/error behavior | Unchanged |
+| Browser payload | Every matching row for one exact Underlying |
+| Numeric fields | Required on every non-empty JTD reference result: `Risk JTD`, `EaD`, `EPE`, `CVA` |
+| Number display | Comma-grouped integers (`,.0f`) |
+| Negative color | `var(--negative)` in the negative cell only |
+| Zero/positive color | Normal text color |
+| Other fields | Preserved as text and never sign-colored |
+| Row/column order | Same as the selected source frame |
+| Empty/error behavior | Existing card, with no DataTable |
 | Callback/store work | None |
 
-Native pagination reduces the number of rows rendered at once, but it still
-sends every matching issuer row to the browser. That is the smallest change
-for the current reference-file design. If a single issuer can contain
-thousands of rows, true server-side pagination is a separate feature requiring
-a sliced service query and page callback.
+Native pagination limits the rows rendered at once but still sends every
+matching issuer row to the browser. If one issuer can contain thousands of
+rows, true server-side pagination is a separate feature requiring a sliced
+service query and callback.
 
 ## Files to change
 
 The minimal verified patch changes four files:
 
-1. `cube/pages/risk/s13_workspacetables.py` — define the four headers, derive
-   negative-cell rules, and replace the non-empty HTML table with a DataTable;
-2. `assets/s03_risk.css` — remove the fixed JTD height which can clip the pager;
-   and
-3. `tests/s48_jtd.py` — lock pagination, data preservation, accessibility and
-   the four-column negative styling; and
-4. `tests/s39_assets.py` — prove the old JTD height cap is gone and the new
-   wrapper rules remain present.
+1. `cube/pages/risk/s13_workspacetables.py` — numeric presentation copy,
+   grouped DataTable columns, native pagination and negative rules;
+2. `assets/s03_risk.css` — remove the fixed height which can clip the pager;
+3. `tests/s48_jtd.py` — lock the four-column numeric/pagination contract; and
+4. `tests/s39_assets.py` — lock the pager-safe JTD wrapper CSS.
 
-Do not change `s08_jtd.py`, `s07_explorer.py`, `s05_charts.py`, the CSV schema, the
-promotion code, reduced-tenor code, or the recalculate callback.
+Do not change `cube/services/s08_jtd.py`, the CSV schema, callback wiring,
+promotion code, recalculation code, or reduced-tenor code.
 
-## Step 1 — define the exact four signed columns
+## Step 1 — add the exact numeric presentation contract
 
-In `cube/pages/risk/s13_workspacetables.py`, add the real four headers near the
-other module constants:
+In `cube/pages/risk/s13_workspacetables.py`, add these constants near the other
+module constants:
 
 ```python
-JTD_REFERENCE_SIGNED_COLUMNS: tuple[str, str, str, str] = (
-    "<exact production header 1>",
-    "<exact production header 2>",
-    "<exact production header 3>",
-    "<exact production header 4>",
+JTD_REFERENCE_NUMERIC_COLUMNS: tuple[str, str, str, str] = (
+    "Risk JTD",
+    "EaD",
+    "EPE",
+    "CVA",
 )
 JTD_REFERENCE_PAGE_SIZE = 10
+JTD_REFERENCE_NUMBER_FORMAT = Format(
+    group=",",
+    precision=0,
+    scheme=Scheme.fixed,
+)
+_JTD_REFERENCE_SAFE_INTEGER_MAX = (2**53) - 1
 ```
 
-This is a presentation allowlist, not a new required-file schema. The
-header-only checked-in CSV and valid deployments with extra descriptive fields
-continue to work. A configured column is aligned and sign-colored only when it
-is present in the returned frame.
+`Format` and `Scheme` are already imported in this module. Add the three
+constants to its existing `__all__` list so tests and future callers share one
+authority. Keep `_JTD_REFERENCE_SAFE_INTEGER_MAX` private; it protects the
+integer payload from JavaScript precision loss.
 
-Header spelling is exact. Case changes and leading/trailing spaces create a
-different CSV column and must fail the deployment smoke check rather than be
-guessed away.
+Header matching remains exact and case-sensitive. `EAD`, `Ead`, `Cva`, and
+headers with surrounding spaces are different fields and must not be guessed.
 
-Add both constants to this module's existing `__all__` list so the renderer
-contract and its tests have one public authority. Keep the sign helper private.
+## Step 2 — create a numeric presentation copy
 
-## Step 2 — attach internal sign markers without changing display data
-
-The JTD service intentionally returns strings. Keep that contract and parse a
-temporary series only to decide whether a displayed cell is negative.
-
-Do **not** use DataTable `row_index` conditions for a paginated table. In the
-pinned Dash 4.4.0 client, row indexes are evaluated within the current native
-page. A rule intended for source row 0 can therefore affect the first row of a
-later page, while a rule for source row 11 may never match.
-
-Instead, attach one internal numeric sign marker for each configured field to
-every record, leave those keys out of the visible column definitions, and make
-the red rule query the marker:
-
-```python
-def _jtd_table_payload(
-    frame: pd.DataFrame,
-) -> tuple[
-    list[dict[str, object]],
-    list[dict[str, object]],
-]:
-    records = (
-        frame.astype(object)
-        .where(pd.notna(frame), None)
-        .to_dict("records")
-    )
-    styles: list[dict[str, object]] = []
-    occupied = {str(column) for column in frame.columns}
-
-    for marker_number, column in enumerate(JTD_REFERENCE_SIGNED_COLUMNS):
-        if column not in frame.columns:
-            continue
-
-        marker = f"__jtd_negative_{marker_number}__"
-        while marker in occupied:
-            marker = f"_{marker}"
-        occupied.add(marker)
-
-        numeric = pd.to_numeric(
-            frame[column].astype("string").str.strip(),
-            errors="coerce",
-        )
-        for record, value in zip(records, numeric):
-            record[marker] = int(
-                pd.notna(value)
-                and np.isfinite(float(value))
-                and float(value) < 0
-            )
-
-        styles.append(
-            {
-                "if": {
-                    "filter_query": f"{{{marker}}} = 1",
-                    "column_id": column,
-                },
-                "color": "var(--negative)",
-            }
-        )
-
-    return records, styles
-```
-
-`numpy` and `pandas` are already imported in this module. The collision loop
-ensures an arbitrary source header cannot overwrite an internal marker.
-
-Why use internal sign markers?
-
-- the current visible payload remains intentionally string-valued;
-- merely declaring a visible column `type="numeric"` does not convert it;
-- marker values travel with their records across every native page;
-- the renderer needs only four conditional rules rather than one per negative
-  cell;
-- displayed precision, scientific notation and source lexemes stay unchanged;
-- the four formerly optional fields do not become a required file schema; and
-- one malformed value cannot disable JTD reference for every issuer.
-
-Dash's conditional-style evaluator reads keys from the row datum even when
-they are not declared in `columns`. Deliberately leave marker keys undeclared.
-Using DataTable's `hidden_columns` property would make pinned Dash 4.4 display
-a useless Toggle Columns control for these internal-only fields.
-
-The parser accepts the plain numeric syntax supported by `pd.to_numeric`,
-including signs, decimals and scientific notation. Blank, malformed and
-non-finite values remain visible but receive marker `0`. If production uses
-commas, currency symbols, percentages or accounting parentheses, define and
-test that lexical contract before extending the parser. Do not silently strip
-punctuation based on guesses.
-
-## Step 3 — replace only the non-empty renderer branch
-
-`s13_workspacetables.py` already imports `dash_table`; no dependency is needed.
-Keep the current title, error branch, empty branch and outer card. Replace only
-the current `headers`, `rows` and `html.Table` block inside
+Add a private helper in `s13_workspacetables.py` immediately above
 `build_jtd_reference_table()`:
 
 ```python
-else:
+def _jtd_numeric_display_frame(frame: pd.DataFrame) -> pd.DataFrame:
     display = frame.copy()
-    signed_columns = tuple(
+    missing = [
         column
-        for column in JTD_REFERENCE_SIGNED_COLUMNS
-        if column in display.columns
-    )
-    records, negative_styles = _jtd_table_payload(display)
-    visible_columns = [
-        {"name": str(column), "id": str(column)}
-        for column in display.columns
+        for column in JTD_REFERENCE_NUMERIC_COLUMNS
+        if column not in display.columns
     ]
+    if missing:
+        raise ValueError(
+            "JTD reference is missing required financial column(s): "
+            + ", ".join(missing)
+            + "."
+        )
 
-    content = html.Div(
-        html.Div(
-            dash_table.DataTable(
-                id="jtd-reference-table",
-                columns=visible_columns,
-                data=records,
-                editable=False,
-                cell_selectable=False,
-                filter_action="none",
-                sort_action="none",
-                page_action="native",
-                page_current=0,
-                page_size=JTD_REFERENCE_PAGE_SIZE,
-                style_table={"overflowX": "auto"},
-                style_cell={
-                    "padding": "8px 10px",
-                    "borderBottom": "1px solid var(--outline-soft)",
-                    "backgroundColor": "var(--surface)",
-                    "color": "var(--text)",
-                    "fontFamily": "inherit",
-                    "fontSize": "12px",
-                    "lineHeight": "1.3",
-                    "textAlign": "left",
-                    "whiteSpace": "nowrap",
-                },
-                style_header={
-                    "backgroundColor": "var(--surface-muted)",
-                    "color": "var(--text)",
-                    "fontWeight": 850,
-                },
-                style_cell_conditional=(
-                    [
-                        {
-                            "if": {"column_id": list(signed_columns)},
-                            "fontVariant": "tabular-nums",
-                            "textAlign": "right",
-                        }
-                    ]
-                    if signed_columns
-                    else []
+    for column in JTD_REFERENCE_NUMERIC_COLUMNS:
+        raw = display[column].astype("string").str.strip()
+        blank = raw.isna() | raw.eq("").fillna(False)
+        integer_token = raw.str.fullmatch(r"[+-]?\d+", na=False)
+        invalid = ((~blank) & ~integer_token).to_numpy(dtype=bool)
+        parsed: list[object] = []
+
+        for position, value in enumerate(raw):
+            if bool(blank.iloc[position]) or invalid[position]:
+                parsed.append(pd.NA)
+                continue
+
+            integer = int(str(value), 10)
+            if abs(integer) > _JTD_REFERENCE_SAFE_INTEGER_MAX:
+                invalid[position] = True
+                parsed.append(pd.NA)
+                continue
+
+            parsed.append(integer)
+
+        if invalid.any():
+            rows = [
+                str(int(position))
+                for position in np.flatnonzero(invalid)[:5] + 1
+            ]
+            raise ValueError(
+                f"JTD reference column {column!r} contains a non-integer "
+                f"token or unsafe integer at selected data row(s) "
+                f"{', '.join(rows)}."
+            )
+
+        display[column] = pd.array(parsed, dtype="Int64")
+    return display
+```
+
+For a non-empty result, all four exact headers are required. This catches a
+misspelled or stale production header instead of silently omitting formatting.
+The checked-in header-only sample still follows the existing empty-result path.
+
+The helper accepts blanks and signed or unsigned base-10 integer tokens. It
+rejects decimal points, exponent notation, populated malformed values, `NaN`,
+`inf`, `-inf`, and integers outside `±9,007,199,254,740,991` for the selected
+issuer. That bound is the largest integer a browser can represent exactly.
+Positional row reporting does not depend on the caller's DataFrame index
+labels.
+
+The source CSV should contain raw integer values such as `1234567`; DataTable
+adds display commas. The strict parser intentionally rejects a source token
+such as `"1,234"`. If the deployed source already stores display commas, add
+an explicit, tested normalization rule before parsing rather than silently
+stripping arbitrary punctuation.
+
+Why validate in this presentation helper rather than the file service?
+
+- only the selected issuer's rows need numeric presentation;
+- one malformed value for an unrelated issuer cannot disable every JTD detail;
+- the cached source frame remains unchanged and string-preserving; and
+- an invalid selected value can use the existing detail-card error treatment.
+
+## Step 3 — replace only the non-empty HTML-table branch
+
+Keep the current title, missing-file, empty-match, outer card, and ARIA behavior.
+Replace only the current `headers`, `rows`, and `html.Table` block.
+
+The non-empty branch should have this shape:
+
+```python
+else:
+    try:
+        display = _jtd_numeric_display_frame(frame)
+    except ValueError as numeric_error:
+        content = html.Div(
+            str(numeric_error),
+            className="empty-state",
+            role="status",
+        )
+    else:
+        numeric_columns = JTD_REFERENCE_NUMERIC_COLUMNS
+        records = (
+            display.astype(object)
+            .where(pd.notna(display), None)
+            .to_dict("records")
+        )
+        columns = [
+            {
+                "name": str(column),
+                "id": str(column),
+                **(
+                    {
+                        "type": "numeric",
+                        "format": JTD_REFERENCE_NUMBER_FORMAT,
+                    }
+                    if column in numeric_columns
+                    else {}
                 ),
-                style_data_conditional=negative_styles,
+            }
+            for column in display.columns
+        ]
+
+        content = html.Div(
+            html.Div(
+                dash_table.DataTable(
+                    id="jtd-reference-table",
+                    columns=columns,
+                    data=records,
+                    editable=False,
+                    cell_selectable=False,
+                    filter_action="none",
+                    sort_action="none",
+                    page_action="native",
+                    page_current=0,
+                    page_size=JTD_REFERENCE_PAGE_SIZE,
+                    style_table={"overflowX": "auto"},
+                    style_cell={
+                        "padding": "8px 10px",
+                        "borderBottom": "1px solid var(--outline-soft)",
+                        "backgroundColor": "var(--surface)",
+                        "color": "var(--text)",
+                        "fontFamily": "inherit",
+                        "fontSize": "12px",
+                        "lineHeight": "1.3",
+                        "textAlign": "left",
+                        "whiteSpace": "nowrap",
+                    },
+                    style_header={
+                        "backgroundColor": "var(--surface-muted)",
+                        "color": "var(--text)",
+                        "fontWeight": 850,
+                    },
+                    style_cell_conditional=(
+                        [
+                            {
+                                "if": {"column_id": list(numeric_columns)},
+                                "fontVariant": "tabular-nums",
+                                "textAlign": "right",
+                            }
+                        ]
+                        if numeric_columns
+                        else []
+                    ),
+                    style_data_conditional=[
+                        {
+                            "if": {
+                                "filter_query": f"{{{column}}} < 0",
+                                "column_id": column,
+                            },
+                            "color": "var(--negative)",
+                        }
+                        for column in numeric_columns
+                    ],
+                ),
+                className="detail-table jtd-reference-table",
             ),
-            className="detail-table jtd-reference-table",
-        ),
-        className="detail-table-wrap jtd-reference-table-wrap",
-        tabIndex=0,
-        role="region",
-        **{"aria-label": title},
-    )
+            className="detail-table-wrap jtd-reference-table-wrap",
+            tabIndex=0,
+            role="region",
+            **{"aria-label": title},
+        )
 ```
 
 Important details:
 
-- `data` receives every matching row; do not pre-slice the first ten;
-- `page_action="native"` makes the browser own Previous/Next state;
-- `page_current=0` starts a newly rebuilt issuer table on its first page;
-- `page_size=10` matches the nearby Top Promotions table convention;
-- the original strings remain in `data`, so display precision is preserved;
-- nulls become JSON-safe `None` values;
-- only the four present allowlisted columns are right-aligned;
-- each negative style queries one internal sign marker and targets one visible
-  column, so it follows the record across pages without coloring a whole row;
-- `var(--negative)` is readable in both light and dark themes; and
-- the labelled `region` replaces the native table's screen-reader caption and
-  keeps an accessible name for the DataTable region.
-
-The outer `jtd-reference-card` and its existing `aria-label` remain unchanged.
-Do not add filter or sort actions in this patch; they are not needed for the
-requested pagination and would expand the behavior to verify.
+- all matching records—not only the first ten—go into `data`;
+- the four configured fields become real Python numbers or `None`;
+- other dynamic fields remain strings and keep their source order;
+- the `Format` object adds commas in the browser without converting values
+  back to strings;
+- each red rule contains both the numeric comparison and one `column_id`;
+- filter queries follow records across native pages, unlike `row_index` rules;
+- `fontVariant: tabular-nums` is accepted by pinned Dash 4.4;
+- `var(--negative)` uses the existing light/dark semantic color token; and
+- the labelled region replaces the native table caption's accessible name.
 
 ## Step 4 — ensure the pager is not clipped
 
-The current native-table wrapper is capped at `320px`. A ten-row DataTable plus
-its pager can be clipped or placed inside a nested vertical scroller.
+The current JTD wrapper is capped at `320px`. A ten-row DataTable plus its pager
+can be clipped or trapped inside a nested vertical scroller.
 
 In `assets/s03_risk.css`, replace:
 
@@ -389,223 +430,191 @@ with:
 .jtd-reference-table-wrap .dash-table-container {
   width: 100%;
 }
+
+/* Dash 4.4 hard-codes black current-page text and removes focus outlines. */
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container .page-number {
+  color: var(--text);
+}
+
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container .current-page-shadow,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container input.current-page {
+  border-bottom-color: var(--outline) !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+}
+
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap
+  .previous-next-container input.current-page::placeholder {
+  color: var(--text) !important;
+}
+
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.first-page,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.previous-page,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.next-page,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.last-page {
+  background: transparent;
+  color: var(--text);
+}
+
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.first-page:disabled,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.previous-page:disabled,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.next-page:disabled,
+:root[data-theme="dark"]
+  .jtd-reference-table-wrap .previous-next-container button.last-page:disabled {
+  color: var(--text-muted);
+}
+
+.jtd-reference-table-wrap
+  .previous-next-container button.first-page:focus-visible,
+.jtd-reference-table-wrap
+  .previous-next-container button.previous-page:focus-visible,
+.jtd-reference-table-wrap
+  .previous-next-container button.next-page:focus-visible,
+.jtd-reference-table-wrap
+  .previous-next-container button.last-page:focus-visible,
+.jtd-reference-table-wrap
+  .previous-next-container input.current-page:focus-visible {
+  outline: 2px solid var(--focus) !important;
+  outline-offset: 2px;
+}
 ```
 
-Horizontal scrolling remains owned by `style_table`, while the pager stays
+Horizontal scrolling remains owned by `style_table`; the native pager stays
 outside a fixed-height vertical scroller.
 
-Do not copy the existing `.dash-pagination-btn` override from another page
-without inspecting the live DOM: that selector is not provided by the pinned
-Dash 4.4.0 bundle. If visual QA finds that pager controls need explicit dark
-styling, inspect the rendered `.previous-next-container` and add a narrowly
-scoped JTD rule against the actual button/input classes. The DataTable cells
-and headers already use semantic theme variables in the renderer.
+The actual Dash 4.4 page controls are `.first-page`, `.previous-page`,
+`.next-page`, `.last-page`, and `input.current-page` inside
+`.previous-next-container`. Do not copy `.dash-pagination` or
+`.dash-pagination-btn` selectors from another page; they are not the contract
+for this pinned component. The `!important` focus rule intentionally overrides
+Dash's more-specific built-in `outline: none`.
 
-## Step 5 — update the JTD regressions
+## Step 5 — update the regressions
 
-In `tests/s48_jtd.py`, import DataTable and the two renderer constants:
+In `tests/s48_jtd.py`, import DataTable and the new renderer constants:
 
 ```python
 from dash import dash_table, html
 
 from cube.pages.risk.s13_workspacetables import (
+    JTD_REFERENCE_NUMBER_FORMAT,
+    JTD_REFERENCE_NUMERIC_COLUMNS,
     JTD_REFERENCE_PAGE_SIZE,
-    JTD_REFERENCE_SIGNED_COLUMNS,
     build_jtd_reference_table,
 )
 ```
 
-Keep the existing service, file-error and identity tests. Replace
-`test_jtd_table_is_flat_and_uses_the_detail_table_style()` with a DataTable
-test using more than one page of records:
+Keep the current exact-lookup, file-error, empty-file, and promoted-identity
+tests. Replace the flat HTML-table test with a 12-row DataTable test which
+asserts:
 
 ```python
-def _jtd_data_table(component: object) -> dash_table.DataTable:
-    return next(
-        item
-        for item in _walk(component)
-        if isinstance(item, dash_table.DataTable)
-    )
+assert JTD_REFERENCE_NUMERIC_COLUMNS == (
+    "Risk JTD",
+    "EaD",
+    "EPE",
+    "CVA",
+)
+assert JTD_REFERENCE_PAGE_SIZE == 10
+assert JTD_REFERENCE_NUMBER_FORMAT.to_plotly_json()["specifier"] == ",.0f"
 
-
-def test_jtd_table_paginates_and_colors_only_negative_signed_cells() -> None:
-    assert JTD_REFERENCE_SIGNED_COLUMNS == (
-        "<exact production header 1>",
-        "<exact production header 2>",
-        "<exact production header 3>",
-        "<exact production header 4>",
-    )
-    assert len(JTD_REFERENCE_SIGNED_COLUMNS) == 4
-    assert len(set(JTD_REFERENCE_SIGNED_COLUMNS)) == 4
-    assert all(column.strip() for column in JTD_REFERENCE_SIGNED_COLUMNS)
-    assert all(
-        column == column.strip()
-        for column in JTD_REFERENCE_SIGNED_COLUMNS
-    )
-    assert all(
-        "<exact production" not in column
-        for column in JTD_REFERENCE_SIGNED_COLUMNS
-    )
-
-    negative_rows = (0, 3, 7, 11)
-
-    def signed_values(negative_row: int) -> list[object]:
-        values: list[object] = ["1.2500"] * 12
-        values[negative_row] = "-1.25"
-        values[(negative_row + 1) % 12] = "0"
-        values[(negative_row + 2) % 12] = pd.NA
-        return values
-
-    frame = pd.DataFrame(
-        {
-            "Underlying": ["ACME"] * 12,
-            "Desk": [f"Desk {index}" for index in range(12)],
-            "Numeric-looking text": ["-999"] * 12,
-            **{
-                column: signed_values(negative_row)
-                for column, negative_row in zip(
-                    JTD_REFERENCE_SIGNED_COLUMNS,
-                    negative_rows,
-                )
-            },
-        }
-    )
-    expected_records = (
-        frame.astype(object)
-        .where(pd.notna(frame), None)
-        .to_dict("records")
-    )
-
-    component = build_jtd_reference_table(frame, "ACME")
-    table = _jtd_data_table(component)
-
-    assert component.className == "jtd-reference-card"
-    assert (
-        component.to_plotly_json()["props"]["aria-label"]
-        == "JTD reference — ACME"
-    )
-    assert table.id == "jtd-reference-table"
-    assert table.page_action == "native"
-    assert table.page_current == 0
-    assert table.page_size == JTD_REFERENCE_PAGE_SIZE == 10
-    assert table.cell_selectable is False
-    assert table.editable is False
-    assert table.filter_action == "none"
-    assert table.sort_action == "none"
-    assert len(table.data) == 12
-    visible_columns = [
-        {"name": column, "id": column}
-        for column in frame.columns
-    ]
-    marker_keys = [
-        f"__jtd_negative_{index}__"
-        for index in range(4)
-    ]
-    assert getattr(table, "hidden_columns", None) is None
-    assert table.columns == visible_columns
-    assert [
-        {
-            column: record[column]
-            for column in frame.columns
-        }
-        for record in table.data
-    ] == expected_records
-
-    for marker, negative_row in zip(marker_keys, negative_rows):
-        assert [record[marker] for record in table.data] == [
-            int(row_index == negative_row)
-            for row_index in range(12)
-        ]
-
-    assert table.style_cell_conditional == [
-        {
-            "if": {"column_id": list(JTD_REFERENCE_SIGNED_COLUMNS)},
-            "fontVariant": "tabular-nums",
-            "textAlign": "right",
-        }
-    ]
-    assert table.style_data_conditional == [
-        {
-            "if": {
-                "filter_query": f"{{{marker}}} = 1",
-                "column_id": column,
-            },
-            "color": "var(--negative)",
-        }
-        for column, marker in zip(
-            JTD_REFERENCE_SIGNED_COLUMNS,
-            marker_keys,
-        )
-    ]
-
-    classes = {
-        getattr(item, "className", None)
-        for item in _walk(component)
-        if isinstance(item, html.Div)
-    }
-    assert "detail-table jtd-reference-table" in classes
-    assert "detail-table-wrap jtd-reference-table-wrap" in classes
-
-    labelled_region = next(
-        item
-        for item in _walk(component)
-        if isinstance(item, html.Div)
-        and getattr(item, "role", None) == "region"
-    )
-    assert (
-        labelled_region.to_plotly_json()["props"]["aria-label"]
-        == "JTD reference — ACME"
-    )
+assert table.page_action == "native"
+assert table.page_current == 0
+assert table.page_size == 10
+assert table.filter_action == "none"
+assert table.sort_action == "none"
+assert len(table.data) == 12
 ```
 
-Replace the four literal test placeholders with the same four agreed business
-headers, reviewed independently of the implementation tuple. This literal
-assertion deliberately duplicates the external contract so an accidental
-rename in production code cannot make a self-derived test pass.
+Use staggered negative integers across the four columns, including a negative
+in source row 11 so page 2 is exercised manually. Include positive integers,
+zero, blank, `1234`, `1234567`, and a negative numeric-looking value in a
+non-allowlisted text column. Assert the four financial values in `table.data`
+are Python integers or `None`, never strings, floats, pandas scalars, or pandas
+null sentinels.
 
-The test proves all records—not only the first page—reach the browser, source
-lexemes such as `"1.2500"` remain unchanged, nulls become `None`, row/column
-order is stable, a negative numeric-looking unconfigured field stays
-uncolored, marker values follow their records, and exactly one rule maps each
-allowlisted visible column to its own internal sign marker.
+For each of the exact four column definitions, assert:
 
-Add these new tests as well:
+```python
+definition["type"] == "numeric"
+assert definition["format"].to_plotly_json()["specifier"] == ",.0f"
+```
 
-1. a non-empty dynamic JTD frame with none of the configured fields still
-   renders all text columns, has no marker keys in `data`, leaves
-   `hidden_columns` unset, and sets both conditional-style lists to `[]`;
-2. values `"bad"`, `""`, `pd.NA`, `"NaN"`, `"inf"` and `"-inf"` in one
-   configured field remain displayed and receive marker `0`, while a valid
-   `"-1"` control receives marker `1`; the one generic marker-query style rule
-   still exists and rendering does not crash;
-3. a no-match service lookup returns an empty frame;
-4. empty and explicit-error renderer states contain no DataTable and retain
-   their current `empty-state` message/role; and
-5. a source column colliding with an initial internal marker name is preserved
-   while the helper chooses a different marker key; and
-6. the main 12-row fixture gives row 11 marker value `1`; the manual live
-   acceptance in Step 7 then confirms its visible cell is red on page 2 and
-   page 1 is unchanged.
+Assert the presentation payload contains Python numbers and `None`, not numeric
+strings or pandas null sentinels. Assert every other column remains text and
+the complete row/column order is preserved.
 
-Those are additions; the current test file does not yet assert no-match or the
-absence of a DataTable in empty/error states.
+Lock the exact four red rules:
 
-In `tests/s39_assets.py`, add a required focused regression proving the JTD
-wrapper contains `max-height: none` and `overflow: visible`, its nested
-`.dash-table-container` rule exists, and the old scoped `max-height: 320px`
-rule is absent. A component unit test cannot prove the pager is visually
-unclipped or execute conditional styling, so live browser QA remains required.
+```python
+assert table.style_data_conditional == [
+    {
+        "if": {
+            "filter_query": f"{{{column}}} < 0",
+            "column_id": column,
+        },
+        "color": "var(--negative)",
+    }
+    for column in JTD_REFERENCE_NUMERIC_COLUMNS
+]
+```
+
+Also add tests for:
+
+1. empty and explicit-error states containing no DataTable;
+2. exact issuer no-match returning an empty frame;
+3. each missing required financial header producing a status error rather than
+   a partially formatted table;
+4. blank numeric cells becoming `None`;
+5. `"1.0"`, `"1.0000000000000001"`, `"1e3"`, `"-0.004"`, `"bad"`,
+   `"NaN"`, `"inf"`, `"-inf"`, and the documented-invalid `"1,234"`
+   source token producing the integer error state;
+6. `"9007199254740991"` and `"-9007199254740991"` remaining exact, while
+   either adjacent out-of-range value produces the integer error state;
+7. an unrelated numeric-looking text field remaining unformatted and uncolored;
+8. right alignment plus `fontVariant: tabular-nums` targeting only the four
+   financial columns;
+9. a non-default DataFrame index still reporting the correct selected-row
+   position, with no DataTable and `role="status"` in the error branch;
+10. the caller frame remaining unchanged after both successful and failed
+   presentation conversion; and
+11. the existing wrapper/card classes and labelled-region accessibility.
+
+In `tests/s39_assets.py`, add a required regression proving that the scoped JTD
+wrapper contains `max-height: none` and `overflow: visible`, the nested
+`.dash-table-container` rule exists, and the old scoped `max-height: 320px` rule
+is gone. Also lock the real `.previous-next-container`, `.current-page`, four
+page-button, dark-theme, disabled-state, and `:focus-visible` selectors. Assert
+that stale `.dash-pagination` and `.dash-pagination-btn` selectors are not added
+to the JTD scope.
+
+Python component tests can inspect numeric payloads, format specifiers, page
+settings, and style rules. They cannot execute browser formatting or pagination,
+so the page-two color and visible commas remain mandatory live checks.
 
 ## Step 6 — run focused verification
 
-Baseline before implementation:
+Baseline before implementing this guide:
 
 ```text
 tests/s48_jtd.py + tests/s39_assets.py
 12 passed
 ```
 
-Run the relevant set after the code change:
+Run the relevant set after implementation:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest `
@@ -615,108 +624,115 @@ Run the relevant set after the code change:
   -q -p no:cacheprovider
 ```
 
-Then compile the changed Python renderer and run the repository's normal full
-checks before publishing runtime code:
+Then compile the changed renderer and run the repository's normal full checks:
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m py_compile `
   cube\pages\risk\s13_workspacetables.py
 ```
 
-## Step 7 — perform live acceptance checks
+## Step 7 — live acceptance
 
-Use a test copy of `s13_jtd.csv` with at least 12 rows for one exact Underlying.
-Each of the four configured columns should include a negative value, zero,
-positive value and blank in the same lexical form used by production.
+Use a controlled test file with at least 12 rows for one exact Underlying. The
+four fields must include staggered negatives, zero, positive, blank, thousands,
+and millions.
 
 1. Open Risk Explorer and select Credit.
-2. In the Cross/main table, select JTD in Single view or click a JTD cell in
-   Multi view.
-3. Click the matching Underlying row.
-4. Confirm the JTD reference card still appears above the normal detail grid.
-5. Confirm page 1 shows ten rows and the remaining rows appear on page 2.
-6. Confirm paging does not invoke a new server callback.
-7. Confirm only negative cells in the exact four configured columns are red.
-8. On page 2, confirm the red state follows that page's records and does not
-   repeat the sign pattern from page 1.
-9. Confirm zero, positive, blank, invalid text, Underlying and other text cells
-   use normal color.
-10. Confirm the four signed columns are right-aligned.
-11. Confirm displayed precision, source column order and source row order are
-    unchanged.
-12. Confirm internal marker columns are not visible in either page.
-13. Repeat in light and dark themes.
-14. Repeat at 200% browser zoom and confirm the pager is visible and usable.
-15. Perform a keyboard and screen-reader check of the labelled table region,
-    page controls, visible heading and page changes.
-16. Select another issuer and confirm the rebuilt table starts on page 1.
-17. Test an issuer with no matching rows and confirm the current empty message.
-18. Switch to SplitVA or away from JTD and confirm the reference card is not
-    shown, as before.
-19. Confirm the Static Data page still neither reads nor writes `s13_jtd.csv`.
+2. In the Cross/main table, choose JTD and select an Underlying row.
+3. Confirm the reference card remains above the normal detail grid.
+4. Confirm page 1 shows ten rows and page 2 shows the remaining rows.
+5. Confirm paging does not make a new server request.
+6. Confirm `1234` displays as `1,234`.
+7. Confirm `1234567` displays as `1,234,567`.
+8. Confirm a negative in each of `Risk JTD`, `EaD`, `EPE`, and `CVA` is red.
+9. Confirm a page-two negative stays red and does not repeat a page-one pattern.
+10. Confirm zero, positive, blank, Underlying, and other text cells are not red.
+11. Confirm only the four numeric columns are right-aligned/tabular.
+12. Confirm source row and visible column order are unchanged.
+13. Confirm no internal marker or Toggle Columns control appears.
+14. Repeat in light and dark themes; current-page text must remain readable.
+15. Repeat at 200% browser zoom and confirm the pager is visible and usable.
+16. Tab through first/previous/current/next/last page controls and confirm a
+    visible focus outline in both themes.
+17. Perform a screen-reader check of the labelled region and pager.
+18. Select another issuer and confirm its rebuilt table starts on page 1.
+19. Test a fractional or malformed selected value and confirm a readable card
+    error.
+20. Remove one required financial header and confirm a readable card error.
+21. Switch to SplitVA or away from JTD and confirm the reference card disappears.
+22. Confirm the Static Data page still cannot read or write `s13_jtd.csv`.
 
-This acceptance sequence does not exercise promotion recalculation or tenor
-reduction. A correct paginated reference table is not evidence that those
-separate flows are fixed.
+This sequence does not test promotion recalculation or tenor reduction. A
+correct paginated JTD reference table is not evidence that those separate flows
+are fixed.
 
 ## Common mistakes
 
-### Adding pagination properties to `html.Table`
+### Leaving the four values as strings
 
-An HTML table has no Dash pagination behavior. Replace the non-empty component
-with DataTable and set `page_action="native"`.
+Dash formats only real numeric payloads. Adding `type="numeric"` or a `Format`
+object does not convert `"1234567"`; it remains an unformatted string and
+`< 0` styling is unreliable.
 
-### Passing only the first ten records
+### Pre-formatting with `format_number()`
 
-Native pagination needs all matching rows in `data`. If the renderer slices to
-ten first, the browser has no second page.
+`format_number()` returns strings. It is correct for the app's native HTML risk
+cells, but using it here would undo the numeric DataTable payload needed for
+pagination-safe `< 0` queries. Use DataTable `Format` instead.
 
-### Querying the visible string fields directly
+### Using `row_index` for negative color
 
-The service intentionally returns strings. Do not assume `type="numeric"`
-converts them. Derive numeric internal markers from a temporary parsed series,
-then query the markers while leaving displayed data untouched.
+Dash 4.4 evaluates it within each native page. Use a filter query on the numeric
+record value so the color follows the row.
 
-### Coloring a whole row or column
+### Keeping hidden sign markers
 
-Each rule must query one internal sign marker and target one visible `column_id`.
-Do not use page-relative `row_index`, and do not omit `column_id`, which would
-broaden the visual effect.
+They were necessary only while preserving the four values as strings. Numeric
+payloads make them redundant and substantially complicate the table.
 
-### Guessing the four fields
+### Silently blanking bad populated values
 
-Do not color every parseable column and do not reuse unrelated Fix 15 example
-fields. Copy the exact deployed headers into one shared tuple.
+Blank is allowed. A populated fractional, non-integer, or out-of-safe-range
+token should produce an actionable selected-issuer error, not silently become
+zero, be rounded, or disappear.
 
-### Silently normalizing business formats
+### Parsing the whole cached file
 
-Do not strip commas, currency symbols, percentages or parentheses until their
-meaning is agreed and covered by representative tests.
+Convert a copy of the selected issuer rows. Do not mutate the cached source or
+let an unrelated issuer's bad token disable the current selection.
 
-### Mutating or tightening the service contract
+### Applying one broad red rule
 
-This feature does not require changing `dtype="string"`, making extra columns
-mandatory, or validating the entire cached file as numeric. Those changes can
-alter display precision and let one unrelated bad row disable every issuer.
+Create one rule per column with both `filter_query` and `column_id`; otherwise a
+negative in one field can color unintended cells.
 
-### Adding a pagination callback
+### Forgetting comma grouping
 
-Native pagination owns page state inside DataTable. A new callback is needed
-only for a future server-side paging design.
+`precision=0` alone gives whole values but no separators. Include `group=","`
+and test the resulting `,.0f` specifier.
 
-### Leaving the 320px wrapper unchanged
+### Allowing decimal source values
 
-The pager can be clipped or trapped inside nested scrolling. Remove the cap and
-verify at normal and enlarged zoom.
+The confirmed JTD reference contract is a base-10 integer token. Validate its
+syntax and exact browser-safe range before creating `Int64`; do not route it
+through floating point or rely on the display format to round fractional data.
 
-### Copying stale pagination CSS selectors
+### Slicing to ten rows before DataTable
 
-Use live Dash 4.4 DOM classes if explicit pager styling is needed. Do not assume
-another page's `.dash-pagination-btn` rule matches the installed component.
+Native pagination needs all matching records. Pre-slicing leaves no second page.
 
-### Hard-coding a light-theme red
+### Adding a page callback
 
-Use `var(--negative)` so the color stays legible in both themes.
+Native pagination already owns page state. A callback is needed only for future
+server-side pagination.
+
+### Leaving the 320px wrapper
+
+It can clip the pager. Remove the cap and verify at enlarged zoom.
+
+### Hard-coding red
+
+Use `var(--negative)` so the value remains legible in both themes.
 
 ## Expected chain after the change
 
@@ -724,28 +740,24 @@ Use `var(--negative)` so the color stays legible in both themes.
 data/s13_jtd.csv
   -> existing lazy cached string-preserving read
   -> existing exact Underlying lookup
-  -> existing Risk Explorer detail callback
-  -> preserve every selected string and source order
-  -> parse only four allowlisted columns temporarily for sign
-  -> attach up to four undeclared per-record sign-marker keys
-  -> create up to four marker-query rules targeting visible columns
-  -> DataTable receives every selected record
-  -> browser renders ten records per page
+  -> copy selected issuer rows
+  -> parse four exact integer fields without a floating-point round trip
+  -> DataTable receives all selected rows
+  -> Format adds comma grouping with zero decimals
+  -> four numeric < 0 rules add semantic red
+  -> browser renders ten rows per page
 ```
 
-No calculation authority or data contract changes.
+No financial calculation authority or callback contract changes.
 
 ## Rollout and rollback
 
-Deploy the renderer, CSS and tests together after replacing the four placeholder
-headers. Do not publish proprietary JTD rows merely to populate the checked-in
-sample.
+Deploy the renderer, CSS, and tests together. Do not add proprietary JTD rows
+to the checked-in header-only sample.
 
-Restart the application as part of the normal code deployment, then run the
-19-step acceptance sequence with a controlled test file. The existing JTD file
-cache continues to detect changes by modification time and size.
+Restart the app as part of the normal deployment and run the 22-step live
+acceptance sequence with controlled data.
 
-Rollback is local and stateless: restore the previous
-`build_jtd_reference_table()` HTML branch and the prior wrapper height. There
-is no database migration, callback state, UUID, service schema, or promotion
-generation to unwind.
+Rollback is local and stateless: restore the previous HTML-table branch and the
+prior wrapper height. There is no database migration, callback state, UUID,
+service schema, promotion generation, or reduced-tenor state to unwind.
