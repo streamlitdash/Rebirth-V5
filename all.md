@@ -1,783 +1,103 @@
 # all — Rebirth implementation handbook
 
-**Branch:** `v5`, based on `v4` commit `950ea707a50f8d12beafa363855207ecc5ed505d`. This handbook consolidates only **FIXESMD.md**, **NEWTESTS.md** and **OPTIMISATIONS.md**. Their three standalone files are replaced by this document on `v5`; all other repository Markdown files are kept separately. Application code is unchanged by this documentation update.
+**Branch:** `v5`. **Sources:** only **FIXESMD.md** and **OPTIMISATIONS.md**, pinned at `v4` commit `950ea707a50f8d12beafa363855207ecc5ed505d`. This is the single combined fixes and optimisation guide. The separate architecture guide is excluded. Other repository Markdown files remain separate.
 
-This handbook preserves every source section and complete fenced code/patch block. Navigation is rewritten for one file, related material is grouped by topic, and the opening precedence rules distinguish alternative or superseded recipes. The large original patches are retained as reference bundles; choose the focused implementation once.
+All implementation steps, source sections and complete code/patch blocks from these two guides are retained. Four prose cross-references to the excluded guide are updated. Related instructions are grouped by implementation stage, with explicit KEEP / REMOVE / REPLACE / ADD / SKIP decisions below. Publishing this document does not install application changes.
 
 <a id="chapter-01"></a>
 ## Chapter 1 — Implementation order and source authority
 
-### How to use this consolidated guide
+### How to follow this guide
 
-This is one implementation guide assembled from the three manuals created for this review. It keeps their exact code, patches, detailed replacement instructions, architecture inventory and recorded results. Related sections are grouped into chapters below, so the reading order no longer depends on switching between three files. Source names beside sections identify where the original instructions came from; references to those names elsewhere in the prose mean the corresponding section of this handbook.
+Work through the numbered implementation stages below. Each stage links to the full instructions, exact code or patch, and checks. FIXESMD supplies the fixes and feature additions; OPTIMISATIONS supplies the capacity and performance changes. The source labels identify the original recipe. You do not need to recreate either original Markdown file.
 
-The guide documents a reviewed baseline, locally tested changes and further proposals. Publishing it does **not** install those application changes. Read each section's status, inspect your current checkout, and apply only changes that are still missing. Historical phrases such as “today”, “current” or “not published” retain the meaning they had in the original source. Reported test results describe the original work, not a fresh run against every later branch.
+The original guides contain both locally tested changes and further proposals. Their status notes and measurements remain dated evidence. Start by inspecting the destination code: if it already contains the selected change, keep it and run its checks instead of applying the patch a second time. This edition adds implementation order and overlap decisions; it does not claim that every proposal has already been implemented or tested together.
 
-#### Chapter map
+#### What the action words mean
 
-| Chapter | Content | When to use it |
-|---|---|---|
-| [2 — Architecture and current use](#chapter-02) | Components, interactions, financial contracts, page behaviour, state, persistence and configuration | Read first for context; use as a reference during changes |
-| [3 — Baseline, Statics and Risk cache](#chapter-03) | Starting revision, broken picker, reusable grouped data and expansion-state cache fix | First implementation work |
-| [4 — Correctness](#chapter-04) | P&L adjustments, Data filters, quotes, Stock scope, exits, coverage and recovery | Before building new features on those values |
-| [5 — Capacity and performance](#chapter-05) | Allocation limits, pagination, P&L construction, cache bounds, grouping, copying and refresh | Before increasing the amount of displayed data |
-| [6 — Portfolio](#chapter-06) | Main Risk hierarchy changes and scale checks | After the cache and capacity safeguards |
-| [7 — Stock and history](#chapter-07) | Adding columns, real daily capture, isolated demos, adjustments and logging | After correctness and relevant history safeguards |
-| [8 — Charts](#chapter-08) | Missing plots, tenor presentation, proposed designs and reproducible previews | After quote and selection correctness |
-| [9 — Validation and future work](#chapter-09) | Tests, rollout, development recipes, architecture inventory and audit coverage | Consult throughout; use for final validation |
-| [10 — Complete patches and tools](#chapter-10) | Full code blocks, alternative patch bundles and original review evidence | Copy from the selected recipe when a step calls for it |
-| [11 — Source register](#chapter-11) | Navigation by each of the three original manuals and immutable originals | Find an old section name or compare the source |
-
-#### Implementation order
-
-1. **Establish the starting code.** Follow FIXESMD Part A in Chapter 3. Record the checkout and run the baseline checks before editing. Use Chapter 2 to identify the actual owner of each calculation, callback and stored value.
-2. **Fix the Statics picker and reusable Risk cache.** Follow FIXESMD Part B, then the focused cache instructions from OPTIMISATIONS section 2. Use the exact patch sources in Chapter 10. Apply the cache change once; the two manuals contain overlapping copies of it.
-3. **Fix the values and selected populations.** Follow FIXESMD Part F in its stated order. Resolve P&L adjustment consistency, Data filtering, quote selection, Stock scope and exits, totals/coverage and recovery before relying on them in a new display or saved history.
-4. **Put limits before expensive work.** In Chapter 5, start with limits checked before allocating history grids, the browser row budget, Stock server pagination, P&L construction limits and bounded history caches. A small visible page or a play/pause control does not by itself bound how much the server builds or sends.
-5. **Remove repeated work.** Continue the measured Chapter 5 recipes for shared grouping and surface pivots, validation, snapshot copying, hidden panels and refresh. Apply one change at a time and compare totals as well as performance. Leave smaller tuning until the large allocations and payloads are controlled.
-6. **Enable Portfolio after its gates pass.** Use Chapter 6's exact hierarchy changes, then test a representative selection with roughly 100,000 rows and 300–400 portfolios. Verify collapsed and expanded output, response size and memory. The isolated benchmarks in the source are useful evidence, but do not prove that every production hierarchy will fit. Portfolio does not depend on finishing the chart or history features.
-7. **Add Stock columns and daily history.** Follow Chapter 7. Add each field at its source/normalization boundary and then in the table's column definition; retain the pagination callback from Chapter 5. Define the real capture schedule and capture Stock as well as Risk/P&L where needed. Keep demo history isolated. Implement consistent adjustment values before treating the adjustment log as an audit record.
-8. **Improve the charts.** Follow Chapter 8 after fixing missing market-move data and quote/selection rules. Generate and compare the proposed previews, then apply the selected presentation to the live renderer. Keep the shared-pivot optimisation when editing its layout or traces.
-9. **Validate and release in small groups.** Use Chapter 9 plus the validation steps attached to each recipe. Check financial equivalence, picker interaction, Stock paging/filtering, history reads/writes, portfolio expansion and chart rendering for the changes actually installed. Keep each group independently reversible. Treat the future-development list as choices, not prerequisites.
-
-#### Where the three guides overlap
-
-| Overlap | Use this rule |
+| Action | Exactly what to do |
 |---|---|
-| Risk cache in FIXESMD Part B/Appendix A and OPTIMISATIONS section 2/Appendix A | Use the focused OPTIMISATIONS cache patch once. FIXESMD's combined patch is an alternative reconstruction bundle. |
-| FIXESMD's combined application/test patch | It includes Statics and cache changes plus a manifest expecting three optional tools. If applying in phases, take the Statics hunks and focused cache patch first; add the tool sources and their manifest change together when using the tools. Do not apply the full bundle again later. |
-| Repeated B4/B5 numbering in FIXESMD | Follow the full heading title and its direct link, not the short number alone. Both original sections are preserved. |
-| Stock scope and pagination | Keep the business population rules from FIXESMD Part F. For the complete pagination callback, use OPTIMISATIONS section 4's Stock-detail recipe; avoid layering two competing callbacks onto the same output. |
-| Surface styling and shared computation | Keep one shared pivot from OPTIMISATIONS section 3, then apply FIXESMD Part D's visual changes to that renderer. Do not restore the older duplicate computation while styling it. |
-| P&L tree limits | The immediate construction budget reduces risk. Building a full server-driven expansion/paging interaction is a further change; the budget alone does not implement that interaction. |
-| Stock/history recipes | Select one capture integration, retain the correct source population, and use bounded history-cache guidance. The optional synthetic generator demonstrates the readers; it does not create actual past observations. |
-| NEWTESTS architecture and recipes | Use them to understand ownership and verify changes. NEWTESTS is not a third application patch to apply after the other two. |
+| **KEEP** | Retain the named behaviour, function, field or contract. A performance change must preserve its values and scope. |
+| **REMOVE** | Delete only the named obsolete block, repeated computation or cache entry path. Do not delete the containing file or feature unless explicitly instructed. |
+| **REPLACE** | Locate the named function or block, remove its old body, and insert the linked replacement in the same location. Update the specified imports and callback inputs/outputs as part of that edit. Do not leave both implementations active. |
+| **ADD** | Insert the new helper, column, limit or file at the placement stated in the linked recipe. Do not append a second callback for an output that is already handled. |
+| **SKIP** | Do not apply this duplicate, alternative or optional recipe in the selected implementation path. Its full source remains available as reference. |
 
-The chapters preserve the original detailed instructions, including their stated limitations and alternatives. When two copies touch the same function, use the rule above and the selected recipe as one integrated edit. There is no requirement to add a new framework, distributed cache or extra service to follow this guide.
+For unified patches in Chapter 10, lines beginning with `-` are the old lines to remove, `+` lines are their replacements/additions, and unprefixed context identifies where the change belongs. The `---` and `+++` file headers are patch metadata. Apply the selected patch with the command in its recipe or reproduce its individual changes; do not paste a whole diff into a Python file. If the destination function has changed, reconcile the named block with the current implementation before using an old whole-function replacement.
+
+#### Implementation sequence and chapter map
+
+| Stage | Read and apply | Finish this before moving on |
+|---|---|---|
+| 1 | [Chapter 2 — Starting point and current features](#chapter-02) | Record the checkout and baseline test results. Identify changes already present. |
+| 2 | [Chapter 3 — Statics picker and Risk cache](#chapter-03) | Verify both picker modes, expansion/collapse and unchanged Risk totals. Apply one cache patch. |
+| 3 | [Chapter 4 — P&L, Data, Stock and market correctness](#chapter-04) | Resolve adjustments, selected scope, quotes, exits, coverage and recovery before new features rely on them. |
+| 4 | [Chapter 5 — Capacity and performance](#chapter-05) | Add allocation/output/cache bounds first, then remove repeated work. Validate financial equivalence and interaction after each group. |
+| 5 | [Chapter 6 — Portfolio](#chapter-06) | Apply only after stages 2 and 4 pass; test representative 100,000-row selections and 300–400 portfolios. |
+| 6 | [Chapter 7 — Stock columns and daily history](#chapter-07) | Add fields through their real source and display, capture authentic observations, and verify history/adjustment readers. |
+| 7 | [Chapter 8 — Charts](#chapter-08) | Correct missing market moves and quote scope, compare previews, then change the live rendering. |
+| 8 | [Chapter 9 — Validation and rollout](#chapter-09) | Run the checks appropriate to the installed changes and preserve a rollback for each group. |
+| Reference | [Chapter 10 — Full patches and tools](#chapter-10) | Copy only the selected bundle or named tool when its implementation stage calls for it. |
+| Reference | [Chapter 11 — Original section navigation](#chapter-11) | Find a named section in either of the two original guides. |
+
+Portfolio can be added as soon as its cache and capacity prerequisites pass; Stock history and chart styling are not prerequisites. If you do not need an optional feature yet, skip its stage. Tests attached to a stage are performed at that stage, as well as the final combined validation.
+
+Within performance work, use this order: **pre-allocation limits → browser row/output limits → server pagination and bounded P&L construction → retained-cache limits → repeated grouping/pivots/copies → smaller tuning**. Keep complete financial totals even when only part of the detail is rendered. Play/pause and a visible page size do not automatically limit the amount built on the server or sent to the browser.
+
+The 18 detailed actions below expand these stages into specific edits. Their links lead to the complete replacements. Use the overlap rules immediately after the action table when two source recipes touch the same function.
+
+### Exact action order: what to replace and what to keep
+
+Use this table as the implementation checklist, then follow each linked recipe's numbered edits and complete code blocks. **REMOVE/REPLACE means the named block only; it never means delete the whole file.** **KEEP means carry that behavior into the final code even when another section replaces the surrounding function.** Mark each row complete only after its checks pass. Independent changes can be separate commits within one row.
+
+The Statics picker and Risk index changes were implemented and tested in the reviewed **local** checkout. The other application changes below are proposals unless their individual source section explicitly says otherwise. The GitHub handbook publication installs none of them. Check the destination files before applying a patch; an existing correct implementation should be kept rather than pasted in again.
+
+| Order / change | Exact file or symbol | REMOVE / REPLACE | KEEP | ADD / completion check | Complete instructions |
+|---|---|---|---|---|---|
+| **1. Establish the starting point** | Checkout; `requirements.txt`; `requirements-dev.txt` | Remove nothing. Do not reset the checkout to an old example revision. | Existing user edits, pinned dependencies, configured financial sources and persisted data. | Record HEAD and dirty diff; compare with the stated source baseline; run existing tests. Use a separate checkout if needed. | [Baseline](#src-fixesmd-part-a--establish-the-exact-starting-point), [record the actual baseline](#src-optimisations-81-record-the-actual-baseline-first) |
+| **2. Repair Statics, then stop hidden Read work** | `cube/pages/static_data/s03_callbacks.py::register_callbacks`, `render_static_data_table`; `tests/s42_statics.py` | For the picker, remove nothing. For the Read optimization, replace **only** the Read callback definition and add its `static-data-mode` input. | Write loading, editing, Save/Add Row, full-table validation and atomic saving. Keep the picker-reset callback when adding the Read guard. | Insert `reset_static_table_view` immediately after `render_static_data_table`; test stale filter/sort/page/hidden-column state. Then verify Write mode performs no hidden Read fetch and returning to Read shows the saved revision. | [Exact picker insertion](#src-fixesmd-step-b1-locate-the-callback-insertion-point), [Statics Read guard](#src-optimisations-6-statics-avoid-work-for-the-hidden-read-panel) |
+| **3. Apply the reusable Risk index once** | `cube/ui/s02_aggregation.py`; `cube/pages/risk/s02_state.py`, `s06_explorertables.py`, `s07_explorer.py`; `tests/s19_riskfilters.py` | Remove Explorer `render_key = json.dumps(...)` blocks and the unused `json` import. Replace Explorer calls to `cache.rendered` with `render_explorer`; supply the cached aggregation index. | Financial aggregation, independent quote identity, standalone table callers, Credit Multi/Split VA rules, all existing tests. Keep `rendered` for Aggregate P&L/Top Promotions. | Use the focused five-file OPTIMISATIONS patch. Add entry/byte accounting, refresh/clear epoch checks and regressions together. Verify equality across scopes and invalidation. | [Cache placement](#src-optimisations-21-implement-the-reusable-risk-index), [complete cache patch](#src-optimisations-appendix-a--exact-locally-implemented-cache-patch) |
+| **4. Make P&L preview, Save and Send agree** | `cube/domain/s08_pnl.py::apply_adjustment_overlay`; `cube/pages/pnl/s02_editor.py`, `s05_sendcallbacks.py`; `cube/services/s03_adjustments.py::LocalCsvAdjustmentRepository` | Replace independently collapsed scoped-send arithmetic and partial-file replacement assembled only from visible editor rows. | The existing replacement-value contract unless a deliberate delta feature is chosen; complete business keys, validation, atomic storage, unrelated saved keys. | Reuse one effective-result calculation. Upsert edits into the complete touched-portfolio set; make deletion explicit; add adjustment-store concurrency/version handling. Check replacement 10 over base 100 stays 10 everywhere. This is a multi-file proposal, not a supplied one-line fix. | [P&L correctness](#src-fixesmd-step-f1-make-pl-effective-value-arithmetic-consistent) |
+| **5. Fix Data query state and quote meaning** | `cube/pages/data/s02_view.py`, `s03_callbacks.py::choose_history_request`; `cube/history/s01_models.py`; `assets/s09_playback.js`; `cube/pages/risk/s08_quickrisk.py::build_quick_search_pivot` | Replace filter-free reconstruction of imported Risk scope. Remove view/slice/compare dates from the key that unnecessarily resets playback. Remove generic Market Sum and Portfolio-weighted quote footers. | Exact requested identities, imported contributor filters, committed-result date captions, connector order and missing quotes. Keep additive Risk/P&L totals over the full population. | Hydrate period/dates with identity; separate draft from loaded state; move Load after query controls. Label capped leaf subtotals honestly. Test Quick Risk → Data → Load, kind changes, return navigation and selected-date stability. | [Data scope/state](#src-fixesmd-step-f2-preserve-datas-query-scope-and-loaded-state-identity), [quote aggregation](#src-fixesmd-step-f3-correct-quote-aggregation-before-redesigning-data-charts) |
+| **6. Fix Stock selection, dates and totals** | `cube/pages/stock/s05_pivot.py`, `s01_data.py`, `s04_callbacks.py`, `s02_history.py` | Replace CRDS/Activity-only clicked-history scope with exact constituents from the filtered clicked cell. Remove silent first-eight-column truncation. | Exact position identities, applied filters, clicked path/revision, currency boundaries and the existing outer comparison. | Add explicit column paging/remainder and separate Current positions/Changes projections; include prior-only exits in Changes. Check a selected 100 cannot become 1,000, the ninth currency is disclosed, and missing dates are labeled accurately. | [Stock correctness](#src-fixesmd-step-f4-preserve-stock-selected-scope-and-complete-totals) |
+| **7. Correct identity boundaries and recovery** | `cube/adapters/s08_stock.py`; `cube/pages/stock/s02_history.py`; `cube/history/s07_sql.py`; `cube/services/s05_sources.py`; `cube/domain/s03_calculations.py`, `s11_tenorreduction.py`; Risk `s02_state.py` | Replace inconsistent demo alias matching at the read boundary, object-typed empty numeric columns and the eight-bit reduction support accumulator. Clear provider failure caches when explicit retry is intended. | Exact real identifiers; immutable completed archives; `many_to_one` Risk→Market checks; null market values; last-good snapshots; full-tenor monetary P&L authority. | Verify current/archive alias parity, Open-only/Current-only/outage recovery and 255/256/257 contributing tenors. Do not rewrite archived parquet files or weaken validators. | [Alias boundary](#src-fixesmd-step-f5-normalize-the-democurrentarchive-identity-boundary), [recovery/reduction](#src-fixesmd-step-f7-keep-refresh-degradation-and-tenor-reduction-truthful) |
+| **8. Make P&L reconciliation interpretable** | `cube/pages/pnl/s06_validation.py`, `s08_aggregate.py`, `s10_summary.py`; `cube/history/s07_sql.py` | Replace misleading complete-residual comparisons over unequal coverage and archive-derived “Today” labels without their actual date. | Missing Predict/Colossus leaves and matched-population arithmetic. Keep existing child limits until a working replacement paging interaction exists. | Add Difference/Status, unmatched amounts/counts and correct date/metric drill-through. Test missing sides, old portfolios, eleven children and period boundaries. Paging is completed as a coupled UI feature, not by deleting the limit. | [P&L reconciliation](#src-fixesmd-step-f6-make-pl-reconciliation-complete-and-actionable), [Validate stages](#src-optimisations-4-bound-the-hidden-pl-validate-tree) |
+| **9. Bound work before allocation or HTML construction** | `cube/history/s06_repository.py::ArchiveHistoryRepository.read`; Risk `s06_explorertables.py::build_tree_rows` and all three builders; P&L `s06_validation.py::_tree_rows`, `_validate_unmapped_table` | Replace unlimited component construction with shared per-render counters. Do not build everything and slice afterward. For history, remove nothing: insert the preflight before `_canonical_values`. | The existing post-build cell guard, full input data/full-scope totals, null grid cells and visible truncation notices. Keep P&L's ten-child cap during its first-stage budget. | Add expected-cell count before allocation; one Risk counter across open branches; one Validate counter across built descendants; bound unmapped preview too. Test guard ordering and total row counts. A play/pause screen still needs its history bundle built first. | [History preflight](#src-optimisations-1-reject-oversized-data-history-grids-before-allocation), [Explorer budget](#src-optimisations-1-bound-the-visible-explorer-tree-before-constructing-more-html), [Validate budget](#src-optimisations-4-bound-the-hidden-pl-validate-tree) |
+| **10. Make Stock detail lazy and server-paged** | `cube/pages/stock/s03_view.py::build_stock_position_detail`; `s04_callbacks.py::register_callbacks`, `render_current_stock` | Replace the complete detail builder and current callback/decorator with the supplied versions. Remove full detail serialization from the pivot callback; its output tuple becomes seven values everywhere. Replace native paging/filtering for detail. | Server-owned `StockPageData`, full filtered pivot totals and exact selection semantics from step 6. Keep all-position search/sort on the server before slicing. | Add `stock_detail_page`, shared `selected_display`, explicit toggle and three callback owners. Closed detail sends no records; verify pages/search/sort, reset and row-click identity. The supplied search box intentionally replaces native filter syntax. | [Complete Stock paging edits](#src-optimisations-3-make-stock-position-detail-lazy-and-server-paged) |
+| **11. Narrow history reads and bound retained summaries** | `cube/history/s05_store.py::ArchiveSQLStore.rows`; `s06_repository.py::read`; `s07_sql.py::SQLPLHistoryRepository` | Add Risk predicates before SQL `LIMIT`; replace direct `_stats_cache`/`_risk_summary_cache` writes with bounded remember methods and recency handling. | Parameterized values, OR-within/AND-between filtering, inclusive Split, Market quote grain, existing date-resolution semantics, legacy pandas fallback, defensive returned copies and generation clears. | Add `_risk_filter_clause` and optional Risk filter argument. Add LRU entry/byte budgets. Verify SQL/pandas parity, selected-scope row bounds, eviction/recompute equality and clear/refresh. | [SQL filter placement](#src-optimisations-2-apply-data-risk-contributor-filters-before-the-sql-row-bound), [history cache bounds](#src-optimisations-5-give-pl-history-numeric-caches-real-retention-bounds) |
+| **12. Remove repeated local work** | Risk `s06_explorertables.py::build_tree_rows`, hidden Credit/Split cell builders; `s05_charts.py` surface/detail functions; Stock `s05_pivot.py::_ordered_children`; `cube/domain/s10_search.py::_filter_risk_positions`; `cube/services/s06_refresh.py::refresh_portfolios`, Risk `s15_refresh.py`, `cube/app/s02_contracts.py` | Replace sibling rescans with per-parent positional grouping; skip calculations for intentionally blank cells; replace repeated detail selection/pivot; replace broad Search slices; avoid an unused Portfolio-refresh return copy through `copy_result=False`. | Promoted Other membership, connector order, displayed financial values, source immutability and default defensive snapshot returns. Keep one shared chart/matrix pivot during later styling. | Follow each complete signature/callback recipe separately. Compare exact outputs including duplicate indices/nulls and failed-refresh retention. Do not add a new retained cache for per-parent grouping. | [Risk/UI recipes 2–6](#src-optimisations-3-risk-search-charts-and-browser-work), [Stock grouping](#src-optimisations-6-replace-stocks-sibling-rescans-with-one-grouping-pass), [Portfolio refresh copies](#src-optimisations-r1-avoid-a-full-result-copy-after-refresh-portfolios) |
+| **13. Enable Portfolio only after capacity checks** | `cube/ui/s01_constants.py::ROW_KEY_COLUMNS`; Risk `s06_explorertables.py::_active_groups_for_frame`; existing scope/action callbacks | If choosing the inline recipe, replace only the final groups return and extend the row-key allowlist. Do not globally register Portfolio or build a position×portfolio cross join. | One prepared Portfolio column, all existing financial/source keys, independent quote aggregation and the output budget. Keep Portfolio deepest and initially collapsed. | Prefer a selected-scope 50-book server page; that UX remains a proposal. The supplied two-file leaf patch is a functional alternative, not production capacity proof. Measure actual 100k-row/300–400-book shapes, payload, worker memory and browser interaction. | [Portfolio recipe and limits](#src-fixesmd-part-c--portfolio-on-the-main-risk-page), [production gate](#src-optimisations-72-portfolio-on-the-main-risk-page) |
+| **14. Populate daily history through the existing writer** | `tools/s02_archive.py::_default_manager_factory`, `run_scheduled_archive`, `main`; `cube/history/s03_io.py::archive_official_snapshot`; site dated sources | Replace the archive entry point's final `archive_from_manager` call with the documented `archive_with_stock` flow; update its import. Replace demo source implementations with real dated sources for production. | The official writer, coherent Market Date, complete MarketBook, manifest/hash validation, atomic completion and immutable existing leaves. Predict already comes from Risk PL. | Add `archive_with_stock` after `_default_manager_factory`, inject same-date Stock, report Stock count/status. Under this exact same-module recipe keep `run_from_env` and `jobs/s01_archive.ipynb` unchanged. Test actual Stock/P&L/Data readers before scheduling. | [Existing history contracts](#src-fixesmd-1-what-already-exists-and-what-is-missing), [exact wrapper placement](#src-fixesmd-exact-placement-for-the-proposed-stock-archive-wrapper) |
+| **15. Add audit history at the persistence boundary** | `cube/services/s03_adjustments.py` repository boundary; `cube/pages/pnl/s05_sendcallbacks.py` send hooks; `cube/app/s03_logging.py` | If durable audit is implemented, replace non-versioned active-state persistence with one transactional active-state/event store. Do not append an unreliable audit log after a successful CSV save. | Step 4's effective-value semantics, repository `load`/`save` boundary, exact sent payloads and existing daily archive. Operational logs remain diagnostic records. | Add actor/version/reason/event fields, concurrency checks and atomic rollback; add send-attempt/payload hash/receipt with unknown-outcome handling. Intraday snapshots, if required, use a separate run/revision store. These are design/integration proposals, not complete supplied storage patches. | [Adjustment audit and sends](#src-fixesmd-6-adjustments-current-values-exist-the-audit-trail-does-not), [intraday capture](#src-fixesmd-5-daily-risk-snapshots-versus-every-revision-logging) |
+| **16. Add useful Stock columns without breaking history** | Stock `s01_data.py::STOCK_DISPLAY_COLUMNS`, `stock_display_rows`, `StockPageData`; `s05_pivot.py::STOCK_PIVOT_VALUES`, `_metric_value`; `s03_view.py`, `s04_callbacks.py`; proposed `s06_metadata.py`; `cube/app/s07_factory.py`, `app.py` | Replace only the values tuple/metric helper for Quantity; extend the display projection/rename/numeric sets for dQuantity. For ISIN, enrich after comparison instead of extending `STOCK_TEXT_COLUMNS`. | Existing seven-column source/archive identity, Quantity comparison arithmetic, Stock/dStock defaults if desired, exact row IDs, null metadata and the new lazy paging callbacks. | Thread dated metadata injection through all live display paths, including `selected_display`; add ISIN to allowed display columns only. Test totals/row count unchanged, mixed-unit Quantity unavailable, duplicate metadata rejected and old archives readable. | [Quantity/dQuantity](#src-fixesmd-8-worked-numeric-change-expose-quantity-and-dquantity), [ISIN wiring](#src-fixesmd-9-worked-metadata-change-add-isin-without-changing-position-identity) |
+| **17. Fix missing charts, then improve their design** | `cube/pages/risk/s05_charts.py::build_line_chart`, `build_tenor_heatmap` or its new `_build_tenor_heatmap_from_pivot` helper; optional `tools/s04_chart_previews.py` | Move the final Graph return out of the non-market branch. Remove the Risk branch's secondary y-axis and its `yaxis="y2"` trace assignments. Replace red/green surface styling; do not replace the shared-pivot refactor with an older function body. | Exact quote aggregation, financial values, connector tenor order, missing cells, chart/table agreement and one shared pivot. | Use signed Exposure/Hedge bars plus Net markers on one scale, suitable Market level/move panels and clear units/hover. Test six metrics, scalar/curve/surface branches and narrow browser widths. Preview tools demonstrate appearance only. | [Exact chart changes](#src-fixesmd-step-d4-the-smallest-first-application-chart-change-if-selected-later), [shared surface implementation](#src-optimisations-4-build-the-risk-surface-pivot-once-and-share-it-with-chart-and-matrix) |
+| **18. Finish measured refinements, then validate the integrated result** | Stock `s02_history.py`, `s04_callbacks.py`; `cube/history/s03_io.py`, `s06_repository.py`; P&L `s10_summary.py`; domain New Trades/Cross Gamma/reducer; `cube/app/s03_logging.py`; `assets/s11_tables.js` | Replace per-identity Stock history fan-out with an optional batch path; replace redundant stat calls/child rescans/finite masks where specified. Remove obsolete helpers/routes only after `rg` proves no live caller remains. | Old provider fallback, history look-back days/nulls, archive integrity/generation detection, all validation boundaries, ownership copies and browser keyboard behavior. | Apply the remaining numbered recipes independently when relevant: scoped validation reuse, logging bounds, gesture batching, modest copy/tenor refinements. Run focused tests/browser interactions, full suite, lint and diff checks; compare bounded cold/warm workloads. Reverse only that change's coupled hunks on rollback. | [History access recipes 7–9](#src-optimisations-4-data-stock-pl-and-history-access), [pipeline/runtime recipes](#src-optimisations-5-startup-refresh-financial-preparation-and-operations), [cleanup boundaries](#src-fixesmd-step-f8-reduce-unnecessary-implementation-layers-after-behavior-is-covered), [final validation](#src-optimisations-8-validation-rollout-and-rollback) |
+
+Portfolio can proceed after steps 3, 5 and 9 have passed and its own capacity checks are satisfied; it does not depend on finishing history, new Stock columns or chart styling. Step 12 is useful preparation, but faster calculations do not replace the step 9 output bound. The later refinements can be deferred without blocking the correctness and capacity fixes.
+
+### Overlapping instructions: use one final implementation
+
+1. **Risk cache appears twice.** Use OPTIMISATIONS section 2 / Appendix A for the focused cache patch. FIXESMD Part B describes the same implementation; its Appendix A contains a larger combined patch. Do not apply both cache copies. Keep the tests from the chosen patch and pre-existing tests.
+2. **The larger FIXESMD patch also adds Statics and a tool manifest.** Its `tests/s35_pipelinearch.py` hunk expects `tools/s04_chart_previews.py`, `s05_demo_history.py` and `s06_read_demo_history.py`. If taking the whole combined patch, create all three tools from their full appendices in the same change. For phased work, take only the Statics callback/test hunks, use the focused cache patch, and add optional tools together with their manifest later.
+3. **FIXESMD repeats the step labels B4/B5.** Follow their full titles: “Check the actual failing interaction” and “Roll back only this change” are Statics instructions; “Implement the reusable Risk index” and “Reproduce the scoped capacity comparison” are cache instructions. They are distinct sections.
+4. **Stock pagination replaces callbacks that later gain new columns.** Use the complete OPTIMISATIONS server-paging callback as the final structure. Preserve FIXESMD's exact selection correction and merge its dQuantity/ISIN projection/enrichment into that structure. Update the new shared `selected_display` helper as well as initial/direct builders. Do not paste an older full callback back over the lazy version.
+5. **Surface speed and surface appearance touch the same code.** First create the single shared pivot/helper. Then apply visual edits inside the helper; keep its wrapper and matrix reuse. Numerical aggregation and quote authority do not change for styling.
+6. **P&L limits have two stages.** Initially keep the ten-child limit and add a total construction budget with a visible notice. Replace that browsing restriction only with working server branch expansion/paging and its coupled Dash/JavaScript changes. Merely skipping closed descendants breaks the existing local DOM toggle.
+7. **Stock archive wrapper placement determines scheduler edits.** Follow FIXESMD's later “Exact placement” subsection: adding the wrapper in `tools/s02_archive.py` leaves the notebook and `run_from_env()` unchanged. The earlier general suggestion to update the notebook applies only if introducing a different job entry point. Do not do both variants.
+8. **Fix arithmetic before storing an audit trail.** The source suggests keeping replacement adjustments as the compatible first contract. If delta mode is deliberately selected, revise preview, Save, both Send paths and audit fields together. Synthetic history helpers cannot backfill genuine past data or stand in for daily capture.
+9. **Prefer the portable optional tools over the old workspace commands.** For demonstrations, create `tools/s04_chart_previews.py`, `tools/s05_demo_history.py` and `tools/s06_read_demo_history.py` from their complete appendices, then follow the later portable-tool instructions. The earlier `generate_demo_history.py`, `read_demo_history.py` and machine-specific interpreter/output paths document the original review run; they are not extra implementations you must install. Keep the stated synthetic range, provenance checks and output-directory restrictions.
+
+Keep the existing pandas/Dash/DuckDB/Parquet structure, bounded caches and immutable snapshot/archive boundaries. No new framework, distributed cache, worker pool or database is required for the performance fixes. The optional transactional adjustment store answers a separate audit requirement; it is not a speed optimization.
 
 <a id="chapter-02"></a>
-## Chapter 2 — Architecture, operation and existing behaviour
+## Chapter 2 — Starting point and features already available
 
-Read this chapter to understand existing owners and contracts. Its source descriptions refer to their stated baseline; the proposed changes in later chapters are not installed merely by appearing in this handbook.
-
-In this chapter:
-
-- [Part G — what is currently implemented and how to use it](#part-src-fixesmd-09) — `FIXESMD.md`.
-- [1. Purpose and boundaries](#part-src-newtests-02) — `NEWTESTS.md`.
-- [2. How to run and use the application](#part-src-newtests-03) — `NEWTESTS.md`.
-- [3. Architecture and dependency direction](#part-src-newtests-04) — `NEWTESTS.md`.
-- [4. Boot, shared shell, and refresh](#part-src-newtests-05) — `NEWTESTS.md`.
-- [5. Financial contracts and calculation sequence](#part-src-newtests-06) — `NEWTESTS.md`.
-- [6. State, caches, and persistence](#part-src-newtests-07) — `NEWTESTS.md`.
-- [7. Risk page](#part-src-newtests-08) — `NEWTESTS.md`.
-- [8. Data page](#part-src-newtests-09) — `NEWTESTS.md`.
-- [9. Stock page](#part-src-newtests-10) — `NEWTESTS.md`.
-- [10. P&L page](#part-src-newtests-11) — `NEWTESTS.md`.
-- [11. Statics page](#part-src-newtests-12) — `NEWTESTS.md`.
-- [12. History, archive jobs, and notebooks](#part-src-newtests-13) — `NEWTESTS.md`.
-- [13. Frontend assets and charts](#part-src-newtests-14) — `NEWTESTS.md`.
-- [14. Configuration, deployment, and diagnostics](#part-src-newtests-15) — `NEWTESTS.md`.
-
-<a id="part-src-fixesmd-09"></a>
-> **Source: `FIXESMD.md` — Part G — what is currently implemented and how to use it.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-fixesmd-part-g--what-is-currently-implemented-and-how-to-use-it"></a>
-### Part G — what is currently implemented and how to use it
-
-| Area | Current use | Important boundary |
-|---|---|---|
-| Startup/refresh | Start `app.py`; let the browser request the first refresh; inspect progress and last-good revision | App construction is lazy; runtime refresh is not an automatic daily archive |
-| Main Risk | Apply the governed filters; expand a Risk row; click a metric cell for tenor detail; choose the available tenor view | Portfolio exists in data, but main Portfolio leaf support is a proposal below |
-| Quick Risk | Search a reported risk identity; inspect its bounded pivot; send a history handoff to Data | It uses position scope; market footer/cap findings remain pending |
-| Quick Market | Search raw quote identity and inspect tenors | Portfolio metadata does not belong in quote identity |
-| Full/reduced tenors | Use the existing tenor-view controls/provider-backed reduction | Provider failure fallback exists; invalidation and conservation findings remain pending |
-| Data | Choose Risk/Market identity and period, press Load, then inspect/play/compare archive dates | Existing state/quote issues are documented; preview layout is not installed |
-| Stock | Use current comparison/pivot and open Position detail for existing fields; select a row for history | Current dates/identity names must match available archive; clicked scope finding remains pending |
-| P&L | Review overview/history; Validate against Colossus; edit and save adjustments; configured send functions are the destination boundary | Demo sends deliberately reject delivery; arithmetic/save issues must be resolved before relying on a changed workflow |
-| Statics Read | Choose a source table to inspect | Read display does not save data |
-| Statics Write | Choose one of four writable static tables, edit, use existing validation/save controls | The picker now clears stale table view state; source validation remains |
-| Cash Flow | Inspect the direct-PL New Trades overlay in Risk and its trade detail | This is an auxiliary classification, not a sixth native route; see NEWTESTS module map |
-| Saved views | Save/reapply governed filter views through the existing saved-view controls | This is view configuration, not an archive of the financial data displayed at save time |
-| Application Logs | Open the logs control for bounded recent process records | In-memory log display is not a durable financial audit history |
-| Official history | Use the archive writer/job after dated source integration; query completed v4 leaves | Writer is idempotent per date; Stock needs the additional job composition shown above |
-| Adjustments | Active values are stored under date/portfolio files and reloaded by editors | Older versions/actor/reason/send receipts need the explicit audit extension |
-
-Detailed source ownership, protocol boundaries, product formulas, callback interaction and every source/test/config file are in **NEWTESTS.md**. The findings appendices preserve all earlier review items rather than silently dropping issues that were not the focus of today's question.
-
-<a id="part-src-newtests-02"></a>
-> **Source: `NEWTESTS.md` — 1. Purpose and boundaries.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-1-purpose-and-boundaries"></a>
-### 1. Purpose and boundaries
-
-Rebirth is a Dash application for reviewing a governed financial risk snapshot, its estimated P&L, current Stock positions, historical observations, and the configuration that shapes those views. It is not a general portfolio-management platform, a pricing engine for arbitrary instruments, or an execution system.
-
-The five native routes are:
-
-| Route | Owner | Main question |
-|---|---|---|
-| `/` | Risk | What exposures, market moves, promotions, and estimated P&L are in the committed snapshot? |
-| `/data` | Data | How did one exact Risk or Market identity change across archived dates and tenor axes? |
-| `/stock` | Stock | What positions are held, what is their market value, and what history belongs to the selected scope? |
-| `/pnl` | P&L | What are Today/MTD/YTD results; what should be adjusted, validated, and sent? |
-| `/static-data` | Statics | What do the approved connector/configuration files contain, and which governed files may be edited? |
-
-Unknown routes use `cube/pages/s01_notfound.py`; the registry also gives that layout the conventional Dash `not_found_404` key.
-
-**Data status matters.** The checked-in sources and 262-date archive are deterministic demonstration fixtures. Current connector identities use `TEMP_REPLACE_ME`; older immutable archive strings may retain `FAKE_REPLACE_ME`. `send_sog_pl` and `send_portfolio_pl` are replacement boundaries, not evidence of a production integration. The archive ends on 21 August 2026. A page requesting a later natural date can correctly fail to find fixture Stock; do not silently label August data as September data.
-
-**Terminology.** Risk means a sourced sensitivity/exposure; dRisk is the supplied change measure, not a number the browser invents. PL is the product-formula result or the appropriate historical source. Stock is market value, and dStock is market-value change. dStock is not automatically investment return or market P&L: position additions/removals and currency effects may contribute.
-
-<a id="part-src-newtests-03"></a>
-> **Source: `NEWTESTS.md` — 2. How to run and use the application.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-2-how-to-run-and-use-the-application"></a>
-### 2. How to run and use the application
-
-<a id="src-newtests-21-local-launch"></a>
-#### 2.1 Local launch
-
-From the repository root, the documented environment is:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe app.py
-```
-
-Then open `http://127.0.0.1:8050/`. Host, port, debug, and proxy paths are controlled by `RuntimeSettings` in `cube/app/s01_settings.py`. `app.py --host 127.0.0.1 --port 8051` overrides local address settings. `app:server` is the WSGI object. `use_reloader=False` avoids creating a duplicate refresh process during local launch.
-
-For this review workspace only, an environment also exists at `../.review-venv/`; that is not part of the repository or an application dependency.
-
-<a id="src-newtests-22-normal-user-journey"></a>
-#### 2.2 Normal user journey
-
-1. Wait for the shell's initial refresh to finish, or inspect its explicit failure state. A later failed refresh should leave the last good snapshot available.
-2. On Risk, inspect the current date/status and apply the intended saved view. Editing filter controls changes a draft; **Apply filters** commits it. **Cancel changes** restores the committed selection.
-3. Use Aggregate P&L for the selected reporting dimension, Quick Risk for a reported/raw risk identity, and Quick Market for a raw quote identity. Hand an identity to Data when history is needed.
-4. In Risk Explorer, select the product family and expand Cross or SplitVA rows. A selected metric cell drives tenor detail. Promotion recalculation is a separate explicit action; ordinary filters do not continuously create promotion generations.
-5. On Data, choose identity and period, then **Load history**. Projection, slice, comparison dates, and playback act on the returned bundle. A Quick handoff pre-fills controls once; it should not lock them thereafter.
-6. On Stock, apply its independent page filters, inspect the pivot and position rows, and select history. Read the limitations in section 9 before interpreting a leaf's history or a total dStock as a whole-book reconciliation.
-7. On P&L, use the page's one committed filter scope for summary, history, editors, and send sections. Editing, saving an adjustment, and sending are distinct actions. Current connectors demonstrate the boundary only.
-8. On Statics, Read is inspection; Write is limited to the approved configuration subset. Save validates and replaces the file. It does not itself publish a new risk snapshot.
-
-<a id="src-newtests-23-when-the-date-is-outside-the-demonstration-archive"></a>
-#### 2.3 When the date is outside the demonstration archive
-
-Stock source availability is different from a page rendering failure. Check the requested date against `data/histo/`. The browser review saw a September 4 request while the fixture archive ended August 21. Use an explicitly labeled supported historical/demo date for investigation, or provide the correct dated source. Changing a shared date while Stock stays mounted has an additional state limitation described below; do not assume every page silently rebases its local date stores.
-
-<a id="part-src-newtests-04"></a>
-> **Source: `NEWTESTS.md` — 3. Architecture and dependency direction.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-3-architecture-and-dependency-direction"></a>
-### 3. Architecture and dependency direction
-
-```mermaid
-flowchart TD
-    Entry[app.py / create_app] --> Factory[app factory and native page registry]
-    Entry --> Sources[services/s05_sources: site boundaries]
-    Sources --> Adapters[adapters: exact connector shapes]
-    Sources --> Refresh[RiskRefreshManager]
-    Refresh --> Domain[domain: products, calculations, governance]
-    Refresh --> Snapshot[committed snapshot and SearchCatalog]
-    Factory --> Pages[Risk / Data / Stock / P&L / Statics]
-    Pages --> SharedUI[ui: aggregation, filters, shared components]
-    Pages --> Snapshot
-    Pages --> History[history repositories and local DuckDB]
-    History --> Archive[completed Parquet leaves + _SUCCESS]
-    Pages --> Browser[Dash stores and assets]
-    Jobs[archive helper and notebook] --> Refresh
-    Jobs --> Archive
-```
-
-The intended direction is external data → validated domain objects/frames → a committed read boundary → page-owned aggregation/presentation. Browser callbacks should not assemble a competing market or risk snapshot.
-
-- `cube/domain/` owns financial meaning, identity keys, formula choices, aggregation rules, and validation.
-- `cube/adapters/` translates site APIs into exact connector shapes. It should not invent Portfolio mappings or reported identity.
-- `cube/services/` owns I/O composition, refresh transactions, durable small stores, and optional reference providers.
-- `cube/history/` owns archived contracts, atomic persistence, generation detection, SQL access, and typed query results.
-- `cube/ui/` contains shared presentation/filter behavior. It currently also normalizes canonical column labels to internal UI names; that bridge is an identified cleanup candidate.
-- `cube/pages/` owns route-specific layout, callbacks, selections, and charts.
-- `cube/app/` owns settings, protocols, startup, routes, logging, and the composition root.
-- `assets/` owns browser behavior and CSS. It operates on bounded returned data and DOM state, not source connectors.
-
-This is not a perfectly isolated textbook layering. `cube/history/s07_sql.py` has P&L-shaped query results; page modules contain some pure projection logic; `_RefreshStateMixin` and `RiskRefreshManager` share internal state; factory and Risk cache both participate in prepared-frame lifecycle. Describe those as the current design, not as independent services that can be freely distributed.
-
-<a id="src-newtests-31-page-injection"></a>
-#### 3.1 Page injection
-
-`cube/app/s07_factory.py::build_app` creates the services and stores page builder callables in Flask configuration under `PAGE_SERVICES_CONFIG_KEY`. `cube/pages/__init__.py::page_services` reads the active Flask app. Each page's `layout()` calls its corresponding builder. This avoids storing one user's state in module globals and lets app factories inject test sources.
-
-`cube/app/s06_routing.py::register_native_pages` registers stable layout callables and clears/rebuilds Dash's process-global page registry. The shell mounts one `dash.page_container`; only the active route's body is mounted. `suppress_callback_exceptions=True` is used because page targets appear/disappear with navigation. The page registry is process-global even though services are app-specific; test factories need to account for that distinction.
-
-<a id="src-newtests-32-why-page-ownership-exists"></a>
-#### 3.2 Why page ownership exists
-
-Risk Explorer interactions do not need to import the Stock page to obtain filters, and Stock should not load P&L history just to paint a shell. Shared concepts go in shared contracts/helpers; page-specific renderers and callback IDs stay with their page. A small callback-registration facade is useful. Arbitrarily splitting helpers to meet a file-length target is not an architectural benefit.
-
-<a id="part-src-newtests-05"></a>
-> **Source: `NEWTESTS.md` — 4. Boot, shared shell, and refresh.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-4-boot-shared-shell-and-refresh"></a>
-### 4. Boot, shared shell, and refresh
-
-<a id="src-newtests-41-cold-start"></a>
-#### 4.1 Cold start
-
-`app.py::create_app` configures logging, creates a manager through `build_production_refresh_manager`, resolves paths, builds `PLSendConfig`, and injects Stock/history/reduction services into `build_app`. It does not intentionally load all connectors or scan an annual archive merely by importing the WSGI entrypoint.
-
-`build_app` uses a warm committed snapshot if one exists; otherwise it constructs a loading shell. `StartupCoordinator` owns one process-level background initial writer. Shared startup controls and Risk/P&L route builders may request that same idempotent attempt; concurrent browsers follow its progress rather than each starting a new writer.
-
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant A as Dash/Flask shell
-    participant C as StartupCoordinator
-    participant M as Refresh manager
-    participant S as Site connectors
-    B->>A: request route and shell
-    A-->>B: shell, stores, status controls
-    B->>A: start/follow refresh; poll status
-    A->>C: idempotent start
-    C->>M: refresh candidate
-    M->>S: bounded connector calls
-    S-->>M: validated candidate inputs
-    M->>M: calculate, map, validate, build catalog
-    M->>M: atomic commit revision
-    A-->>B: revision/progress updates
-    B->>A: page callbacks for committed revision
-```
-
-Health/progress reads are compact. They should not deep-copy every financial frame. The startup watchdog reports a stalled attempt; it does not kill arbitrary Python connector code or authorize a second writer.
-
-<a id="src-newtests-42-refresh-variants"></a>
-#### 4.2 Refresh variants
-
-| Action | Owner and intended effect |
-|---|---|
-| Refresh Risk | `RiskRefreshManager.refresh(force_risk=True, ...)`: rebuild the required risk/market/calculation/governance candidate and dependent release/search state. |
-| Refresh PL | `refresh(force_pl=True, ...)`: refresh the appropriate current-market/P&L path while retaining eligible dated source state. |
-| Refresh Portfolios | `refresh_portfolios`: reload Portfolio/reporting governance and rebuild dependent governed views from committed source caches. |
-| Apply forced dates/settings | Risk date-draft logic validates/rebases the draft, then passes settings to one manager refresh with revision/reset expectations. |
-| Clear Cache | `reset_refresh`: advance reset generation, discard reconstructable state, perform a guarded refresh; page/history owners observe the generation and clear their caches. |
-| Automatic P&L | Browser-local 15-minute scheduling; manager coalesces near-concurrent automatic attempts using a minimum-age check. |
-
-`cube/pages/risk/s15_refresh.py::register_refresh_callbacks` owns the Dash coordination even though its controls are in the shared shell. `assets/s12_refresh.js` handles browser startup/polling/status lifecycle. It is important to trace both when a button appears stuck: one owns server work, the other the immediate browser presentation.
-
-<a id="src-newtests-43-transaction-and-failure-boundaries"></a>
-#### 4.3 Transaction and failure boundaries
-
-`RiskRefreshManager` performs expensive source work outside the reader state lock, constructs a candidate, validates it, then commits together with its search catalog. `_RefreshStateMixin::_commit_full_snapshot` publishes the related fields under the state lock. Readers hold the previous committed object until replacement is ready. `StaleRefreshError`, `StaleResetGenerationError`, and `RefreshInProgressError` distinguish stale requests from busy ownership.
-
-Current operational controls include:
-
-- 15-second caller-side deadline per callable connector boundary;
-- 120-second combined waiting budget per refresh;
-- a bounded daemon call gate retaining at most eight calls that have not returned;
-- one normal market request in flight by default;
-- zero automatic market retries by default;
-- one refresh-wide operational market circuit breaker.
-
-The last point is a current limitation: the first operational market failure can skip other products' requests. `experiments/fix12.md` proposes isolation by product; it is not proof of an implemented change. Schema/type errors are treated differently from operational unavailability and can reject the candidate. A warm rejected transaction should preserve its last good snapshot. Cold unavailable feeds may yield a valid partial candidate where the explicit contracts permit it.
-
-The manager timeout stops waiting; it cannot terminate arbitrary Python code. Real clients still need native connection/read timeouts. Do not confuse connector deadlines, startup watchdog reporting, Gunicorn timeout, and publish-status polling: they have different owners and effects.
-
-<a id="part-src-newtests-06"></a>
-> **Source: `NEWTESTS.md` — 5. Financial contracts and calculation sequence.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-5-financial-contracts-and-calculation-sequence"></a>
-### 5. Financial contracts and calculation sequence
-
-<a id="src-newtests-51-grain-first"></a>
-#### 5.1 Grain first
-
-| Data | Identity/authority | Why it matters |
-|---|---|---|
-| Product Risk | Product identity + raw Underlying + declared tenors + Portfolio | Multiple portfolios can legitimately own exposure to the same quote. |
-| Open/Current quote | Risk Type + Risk Greek + raw Underlying + declared tenor axes within its Source Type/product | Portfolio and Group are not quote keys. |
-| Quote order | Connector-owned rank per raw Underlying and axis | Rank describes display authority; it is not quote identity. |
-| Portfolio config | Exactly one row per Portfolio | Governance joins `many_to_one`; ambiguous mappings must fail. |
-| Reported mapping | Unique Risk Type + Risk Greek + raw Underlying → reported name | Many raw names may share a reported identity; quote calculation must precede this mapping. |
-| Threshold | Exact Risk Type + Risk Greek | Ratios mean nothing if thresholds are joined at the wrong product grain. |
-| Stock | CRDS + CPTY + Portfolio + Instrument + Currency in current contract | Current/prior comparison is one-to-one on the five fields, not on CRDS alone. |
-| Archived Risk | Completed post-calculation snapshot with date/revision metadata | Historical filtering needs historical governed fields, not a re-created current snapshot. |
-| Archived Market | Complete unique raw MarketBook with official status | Quote-only tenors must remain accessible even without a current position. |
-
-<a id="src-newtests-52-normal-calculation-path"></a>
-#### 5.2 Normal calculation path
-
-```text
-readiness/inventory → source Risk date
-                         ↓
-product adapter → get_product_risk
-Market Date/status → Open + Current adapters → validated MarketBook
-                         ↓
-Risk left many-to-one MarketBook → product PL (+ derived Gamma rows)
-                         ↓
-Cross Gamma / New Trades supplemental rows using the same quote authority
-                         ↓
-Portfolio mapping → Reported Underlying → thresholds / baseline pins
-                         ↓
-dashboard conversion + release validation → snapshot + SearchCatalog
-                         ↓
-UI preparation → committed page filters → aggregates/tables/plots
-```
-
-Open and Current merge `one_to_one`; Risk joins the resulting quotes `many_to_one`. Never “fix” a merge error by arbitrarily dropping a duplicate quote or collapsing distinct portfolios. Check the exact declared key and whether repeated rows are genuinely identical first.
-
-Dates are separate authorities: Market Date, previous business-date Open, checker date, each product's aged Risk date, and optional forced overrides. A stale Risk feed does not automatically request an equally stale current-market quote. Date normalization in the checked-in code uses pandas business-day conventions; it is not a comprehensive exchange-specific holiday service.
-
-<a id="src-newtests-53-product-catalogue"></a>
-#### 5.3 Product catalogue
-
-`cube/domain/s02_products.py::PRODUCT_SPECS` is the authority. The current registered set is:
-
-| Key / Source Type | Type / Greek | Axes | Market unit | Formula |
-|---|---|---|---|---|
-| `fxdelta` / `fx/delta` | FX / Delta | scalar | pips | percentage |
-| `fxgamma` / `fx/gamma` | FX / Gamma | scalar | outright | Taylor gamma |
-| `fxvega` / `fx/vega` | FX / Vega | Swap | vol points | absolute |
-| `irdelta` / `ir/delta` | IR / Delta | Swap | bp | absolute |
-| `irgamma` / `ir/gamma` | IR / Gamma | Swap | bp | Taylor gamma; move scale 10,000, risk step 10 |
-| `irdeltavega` / `ir/deltavega` | IR / DeltaVega | Swap × Option | bp | percentage |
-| `xccy` / `ir/xccy` | IR / XCCY | Swap | bp | absolute |
-| `xccyvega` / `ir/xccyvega` | IR / XCCYVega | Swap × Option | bp | percentage |
-| `inflation` / `ir/inflation` | IR / Inflation | Swap | bp | absolute |
-| `inflationvega` / `ir/inflationvega` | IR / InflationVega | Swap × Option | bp | percentage |
-| `basis` / `ir/basis` | IR / Basis | Swap | bp | absolute |
-| `bond` / `ir/bond` | IR / Bond | Swap | bp | absolute |
-| `creditdelta` / `credit/delta` | Credit / Delta | Swap | bp | absolute |
-| `creditvega` / `credit/vega` | Credit / Vega | Swap | bp | absolute |
-| `commodelta` / `commo/delta` | Commo / Delta | Swap | outright | percentage |
-| `commovega` / `commo/vega` | Commo / Vega | Swap | vol points | absolute |
-
-An auxiliary `CASH_FLOW_PRODUCT_SPEC` (`new-position/cash-flow`, Cash Flow/New) uses identity PL for New Trades. It is deliberately outside the aged Risk/MarketBook catalogue: it must not create fabricated market quotes or readiness entries. The user-facing Commodity label may differ from the canonical `Commo` value.
-
-<a id="src-newtests-54-formula-and-missing-value-rules"></a>
-#### 5.4 Formula and missing-value rules
-
-`cube/domain/s03_calculations.py::_pnl_move` and `get_product_pl` apply:
-
-```text
-raw move       = Current − Open
-absolute PL    = Risk × raw move × multiplier
-percentage PL  = Risk × ((Current − Open) / Open) × multiplier
-Taylor move    = raw move × gamma_move_scale
-developed Risk = sourced Gamma Risk × Taylor move / gamma_risk_step
-Taylor PL      = 0.5 × developed Risk × Taylor move × multiplier
-```
-
-The sourced Gamma row retains Taylor PL. A derived Delta row in the Gamma split carries the developed exposure, unavailable dRisk, and zero PL to avoid counting the Taylor contribution twice.
-
-The current implementation coalesces a missing single quote leg from its available counterpart as a continuity policy; when both are absent, quote/P&L availability remains missing. It also normalizes certain nonfinite calculations to zero in `_normalize_computed_pl` and `_normalize_developed_risk`, including a flagged percentage move from zero Open. Those are implemented policies, not universally safe financial assumptions. The review recommends replacing undefined/nonfinite arithmetic with a rejected or explicitly unavailable result instead of an apparently ordinary zero. Changes must include raw-source reproductions and source/status propagation.
-
-Null-preserving sums such as `sum(min_count=1)` prevent an entirely unavailable group from becoming zero. They do not by themselves establish completeness when only some contributing observations are present. Coverage/status needs its own meaning.
-
-<a id="src-newtests-55-supplemental-risk-and-governance"></a>
-#### 5.5 Supplemental risk and governance
-
-- **Cross Gamma:** `cube/domain/s04_crossgamma.py` validates portfolio-level cross sensitivities, derives its market scope, and develops the supported dual-leg rows. `adapters/s06_crossgamma.py` owns the strict external boundary; it must not become an ad-hoc alternate market source.
-- **New Trades:** `adapters/s07_newpositions.py` validates the raw blotter (including trade identity/time and source shape). `domain/s05_newtrades.py` creates required market scope and calculates rows using governed product contracts. Direct Cash Flow PL is an auxiliary classification. Preserve Trade ID traceability into Risk detail.
-- **Reported names:** `attach_reported_underlying` maps after raw PL; missing mappings fall back to the raw label. Quick Risk can use reported identities; Quick Market stays raw.
-- **Promotion:** `evaluate_promotions` compares aggregate absolute Risk/dRisk/PL to exact product thresholds. Baseline promotion uses the configured base scope; explicit current-view generation has its own immutable metadata. Connector-owned Vol Score ranks Top Promotions and is not the threshold ratio.
-- **Pins:** `load_pinned_promotions` / `apply_pinned_promotions` read `data/s12_pinned.csv`. A pin supplements actual reason/bucket handling; it must not invent absent exposure or fake an infinite financial score.
-- **JTD:** `services/s08_jtd.py::jtd_reference_rows` is an optional exact-Underlying reference lookup from `s13_jtd.csv`, cached by file metadata. It is not the source of all computed Credit JTD sensitivity values.
-- **Reduced tenor:** `ReducedTenorReducer` operates post-P&L. Non-Credit products select a matrix from `s11_matrix.csv`; one-axis Credit products use the shared Credit mapping. Sum additive exposures within existing position boundaries. Quote values are matched to an exact reduced tenor when possible; they are not summed as though they were exposures.
-
-<a id="part-src-newtests-07"></a>
-> **Source: `NEWTESTS.md` — 6. State, caches, and persistence.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-6-state-caches-and-persistence"></a>
-### 6. State, caches, and persistence
-
-<a id="src-newtests-61-ownership-map"></a>
-#### 6.1 Ownership map
-
-| State | Owner / lifetime | Contents and intended use |
-|---|---|---|
-| Committed financial snapshot | `RiskRefreshManager`, one process | Large authoritative Risk, MarketBook, PL and governed frames; atomic revision. |
-| Compact read views | `ControlSnapshot`, `PLSnapshot`, `FrameRead`, health/progress types | Copy only what a workflow needs, tied to same-revision metadata. |
-| Exact search index | `SearchCatalog`, one committed revision | Risk identities/hierarchies and unique quote identity options. |
-| Prepared Risk frame | Factory preparation cache plus `_RiskDataCache` | Avoid re-normalizing full data for every page/callback. Ownership is currently shared. |
-| Filtered/reduced Risk | `_RiskDataCache` | Filtered frames: at most 32 entries and 512 MiB of accounted frame storage; revision-scoped reduced books, compact quotes and promotion generations have separate ownership. |
-| Cross hierarchy indexes | `_RiskDataCache.hierarchy_index` | At most four entries and 256 MiB of conservatively accounted retained data; one immutable filtered frame and normalized Credit measure per key. |
-| Explorer component trees | `_RiskDataCache.render_explorer` | Serialize each visible-table build; do not retain the resulting full component tree in the cache. Applies to Cross, SplitVA and Credit Multi. |
-| Workspace component trees | `_RiskDataCache.rendered` | Aggregate P&L and Top Promotions retain their separate 24-entry LRU, without a byte budget; epoch checks prevent invalidated builds from repopulating it. |
-| Draft/applied user filters | Page Dash stores/components | Small JSON-safe selection state; no global per-user DataFrame. |
-| Data history request/bundle | Typed `HistoryQuery` plus browser bundle stores | Immutable requested identity/date scope and bounded canonical values for client playback. |
-| Stock current comparison | Stock callback closure cache | Up to four revision/date keys; filters project those server frames. |
-| History connections/catalogues | Archive/Stock/P&L repositories | Lazy in-memory DuckDB, metadata fingerprints, small selector/query caches. |
-| Named saved views | `SavedFilterViewRepository` | Shared named catalogue, but each page has its own draft/applied state. |
-| P&L adjustments | `LocalCsvAdjustmentRepository` | Complete date/portfolio files with revision/save metadata. |
-| Statics | `StaticDataStore` | Approved CSV files; atomic per-file replacement. |
-| Logs | App logging handler/modal | Bounded process-local operational records; not a durable business audit ledger. |
-
-Browser state is untrusted input: parse/validate selections, identities, revisions and action envelopes before using them. Large authoritative frames stay on the server. Data playback is an intentional exception for a bounded canonical bundle, not permission to serialize the entire archive.
-
-<a id="src-newtests-62-implemented-risk-cache-lifecycle-and-remaining-costs"></a>
-#### 6.2 Implemented Risk cache lifecycle and remaining costs
-
-The local redesign on 6 September 2026 moves reuse for the main Cross view from whole rendered component trees to `ui/s02_aggregation.py::HierarchyAggregationIndex`. The index stores additive measures in NumPy arrays and factorizes authoritative quote identities once. Node aggregation still preserves the existing missing-value sums, breakdown validation and independent quote aggregation. The source and index frames must be treated as immutable; there is no browser-owned mutable index.
-
-`_RiskDataCache.hierarchy_index` keys reuse by the identity of the actual cached filtered frame plus a normalized Credit measure. The frame already represents its revision, product/family, split/filter, reduction and promotion scope. Expansion, metric display, sort and hierarchy presentation can reuse that index when the numeric scope remains the same. A retained entry holds a strong reference to its source frame, preventing a recycled Python object ID from becoming an accidental cache hit. Standard Cross, including Credit Single, obtains this index through `s07_explorer.py`; SplitVA and Credit Multi retain their independent aggregation paths.
-
-The hierarchy LRU is bounded by **four entries and 256 MiB of accounted retained data**. `HierarchyAggregationIndex.memory_bytes` counts the full retained frame, numeric arrays and quote-index arrays; a separate Credit transformation also accounts for its retained source frame. Counting shared frame storage is intentionally conservative because the index can outlive a filtered-cache entry. This is not a bound on total process memory, Python object overhead, temporary build allocations, browser memory, or response size. An unowned frame or an index larger than the byte limit is still usable for that call but is not retained. Ownership for insertion means the source is the current prepared frame or one of the cache's current filtered frames.
-
-`replace_frame` and `clear_reconstructable` advance `_cache_epoch` and clear hierarchy indexes alongside the other derived entries. Index builds capture the epoch and cannot repopulate a cache cleared while they were running. `filtered` verifies that the frame it obtained still matches the current frame before capturing revision/epoch; a changed revision causes a retry, while a same-revision cache clear allows the computed result to serve its caller without reinsertion. These checks guard the filter/refresh/reset race; they do not replace the page's existing action/view-token validation.
-
-Every main Explorer view now calls `render_explorer`, which uses the existing reentrant render lock to serialize component construction and returns the result without retaining it. The numeric index amortizes repeated Cross aggregation preparation, but visible HTML must still be rebuilt and sent. Direct callers of `build_risk_table` can omit an index and receive a local one; when supplied, the builder uses the index's frame for both row membership and numeric values. Mixing its row positions with a separately transformed frame would be incorrect.
-
-The `rendered` helper remains in use by the separate Aggregate P&L and Top Promotions workspace callbacks. Its **24-entry component LRU still has no byte budget**; it now also captures the epoch and skips insertion after invalidation during a build. The shared render lock serializes these builds too. This is a focused replacement of the large Explorer render-cache behavior, not a universal cache framework or removal of every component cache.
-
-Reduced books remain lazy by revision/product scope, and explicit promotion generations remain count-bounded. The factory and page cache still both retain preparation/revision state; consolidating that ownership is preferable to adding another preparation cache. Remaining gaps, unchanged by this redesign:
-
-- Clearing derived Risk frames does not recreate the cached `ReducedTenorReducer`; successful definitions and negative provider results can survive Clear Cache. A reproduced transient failure stays in full-tenor fallback until a new reducer instance is constructed.
-- `SQLPLHistoryRepository` keeps `_stats_cache` and `_risk_summary_cache` in ordinary unbounded dictionaries until archive/connection reset. Distinct filters can accumulate full summary frames. Add a bounded LRU/byte policy; its SQL filter values are already normalized.
-- Stock callback/cache dates and loaded history scope are not fully synchronized with shared revision changes.
-- Every cache does not need a common abstract framework. Document its key, authority, maximum retained size, invalidation trigger, and failure recovery; then consolidate only duplicated ownership.
-
-<a id="src-newtests-63-persistence-is-not-publication"></a>
-#### 6.3 Persistence is not publication
-
-Saved views use small validated shared JSON documents with a file-lock boundary. Adjustment saves replace complete selected portfolio files. They retain save/revision metadata for the effective stored version, but they are not an append-only audit history of every prior edit or send. Statics validates a complete governed file and publishes it using a temporary file and `os.replace`. Those are three distinct write contracts.
-
-Atomic replacement prevents a reader seeing half-written bytes. It does not prove cross-file transactionality or protect two editors from a last-writer-wins overwrite. Statics currently has no content-hash/base-version conflict check. Its `static-data-revision` is a browser refresh signal, not a compare-and-swap database version. A future concurrency control should add an explicit saved-file fingerprint, without removing existing schema validation.
-
-Hosted writable files may be ephemeral. A saved view, adjustment, or Statics edit is not automatically committed to Git or preserved across redeployment. Keep durable storage requirements explicit before changing worker topology.
-
-<a id="part-src-newtests-08"></a>
-> **Source: `NEWTESTS.md` — 7. Risk page.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-7-risk-page"></a>
-### 7. Risk page
-
-<a id="src-newtests-71-components-and-interactions"></a>
-#### 7.1 Components and interactions
-
-`s16_view.py::build_layout` constructs the committed page: date/editor disclosures, checker inventory, unmapped books, workspace tabs, Explorer controls, and selected detail. `s17_callbacks.py` composes four callback groups and injects one Risk cache.
-
-| Workflow | Main chain |
-|---|---|
-| Refresh/settings | shared controls → `s15_refresh` → force-date helpers in `s02_state` → manager → revision/status stores → page outputs |
-| Aggregate P&L | applied reporting filters → `s14_workspacecallbacks` → cached prepared frame → shared `build_aggregate_pl_table` |
-| Quick Risk | search controls `s08_quickrisk` → callback helpers `s10_search` → manager/SearchCatalog exact risk pivot → hierarchy/figure |
-| Quick Market | search controls `s09_quickmarket` → manager exact quote result → quote-grain table/chart; optional detail/history helpers |
-| Top Promotions | current/baseline generation + filters → `s13_workspacetables::top_promotions_frame` → bounded rank table |
-| Explorer | family/split/view/filter/actions → `s07_explorer` → serialized `render_explorer` build → `_RiskDataCache.filtered` → cached index for standard Cross / independent SplitVA or Credit Multi aggregates → `s06_explorertables` → selected tenor detail in `s05_charts` |
-| Recalculate/reset promotion | `s12_promotecallbacks` → `s11_promotion` typed generation → server cache + browser metadata → refreshed presentation |
-| Data handoff | `s04_handoff` validates exact identity and filter view → shared handoff store + navigation → Data consumes once |
-
-Cross and SplitVA are different presentations over governed data. Credit also has Single/Multi presentation and measure choices. Only standard Cross, including Credit Single after its selected measure transformation, uses the new reusable hierarchy index. All Explorer presentations avoid retaining full component trees, while Aggregate P&L and Top Promotions keep the separate workspace render cache. Product shapes and tenor axes should come from ProductSpec and quote-order columns, not guesses from visible labels.
-
-<a id="src-newtests-72-selection-and-stale-event-handling"></a>
-#### 7.2 Selection and stale event handling
-
-Browser delegated actions in `assets/s13_risk.js` include a sequence and view token. `s02_state.py::_is_current_risk_action` validates the envelope against the rendered generation. `risk_action_view_token` includes data revision, risk type/family, table view, reporting dimension, and relevant generation state. This stops a late click from an old table being applied to a replacement view.
-
-Open rows, selected contexts, and metric-detail controls are small state. Hierarchy keys are structured/serialized instead of parsed from human labels. `ui/s02_aggregation.py` contains `frame_for_context`, `visible_tree_level`, `tree_scope`, and aggregation indexes that select the corresponding frame without duplicating semantic levels. Quote aggregation must use its quote index independently of portfolio count.
-
-These structures do not guarantee that every fully expanded table remains small. In the review's server-side capacity probe before the cache redesign, an all-open IR Vega family with 4,441 positions produced 5,835 rendered hierarchy rows, about 17.07 MB of serialized content, and about 6.97 seconds of server work; the Delta case was about 9.28 MB and 3.75 seconds. Those are historical measured examples on the review environment, not timings for the redesigned cache, browser timings, or universal capacity limits. Prefer sensible default collapse, bounded children/continuation, and selected-scope detail before increasing request timeouts or eagerly rendering the entire family.
-
-The user's subsequent scale clarification is approximately **100k rows before adding Portfolio to the view, with 300–400 portfolios**. Whether 100k means raw positions or existing aggregate groups is still unconfirmed. Raw positions already contain Portfolio, so adding a group does not inherently multiply the input by 400. Existing aggregate groups may each split into many contributing books, however. Count actual distinct hierarchy/Portfolio combinations instead of assuming a dense Cartesian product.
-
-For this scale, prefer an aggregated main tree and a **server-paged Portfolio detail for one selected row**. Resolve its exact context/filters/revision, aggregate its matching positions, calculate full matching totals, and only then select the displayed page (initial policy: 50 books, to be measured). Keep unique quote aggregation independent of book count. Hidden descendants are already skipped, but every visible row is still constructed as HTML and included in the response. The local cache redesign now reuses standard Cross numeric indexes across display states and stops retaining main Explorer component trees. It does not add paging or a visible-row limit, and it does not index SplitVA or Credit Multi. Aggregate P&L/Top Promotions still retain up to 24 workspace component trees without a byte budget.
-
-Bounded visible rows and a progressively scoped production measurement remain necessary before enabling broad inline Portfolio expansion. The companion guide's two-file leaf patch is a functional proposal, not production capacity clearance; the suggested Portfolio detail and paging are also not implemented. The synthetic 100k-raw-position/400-portfolio probe in section 15.3 checks a modest selected scope with at most nine rendered rows. It does not measure a fully expanded book, 100k pre-aggregated display groups, or browser/production capacity.
-
-<a id="src-newtests-73-promotion-is-a-separate-decision-from-filtering"></a>
-#### 7.3 Promotion is a separate decision from filtering
-
-`PromotionBasis`, `PromotionRow`, and `PromotionGeneration` record explicit current-view promotion decisions. Changing a display filter does not silently recompute the generation. Reset returns to baseline. A stale-basis indicator explains when the visible scope differs from the one used to calculate the selected generation.
-
-This separation is justified: users should know why an exposure is promoted. Do not simplify it by deriving a new decision on every table click. Do simplify duplicated browser/store representations if they express the same immutable selection.
-
-<a id="src-newtests-74-current-plot-design-and-proposals"></a>
-#### 7.4 Current plot design and proposals
-
-Current detail supports line, heatmap, matrix, and product-shaped panels through `s05_charts`; Quick Risk and Quick Market have their own builders. Some shared meanings are duplicated across these chart owners. Preferred evolution is a small shared chart style/metric vocabulary and shape-specific helpers, not one universal plotting framework.
-
-Proposed previews are design examples only: aligned exposure/change panels; readable signed heatmaps; a selected curve/surface slice; explicit source units and as-of labels; comparable color domains across dates; gray/unavailable cells rather than zero colors. Keep matrix values accessible because a financial surface often needs exact inspection. Do not put quote changes, exposure, and currency P&L on an unlabeled common numeric axis.
-
-<a id="part-src-newtests-09"></a>
-> **Source: `NEWTESTS.md` — 8. Data page.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-8-data-page"></a>
-### 8. Data page
-
-`s02_view.py::build_data_page` paints an archive-free shell. `s01_selection.py` derives legal Risk Type → Greek → Underlying choices from catalog entries. `s03_callbacks.py` owns handoff consumption, selector state, request creation, archive generation, query, serialization, and clientside callback registration.
-
-```mermaid
-flowchart LR
-    H[Quick handoff or manual controls] --> R[immutable history request]
-    G[archive generation] --> Q[ArchiveHistoryRepository.read]
-    R --> Q
-    Q --> B[HistoryBundle: bounded canonical values and ordering]
-    B --> P[projection / slice / comparison dates]
-    P --> J[assets/s09_playback.js]
-    J --> F[figure + selected-date details + player]
-```
-
-The typed contracts live in `history/s01_models.py`: `RiskFilterView`, `HistoryIdentity`, `HistoryHandoff`, `HistoryQuery`, axis ordering, and `HistoryBundle`. `HistoryIdentity` retains actual source membership and raw/reported mode; an ambiguous string label is insufficient authority.
-
-`choose_history_request` snapshots the controls on Load or a pending Quick handoff. The consumed nonce stops a handoff replay from overwriting later edits. `poll_archive_generation` and the repository fingerprint notice completed archive changes; invalidation differs from loading a new user-selected identity.
-
-`ArchiveHistoryRepository` queries date availability, resolves the selected period against observed dates, loads only required rows/columns, applies Risk filters, constructs canonical axes, and enforces row/date/cell budgets. `ArchiveSQLStore` owns the lazy generation-scoped connection and distinct catalogues. Older archive formats remain supported through a legacy fallback in the repository; that fallback currently recognizes a specific exception message and is a cleanup candidate.
-
-The browser receives a canonical bundle rather than a second raw-history payload. `assets/s09_playback.js` derives allowed projections and slices, handles Date A/B, static/playback modes, slider/wheel controls, and redraws without a new source query for each animation frame. Risk history plots Risk; Market history plots its official archived quote. The current code also offers aggregation/slice choices whose financial meaning must stay explicit: summing exposure across a tenor axis and aggregating quote values are different operations.
-
-For UI changes, test the full handoff/manual-edit/load flow, scalar/one-axis/two-axis bundles, missing dates/cells, maximum payload, and reset while playback is active. The fixture archive having only one year does not make a 5Y request invalid; it should resolve truthfully to available history.
-
-<a id="part-src-newtests-10"></a>
-> **Source: `NEWTESTS.md` — 9. Stock page.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-9-stock-page"></a>
-### 9. Stock page
-
-<a id="src-newtests-91-current-implementation"></a>
-#### 9.1 Current implementation
-
-`build_stock_page_route` selects the comparison date pair and builds a shell. The single-use load interval and shared revision/reset inputs trigger `s04_callbacks.py::load_current_stock`. It calls `s01_data.py::load_stock_page_data`, which obtains current and prior Stock through the adapter, loads Portfolio governance, and calls `map_stock_comparison_portfolios`.
-
-The domain compares exact five-field identities using an outer one-to-one merge. It keeps current/prior values and Added/Removed/Changed status. The current page then calls `stock_display_rows`, retaining only positions with a current market value and presenting Stock/dStock plus unaggregated metadata.
-
-Applied Stock filters affect its pivot and detail rows. `s05_pivot.py::build_stock_pivot` defaults to Activity → Category (Bucket) → CRDS → CPTY, offers optional Currency/Product columns and Stock/dStock measures, and constructs only expanded hierarchy descendants. `s03_view.py` supplies the DataTables and history controls.
-
-History currently resolves CRDS + Activity against the current mapped snapshot, calls `SQLStockHistoryRepository` once per resulting exact identity, validates the returned frames, sums value by date, and plots Stock plus dStock. The manual history selectors intentionally remain independent of table filters in the existing tests.
-
-<a id="src-newtests-92-what-remains-wrong-or-ambiguous"></a>
-#### 9.2 What remains wrong or ambiguous
-
-These are review findings, not implemented changes:
-
-1. **Shipped identity mismatch:** current Stock normalizes fixture names to TEMP, but Stock SQL history queries raw archive FAKE names. A current identity returned zero rows where the corresponding raw identity returned two available dates.
-2. **Clicked scope broadening:** the leaf may be CPTY/Portfolio-specific but its history payload only retains CRDS + Activity. A filtered 100-value leaf reproduced a 1,000-value resolved history scope including a hidden second portfolio. Clicked scope should carry exact path, committed filters, column split, and revision. Manual archive selection can remain independent if labeled.
-3. **Silent split truncation:** only the first eight split labels are shown. Nine 100-value currencies reproduced eight displayed columns totaling 800 while position count remained nine. Show a total and explicit remainder or selectable column pages.
-4. **Date lifecycle:** `stock-date-store` is initialized on route mount and never written by callbacks. Shared refresh reloads its old dates; loaded history also does not automatically rebase to a new Stock snapshot.
-5. **Exit reconciliation:** prior-only rows are deliberately hidden. A whole-book change of −390 reproduced visible current-position dStock of +110 because a −500 exited position was omitted. Use a Changes view for reconciliation; do not call the existing projection an arithmetic bug.
-6. **History membership:** current identity/mapping selection means history of today's selected basket, not the historical book including exited members. Label it or implement a dated membership authority.
-7. **Currency/completeness:** establish whether Market Value is local or reporting currency before summing unlike currencies. Null-preserving sums alone cannot distinguish a partial identity observation from complete history.
-
-<a id="src-newtests-93-a-coherent-next-design"></a>
-#### 9.3 A coherent next design
-
-Use one visible scope/date bar; Current Positions and Changes modes; a pivot with total and selectable sort metric; a selected-scope detail area; then aligned Stock line and signed dStock bar panels sharing dates. Add a prior → additions → exits → continuing-position change → current waterfall using the existing comparison data. Show exact identities in lazy position detail rather than eagerly sending every row into a closed disclosure.
-
-The unused provisional promotion/temporary-currency hierarchy functions in `domain/s09_stock.py` and the accepted-but-discarded `promotion_threshold` builder argument can be removed or quarantined once external compatibility requirements are checked. That is a clearer simplification than adding another hierarchy abstraction.
-
-<a id="part-src-newtests-11"></a>
-> **Source: `NEWTESTS.md` — 10. P&L page.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-10-pl-page"></a>
-### 10. P&L page
-
-<a id="src-newtests-101-three-related-different-authorities"></a>
-#### 10.1 Three related, different authorities
-
-- Current calculated P&L comes from the committed manager snapshot.
-- Historical overview/series comes from official Risk/Predict and Colossus archive projections.
-- Effective send rows combine governed calculated rows with approved saved adjustments; editor drafts are not the committed market snapshot.
-
-`PLSendConfig` injects Concerto mapping, adjustment repository, send functions, and history source. `cube/pages/pnl/__init__.py::register_callbacks` composes aggregate, validation, drilldown, and send callback groups.
-
-<a id="src-newtests-102-summary-and-inline-history"></a>
-#### 10.2 Summary and inline history
-
-`s07_view.py::build_pl_page` owns the shell. `s08_aggregate.py` owns page filter values and calls a `PLRiskSummaryQueryProtocol` source. `SQLPLHistoryRepository.risk_summary` builds Risk Type → Greek → Underlying results; `s10_summary.py` renders the bounded hierarchy.
-
-The current summary uses the latest Predict/Risk result for Today and official Colossus totals for MTD/YTD through the archive date. Do not describe those columns as a single interchangeable current-source calculation. `s09_drilldown.py` converts a selected hierarchy scope and period into an inline query; `s03_history.py::build_pl_history_figure` shows the requested historical sources. Date gaps remain meaningful.
-
-<a id="src-newtests-103-editor-adjustment-save-and-send"></a>
-#### 10.3 Editor, adjustment save, and send
-
-```text
-same-revision PL snapshot + governance + Concerto mapping
-    → normalized send base
-    → optional saved adjustment overlay
-    → committed page filters + selected SOG/Portfolio scope
-    → native editor draft with stable row IDs
-    → validate/re-govern edited fields
-    ├→ Save adjustments: persist selected complete portfolio files
-    └→ Send: validate exact scope/revision and call injected sender
-```
-
-`s02_editor.py` contains pure conversion, allowed-scope, dropdown, row-governance, and draft helpers. `s04_sender.py` builds editor/send components. `s05_sendcallbacks.py` materializes effective queries lazily, controls each editor, saves adjustments, and sends all/SOG/Portfolio scopes. Derived mapping fields stay governed rather than freely edited. P&L file storage is `services/s03_adjustments.py`; pure adjustment semantics are in `domain/s08_pnl.py`.
-
-Source functions named `send_*` remain examples in this checkout. Replacing them with real external transmission changes operational consequences; wire explicit authentication, recipient/system contracts, idempotency, outcome handling and audit requirements at that boundary before enabling it for a live workflow.
-
-<a id="src-newtests-104-validate-pl"></a>
-#### 10.4 Validate P&L
-
-`s06_validation.py` loads official Risk and Colossus for a selected date, builds a comparison and hierarchy, and renders it lazily while the disclosure is open. It keeps at most eight date comparisons, and browser chevrons can expand a prepared subtree without re-running the whole comparison. `assets/s14_pnl.js` also bridges native table range selection.
-
-This is comparison/diagnostic UI, not a proof that all raw feeds reconcile. Missing/unmatched values and mapping scope need to remain visible. A useful future exceptions view would rank unexplained differences with drill-through to source rows, thresholds, freshness, and adjustment provenance.
-
-<a id="part-src-newtests-12"></a>
-> **Source: `NEWTESTS.md` — 11. Statics page.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-11-statics-page"></a>
-### 11. Statics page
-
-`StaticDataStore` whitelists exact files and resolves paths inside its data root. Read allows the connector/governance sequence plus `s11_matrix.csv`. Write is limited to Portfolio mapping, thresholds, Concerto mapping, and reported-underlying mapping. `s12_pinned.csv` and `s13_jtd.csv` exist but are not in the current Statics picker whitelist.
-
-`s02_view.py` builds read/write tables and controls. `s03_callbacks.py` switches tabs, loads files, appends blank rows, cancels drafts, saves, and refreshes the Read table through a local revision signal. Store validation delegates to the existing domain loaders, so the editor cannot weaken exact schemas or one-to-one governance keys.
-
-<a id="src-newtests-111-existing-local-fix"></a>
-#### 11.1 Existing local fix
-
-`reset_static_table_view` is a separate callback triggered by the Write file selector. It clears `filter_query`, `sort_by`, `page_current`, `hidden_columns`, `active_cell`, and `selected_cells`. Previously, DataTable kept view state from the prior schema; an old-column filter could make a newly selected file appear empty. This is a reversible UI-state fix. It does not change file content or validation semantics. `tests/s42_statics.py` includes its focused regression.
-
-<a id="src-newtests-112-save-lifecycle-and-remaining-improvements"></a>
-#### 11.2 Save lifecycle and remaining improvements
-
-Save validates the whole table, flushes a temporary CSV, and atomically replaces the approved target. The status then asks the user to refresh the affected source to commit it into the app. A successful save is not yet a successful financial refresh. Portfolio/reporting changes, thresholds and Concerto mapping are consumed by different downstream owners; expose that effect rather than implying one generic button always updates everything.
-
-Useful next changes are a visible draft/file state, before/after summary, selected-file fingerprint for stale-write rejection, cancel/unsaved-change behavior, and a small impact summary. Do not build a new governance platform merely to manage four CSV files. Preserve full-file validation and make the authority/date of the applied snapshot explicit.
-
-<a id="part-src-newtests-13"></a>
-> **Source: `NEWTESTS.md` — 12. History, archive jobs, and notebooks.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-12-history-archive-jobs-and-notebooks"></a>
-### 12. History, archive jobs, and notebooks
-
-<a id="src-newtests-121-completed-leaf-contract"></a>
-#### 12.1 Completed-leaf contract
-
-The tracked archive uses 262 weekday directories from `2025-08-21` through `2026-08-21`, each containing:
-
-```text
-data/histo/YYYY-MM-DD/
-    risk.parquet
-    market.parquet
-    colossus.parquet
-    stock.parquet
-    _SUCCESS
-```
-
-The manifest records schema version, dates, revision, row counts, columns, hashes and fixture identity. Application version V5 does not require changing archive schema version 4 or its `deterministic-rebirth-v4` marker. Read logic must handle label normalization without rewriting those immutable source bytes.
-
-`s02_contracts.py` validates shapes and models; `s03_io.py` discovers and validates leaves, separates complete from pending state, writes completed official snapshots atomically, and adapts a manager into the official archive boundary. Do not invent `_SUCCESS`, alter one Parquet file independently, or backfill today's payload into historical folders.
-
-<a id="src-newtests-122-query-owners"></a>
-#### 12.2 Query owners
-
-| Owner | Main role |
-|---|---|
-| `history/s04_queries.py` | Exact bounded Risk/Market queries, legacy support, PL projection and process cache invalidation. |
-| `ArchiveSQLStore` | Data's lazy generation-scoped Risk/Market SQL and distinct selectors. |
-| `ArchiveHistoryRepository` | Typed Data requests → period resolution → bounded canonical bundle/order. |
-| `SQLPLHistoryRepository` | P&L summary, hierarchy, series and bounded raw-row results over virtual views. |
-| `SQLStockHistoryRepository` | Page-owned Stock catalogue and exact position history. |
-| `open_history_database` / `open_history_query_database` | In-memory SQL exploration/query setup over local validated files. |
-
-DuckDB is an embedded query engine here, not a separately managed service or persistent database. Parquet remains authoritative. Connections are lazy, and generation metadata determines when they are rebuilt. The application does not currently provide a live remote S3 query backend; the README's S3 workflow downloads complete leaves first.
-
-<a id="src-newtests-123-daily-archive-and-exploration"></a>
-#### 12.3 Daily archive and exploration
-
-`tools/s02_archive.py::run_scheduled_archive` resolves `PL_HISTORICAL_PATH`, a `COLOSSUS_LOADER` in `module:function` form, and the manager factory. It calls `archive_from_manager(..., refresh=True)`. The daily job is idempotent: an existing completed official date is not overwritten. It targets the current natural official date, not an arbitrary historical backfill.
-
-**Stock archive integration gap:** the ordinary `RefreshSnapshot` has no `stock_frame`. `archive_official_snapshot` only writes Stock when that optional field is supplied, and the default scheduled manager path does not supply it. The checked-in fixture leaves all containing `stock.parquet` therefore does not prove the daily job will continue Stock history. Add an explicit dated Stock loader/snapshot input at the archive boundary and test its completed manifest before promising a daily Stock archive. Keep its date aligned with the official archive Market Date.
-
-`jobs/s01_archive.ipynb` is the notebook wrapper suitable for scheduling. It locates the project via the explicit root/environment or parent discovery and executes the shared job boundary. `jobs/s02_explore.ipynb` locates the repository, opens the in-memory database, and demonstrates date/count and grouped Risk queries against `archive_days`, `risk_history`, `market_history`, `colossus_history`, and `stock_history`. Do not import a second Dash app just to explore history.
-
-`tools/s01_fixtures.py` creates deterministic connector data and streamed history fixtures, validates them, and has a read-only `--check` mode. Its write/install helpers are fixture-generation machinery, not the production archive scheduler. `tools/s03_benchmark.py` measures cold import, refresh, scale preparation/filter/render, and first history reads without rewriting source data.
-
-<a id="src-newtests-124-optional-local-synthetic-history-examples"></a>
-#### 12.4 Optional local synthetic-history examples
-
-Two standalone tools added during this review demonstrate generation and real repository reads without changing the shipped archive or calling live connectors:
-
-```powershell
-.\.venv\Scripts\python.exe -m tools.s05_demo_history --start 2026-08-19 --end 2026-08-21 --output ../demo-history
-.\.venv\Scripts\python.exe -m tools.s06_read_demo_history --archive ../demo-history
-```
-
-The generator requires an output directory outside the repository, validates the entire requested range against the supported synthetic fixture dates, and accepts only empty or complete tagged synthetic output. It constructs a snapshot that explicitly includes Stock, uses the existing atomic archive writer, retains validated completed days, then checks manifest hashes/schemas and SQL view counts. That explicit `stock_frame` example does not fix the default scheduled manager's Stock omission.
-
-The reader verifies synthetic provenance, derives dates from completed leaves, and exercises P&L, typed Data Risk/Market, and exact Stock history repository APIs. Its Stock example uses an identity from the archive catalogue; it is not a regression fix for the separate current-Stock TEMP → archived FAKE mismatch. The examples reject untagged/real archives so their output remains clearly demonstration data. Neither tool is imported by the app or adds a scheduled job.
-
-<a id="part-src-newtests-14"></a>
-> **Source: `NEWTESTS.md` — 13. Frontend assets and charts.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-13-frontend-assets-and-charts"></a>
-### 13. Frontend assets and charts
-
-The CSS/JS names are ordered because Dash loads assets from the directory; shared namespace exports are consumed by later scripts. The full file inventory below explains each asset.
-
-- Shell CSS defines typography, colors, backgrounds, spacing and semantic financial/status colors.
-- Controls/table CSS styles disclosures, editors, calendar controls and table states.
-- Page CSS covers Risk, P&L, Stock/Statics visuals, responsive layouts, Data/history, promotions and the application-log modal.
-- `s09_playback.js` owns Data bundle projections, date comparisons and local playback.
-- `s10_theme.js` coordinates theme and Plotly relayout alongside shared shell helpers.
-- `s11_tables.js` handles selection/copy/resize and discovery of native-table UI hooks.
-- `s12_refresh.js` owns browser-side startup and refresh progress polling/status.
-- `s13_risk.js` owns delegated Risk hierarchy/cell actions and shortcuts.
-- `s14_pnl.js` owns P&L range selection and local validation-tree interaction.
-
-Browser scripts are necessary because some interactions should not require a server round trip per pointer movement or animation frame. They also introduce lifecycle risk when native pages mount/unmount. Check listener deduplication, observers, route disposal, disabled controls, keyboard behavior, and stale action envelopes in a real browser; matching braces in a source test does not establish any of those properties.
-
-<a id="src-newtests-131-chart-acceptance-criteria"></a>
-#### 13.1 Chart acceptance criteria
-
-For every plot, verify: metric and unit; exact scope; as-of/source dates; sign/zero reference; missing-value representation; tenor order; stable comparison scale; overflow/aggregation disclosure; readable hover; bounded traces/points; resize/theme behavior; and a table/drill-through path for exact values. These are display requirements with financial consequences, not decoration.
-
-Proposed previews linked by the companion review are synthetic/design artifacts. They are not tests of the current app and do not imply live data integration. The local `tools/s04_chart_previews.py` reads the shipped synthetic archive and renders an exposure curve, aligned Open/Current/Move view, signed surface heatmap, and selected surface slice into `docs/chart-previews/index.html` with a small `data.json` payload. Run `python -m tools.s04_chart_previews --output docs/chart-previews` to regenerate the standalone gallery. It is not imported by `app.py`. Integrate one actual chart path at a time, using the existing product/metric contracts and real component callbacks.
-
-<a id="part-src-newtests-15"></a>
-> **Source: `NEWTESTS.md` — 14. Configuration, deployment, and diagnostics.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-14-configuration-deployment-and-diagnostics"></a>
-### 14. Configuration, deployment, and diagnostics
-
-<a id="src-newtests-141-runtime-settings"></a>
-#### 14.1 Runtime settings
-
-| Setting | Where read | Purpose |
-|---|---|---|
-| `HOST`, `PORT`, `DASH_DEBUG` | `RuntimeSettings`; optional CLI overrides in `app.py` | Local bind/debug settings. |
-| `DASH_REQUESTS_PATHNAME_PREFIX`, `DASH_ROUTES_PATHNAME_PREFIX` | `RuntimeSettings` | Public/browser and backend route prefixes. |
-| `JUPYTERHUB_SERVICE_PREFIX`, `DASH_JUPYTERHUB_MODE` | `RuntimeSettings` | Derive proxy/service URLs; proxy mode assumes prefix stripping. |
-| `CONCERTO_MAPPING_PATH` | `app.py` | Concerto field mapping; default `data/s08_concerto.csv`. |
-| `PL_ADJUSTMENT_PATH` | `app.py` | Adjustment directory; default `adjustments/`. |
-| `PL_HISTORICAL_PATH` | `app.py`, archive job | Local complete archive root; default `data/histo/`. |
-| `SAVED_FILTER_VIEWS_PATH` | `app.py` | Named shared views; default `data/saved_views/`. |
-| `RISK_PRODUCT_DELAY_SECONDS` | `app.py` | Optional demonstration/stage delay, not a source timeout. |
-| `CUBE_STARTUP_TIMEOUT_SECONDS` | app factory | Startup watchdog reporting threshold; default 2,400 seconds. |
-| `CUBE_LOG_LEVEL` | app logging | Runtime logging verbosity. |
-| `GUNICORN_THREADS`, `GUNICORN_TIMEOUT_SECONDS` | `gunicorn.conf.py` | Thread count and server timeout; defaults 4 and 300 seconds. |
-| `COLOSSUS_LOADER`, `RISK_CUBE_PROJECT_ROOT` | archive job/notebook | Explicit daily archive integration and project discovery. |
-
-Relative configured paths resolve from the application root rather than the terminal's working directory. Full connector deadline/retry settings also exist as explicit `RiskRefreshManager` constructor arguments; do not assume every constructor policy has an environment variable.
-
-<a id="src-newtests-142-deployment"></a>
-#### 14.2 Deployment
-
-`gunicorn.conf.py` uses one `gthread` worker intentionally: the committed snapshot and writer state are process-local. Increasing workers would create independent snapshots/caches and does not solve the current consistency model. The simplest supported deployment remains one snapshot owner with bounded threaded requests.
-
-`publish.py` validates the exact demonstration archive, stages `app.py`, `gunicorn.conf.py`, `requirements.txt`, `cube/`, `assets/`, and `data/`, recompresses staged Parquet, and invokes the Plotly publisher. The original archive is not rewritten. `plotly-cloud.toml` identifies the existing application. `--keep-bundle` retains staging while publishing; it is not a dry-run flag.
-
-The current publisher is fixture-specific. Before using it with real or newer history, replace exact historical-date/row/fixture assumptions with the intended release contract. Do not merely bypass manifest validation. Runtime writes, credentials and private data must have a deliberately managed deployment/persistence boundary; `.gitignore` does not make all untracked or staged data safe by itself.
-
-<a id="src-newtests-143-diagnostics"></a>
-#### 14.3 Diagnostics
-
-`app/s03_logging.py` supplies `perf_span`, bounded structured metrics, warning deduplication, and the process log buffer/terminal bridge. `app/s08_applogs.py` exposes the log modal. `app/s05_progress.py::progress_payload` serializes compact manager/coordinator state. The factory installs HTTP health/start/progress endpoints and response headers including no-store behavior for relevant JSON paths.
-
-When debugging, capture the first source/validator failure, the exact date/status/product, and the last good revision. A later UI exception may be a consequence. Compare raw-source output against declared columns, dtypes, blanks, duplicate keys and tenor order before editing validators. Logs should explain stage/authority without becoming an unbounded dump of financial frames.
-
-[Back to implementation order](#chapter-01) · [Source register](#chapter-11)
-
-<a id="chapter-03"></a>
-## Chapter 3 — Baseline, Statics picker and reusable Risk cache
-
-Start from the actual code in your checkout. Apply the Statics callback/test hunks and the focused OPTIMISATIONS Risk cache patch once. The full FIXESMD patch in Chapter 10 is an alternative reconstruction bundle, not a second cache implementation.
+Record the destination checkout and its baseline checks first. Keep working features listed here unless a later exact instruction replaces their implementation. The source describes the reviewed revision; publishing this guide does not install the proposed changes.
 
 In this chapter:
 
 - [Part A — establish the exact starting point](#part-src-fixesmd-03) — `FIXESMD.md`.
-- [Part B — reproduce the implemented Statics and Risk cache fixes](#part-src-fixesmd-04) — `FIXESMD.md`.
-- [1. Status, scope and the first decisions](#part-src-optimisations-01) — `OPTIMISATIONS.md`.
-- [2. The cache fix, repeated in full](#part-src-optimisations-02) — `OPTIMISATIONS.md`.
+- [Part G — what is currently implemented and how to use it](#part-src-fixesmd-09) — `FIXESMD.md`.
 
 <a id="part-src-fixesmd-03"></a>
 > **Source: `FIXESMD.md` — Part A — establish the exact starting point.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
@@ -820,6 +140,45 @@ py -m venv .venv
 For this review workspace, the existing interpreter is `..\.review-venv\Scripts\python.exe` when running from `repo`. Substitute that path for `.\.venv\Scripts\python.exe` in the commands below if working here. No dependency upgrade is part of these changes.
 
 The baseline full suite passed **668 tests** during the earlier review. That is a dated baseline result, not a promise that a different environment or production connector will pass.
+
+<a id="part-src-fixesmd-09"></a>
+> **Source: `FIXESMD.md` — Part G — what is currently implemented and how to use it.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
+
+<a id="src-fixesmd-part-g--what-is-currently-implemented-and-how-to-use-it"></a>
+### Part G — what is currently implemented and how to use it
+
+| Area | Current use | Important boundary |
+|---|---|---|
+| Startup/refresh | Start `app.py`; let the browser request the first refresh; inspect progress and last-good revision | App construction is lazy; runtime refresh is not an automatic daily archive |
+| Main Risk | Apply the governed filters; expand a Risk row; click a metric cell for tenor detail; choose the available tenor view | Portfolio exists in data, but main Portfolio leaf support is a proposal below |
+| Quick Risk | Search a reported risk identity; inspect its bounded pivot; send a history handoff to Data | It uses position scope; market footer/cap findings remain pending |
+| Quick Market | Search raw quote identity and inspect tenors | Portfolio metadata does not belong in quote identity |
+| Full/reduced tenors | Use the existing tenor-view controls/provider-backed reduction | Provider failure fallback exists; invalidation and conservation findings remain pending |
+| Data | Choose Risk/Market identity and period, press Load, then inspect/play/compare archive dates | Existing state/quote issues are documented; preview layout is not installed |
+| Stock | Use current comparison/pivot and open Position detail for existing fields; select a row for history | Current dates/identity names must match available archive; clicked scope finding remains pending |
+| P&L | Review overview/history; Validate against Colossus; edit and save adjustments; configured send functions are the destination boundary | Demo sends deliberately reject delivery; arithmetic/save issues must be resolved before relying on a changed workflow |
+| Statics Read | Choose a source table to inspect | Read display does not save data |
+| Statics Write | Choose one of four writable static tables, edit, use existing validation/save controls | The picker now clears stale table view state; source validation remains |
+| Cash Flow | Inspect the direct-PL New Trades overlay in Risk and its trade detail | This is an auxiliary classification, not a sixth native route |
+| Saved views | Save/reapply governed filter views through the existing saved-view controls | This is view configuration, not an archive of the financial data displayed at save time |
+| Application Logs | Open the logs control for bounded recent process records | In-memory log display is not a durable financial audit history |
+| Official history | Use the archive writer/job after dated source integration; query completed v4 leaves | Writer is idempotent per date; Stock needs the additional job composition shown above |
+| Adjustments | Active values are stored under date/portfolio files and reloaded by editors | Older versions/actor/reason/send receipts need the explicit audit extension |
+
+The findings appendices retain the original review items. The separate full architecture and file inventory is excluded from this implementation guide.
+
+[Back to implementation order](#chapter-01) · [Source register](#chapter-11)
+
+<a id="chapter-03"></a>
+## Chapter 3 — Statics picker and reusable Risk cache
+
+Start from the actual code in your checkout. Apply the Statics callback/test hunks and the focused OPTIMISATIONS Risk cache patch once. The full FIXESMD patch in Chapter 10 is an alternative reconstruction bundle, not a second cache implementation.
+
+In this chapter:
+
+- [Part B — reproduce the implemented Statics and Risk cache fixes](#part-src-fixesmd-04) — `FIXESMD.md`.
+- [1. Status, scope and the first decisions](#part-src-optimisations-01) — `OPTIMISATIONS.md`.
+- [2. The cache fix, repeated in full](#part-src-optimisations-02) — `OPTIMISATIONS.md`.
 
 <a id="part-src-fixesmd-04"></a>
 > **Source: `FIXESMD.md` — Part B — reproduce the implemented Statics and Risk cache fixes.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
@@ -2950,7 +2309,7 @@ No Portfolio hierarchy patch or production-scale safety result is included in th
 
 The chart work here removes duplicate selection/pivot construction. It does not claim to fix the market-move plotting issue or make a chart attractive by itself. Keep a separate visual review: preserve contractual tenor order, show nulls as missing, use units in axis/hover labels, and compare a zero-centred diverging risk surface with a restrained line/bar tenor view on the same data. Use a stable comparable colour range when comparing dates and clearly disclose any per-view rescaling.
 
-The prior chart-preview tool and FIXESMD/NEWTESTS describe those visual alternatives. Do not apply that optional tool or fabricate historical observations as part of these performance patches. Authentic daily archives and an adjustment audit ledger remain separate business features, with their own provenance and persistence requirements.
+The chart-preview tool and the FIXESMD chart instructions in this guide describe those visual alternatives. Do not apply that optional tool or fabricate historical observations as part of these performance patches. Authentic daily archives and an adjustment audit ledger remain separate business features, with their own provenance and persistence requirements.
 
 Keep these existing choices unless measurement and a deliberate contract change justify otherwise:
 
@@ -3279,6 +2638,8 @@ The checked-in application data is synthetic. Generating more dates with its fix
 
 The repository fixture command has only `--check` and `--probe-size`. Running it without either flag rewrites repository CSVs and the full fixture archive (`tools/s01_fixtures.py:2109–2152`). There is no `--output`, `--start`, or `--end` option on the existing fixture CLI. `tools.s02_archive` has no argparse date/output CLI at all.
 
+> **Use the later portable tools for a new checkout.** The following workspace commands are historical reproduction evidence. SKIP those hardcoded paths and use the [portable `tools.s05_demo_history` / `tools.s06_read_demo_history` commands](#src-fixesmd-11-portable-optional-tools-now-included-in-the-reviewed-patch) after adding their complete sources from Chapter 10.
+
 Use the supplied **new** helper `generate_demo_history.py`. It calls the real public fixture builder and official writer, requires an output directory, and rejects any path inside `repo`. From this workspace:
 
 ```powershell
@@ -3473,6 +2834,8 @@ The proposed wrapper was exercised with synthetic inputs and successfully wrote 
 <a id="src-fixesmd-external-scheduling-without-creating-an-automation-here"></a>
 ###### External scheduling, without creating an automation here
 
+> **KEEP `jobs/s01_archive.ipynb` and `run_from_env()` for the selected same-module implementation.** The original paragraph below describes the general scheduling alternative. Use the [later exact wrapper placement](#src-fixesmd-exact-placement-for-the-proposed-stock-archive-wrapper), which replaces the call inside `tools/s02_archive.py::run_scheduled_archive`; SKIP an additional notebook/import change.
+
 Use Task Scheduler, the existing Jupyter Scheduler notebook, or the deployment runner. `jobs/s01_archive.ipynb` already invokes `tools.s02_archive.run_from_env()`; it needs updating to the Stock wrapper if Stock is required.
 
 Configure the runner with the absolute Python path, repository working directory, environment/root paths, service credentials, and an end-of-day trigger **after the real source's official cut**. Do not assume a universal 17:30 cutoff. Use one capture attempt at a time; retry transient failures and not-yet-OFFICIAL responses. Alert if the expected `_SUCCESS` leaf is still absent by the agreed deadline. Ordinary successful execution is insufficient if the result says `skipped`.
@@ -3656,6 +3019,8 @@ def enrich_stock_isin(display: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataF
 
 Do not use `drop_duplicates()` to hide conflicting Instrument->ISIN mappings. Missing lookup rows remain null. Do not aggregate ISIN text in numeric totals.
 
+> **KEEP the newer server-pagination callback from Chapter 5. ADD the metadata argument to its current display-building calls.** The original line numbers below identify the older source locations; do not restore the older all-row callback when adding ISIN. Include new numeric fields such as `dQuantity` in the same combined display projection.
+
 <a id="src-fixesmd-wire-it-through-the-existing-current-view-flow"></a>
 ###### Wire it through the existing current-view flow
 
@@ -3823,17 +3188,13 @@ Check scalar, swap-only, option-only and two-axis selections; Risk/dRisk/P&L and
 [Back to implementation order](#chapter-01) · [Source register](#chapter-11)
 
 <a id="chapter-09"></a>
-## Chapter 9 — Diagnostics, tests, validation and future development
+## Chapter 9 — Validation, rollout and recorded review evidence
 
 Historical test counts and diagnostic observations belong to the source revision stated beside them. Re-run the relevant checks on the destination checkout. Distinguish proposed development from features already present in the reviewed code.
 
 In this chapter:
 
 - [Part H — validation, delivery and rollback](#part-src-fixesmd-10) — `FIXESMD.md`.
-- [15. Test strategy and observed verification](#part-src-newtests-16) — `NEWTESTS.md`.
-- [16. Development recipes](#part-src-newtests-17) — `NEWTESTS.md`.
-- [17. Practical roadmap](#part-src-newtests-18) — `NEWTESTS.md`.
-- [18. Complete tracked file inventory](#part-src-newtests-19) — `NEWTESTS.md`.
 - [Session work ledger](#part-src-fixesmd-11) — `FIXESMD.md`.
 - [Final executed verification — Risk cache patch, 6 September 2026](#part-src-fixesmd-12) — `FIXESMD.md`.
 - [Earlier executed verification — Statics/tools delivery, 6 September 2026](#part-src-fixesmd-13) — `FIXESMD.md`.
@@ -3877,532 +3238,6 @@ Generated Plotly HTML embeds a sizeable JavaScript library. It is a review outpu
 #### Step H4. Rollback
 
 Reverse the isolated Statics or cache hunks independently if needed; Step B5 identifies the cache rollback scope. The optional tools and generated previews have no app imports; excluding them from a deployment changes no runtime behavior. Keep generated demo archives outside production archive roots. Do not delete or modify a real completed leaf as a rollback shortcut. If you later apply a proposed financial change, retain the prior version and validate restored totals/coverage before returning to service.
-
-<a id="part-src-newtests-16"></a>
-> **Source: `NEWTESTS.md` — 15. Test strategy and observed verification.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-15-test-strategy-and-observed-verification"></a>
-### 15. Test strategy and observed verification
-
-<a id="src-newtests-151-existing-organization"></a>
-#### 15.1 Existing organization
-
-`pytest.ini` sets `python_files = s*.py` and `testpaths = tests`; filenames intentionally do not follow pytest's usual `test_*.py` pattern. There are 48 tracked test modules, including two separately named `s48_*` modules and no requirement that numbering be contiguous. The complete per-file table below describes each owner and counts test function definitions; parametrization means those counts are not collected-case totals.
-
-The suite includes financial contracts, adapters, dates, market joins, snapshots, overlays, reporting, page behavior, SQL/archive, frontend-source checks, performance logging, deployment staging, and architecture ownership. This is useful coverage, but passing it is not a guarantee of correct end-to-end browser behavior or every combined production-shaped case.
-
-<a id="src-newtests-152-commands"></a>
-#### 15.2 Commands
-
-Run focused tests first for an actual change:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/s04_market.py tests/s21_provenance.py -q
-.\.venv\Scripts\python.exe -m pytest tests/s17_stock.py -q
-.\.venv\Scripts\python.exe -m pytest tests/s42_statics.py -q
-.\.venv\Scripts\python.exe -m pytest tests/s19_riskfilters.py -q
-```
-
-Choose the relevant line, not every command by habit. Before a release, the repository's documented gates are:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m ruff format --check .
-.\.venv\Scripts\python.exe tools/s01_fixtures.py --check
-.\.venv\Scripts\python.exe tools/s03_benchmark.py --enforce
-git diff --check
-```
-
-`--check` validates fixtures without regenerating them. Benchmark enforcement is hardware-sensitive, so compare an isolated run on a known machine and investigate the named stage instead of hiding a failure by raising every budget.
-
-<a id="src-newtests-153-what-was-actually-observed-in-this-review"></a>
-#### 15.3 What was actually observed in this review
-
-The earlier recorded full baseline run in the surrounding workspace's `review-tests.log` reports **668 passed, 52 warnings**. A later full-suite run on 6 September 2026, after the Statics patch, its regression, the three optional tools and their manifest entries, reports **672 passed, 56 warnings in 114.75 seconds** in `../final-tests-sep06.log`. At that stage repository-wide Ruff lint passed, Ruff formatting checks passed for the six changed/new Python files, and `git diff --check` passed. Both results are historical: they predate the subsequent Risk cache redesign and do not validate that new patch or any unapplied proposal.
-
-**Risk cache redesign final verification: 686 tests passed, 56 warnings, 116.04 seconds**, recorded in `../final-cache-tests-sep06.log`. Whole-repository Ruff, formatting checks for all 11 changed/added Python files, and `git diff --check` passed. The four implementation files and 12 added test function definitions are present locally. The focused `tests/s19_riskfilters.py` run reports **55 passed in 3.17 seconds**; its 52 test function definitions include parametrized cases. Added coverage checks index reuse through the standard Cross table builder and the registered Explorer callback, independent quote aggregation and Credit measures, filter separation, source immutability, revision/reset isolation, LRU/byte/oversize behavior, unowned-frame bypass, concurrent/in-flight invalidation, and serialized Explorer builds without component retention. The implementation does not include Portfolio integration or a browser rendering budget.
-
-The separate workspace `cache-scale-probe.py` produced `cache-scale-results.json` using **100,000 synthetic raw positions, 400 books and 250 shared quotes**. It compared fresh-index and reused-index standard Cross renders for four modest display states; every serialized visible table was exactly equal, and Risk/P&L totals were conserved. It retained one hierarchy index and zero Explorer component trees. The prepared source frame accounted for 39,957,132 bytes and the cached index for 51,981,132 bytes; these are retained-data accounting figures, not measured process RSS.
-
-| Synthetic display state | Rendered rows | JSON bytes | Fresh index | Reused-index path |
-|---|---:|---:|---:|---:|
-| Collapsed, initial/cold index | 3 | 6,481 | 134.1 ms | 131.2 ms |
-| One open hierarchy key | 4 | 8,717 | 137.2 ms | 20.7 ms |
-| Two open hierarchy keys | 9 | 20,569 | 181.8 ms | 64.4 ms |
-| One open key, Risk/PL metric expansion | 4 | 14,451 | 138.8 ms | 20.7 ms |
-
-The first reused-path call still constructs its index; later rows demonstrate warm reuse. These are server-side example timings for small visible scopes, not browser timings, production capacity, a fully expanded 100k-row table, or a case with 100k pre-aggregated groups. The probe does not implement or benchmark Portfolio leaf expansion/paging, and it is outside the repository's application/test modules.
-
-Warnings include Dash DataTable deprecation. A separate isolated benchmark log recorded passing first Market/Stock/P&L history budgets; inspect the full log for all stages and environment effects. No browser timings should be inferred from server-side callback timings or these test results.
-
-The local Statics reset has its own regression and browser investigation in the companion review. Reproduction scripts outside the repository captured defects the baseline suite did not detect, including reducer recovery, actual source/history identity mismatch, clicked Stock scope broadening, and split truncation. Keep them as evidence; convert each into a durable regression alongside its eventual fix.
-
-<a id="src-newtests-154-higher-value-additional-tests"></a>
-#### 15.4 Higher-value additional tests
-
-| Scenario | Assertion worth protecting |
-|---|---|
-| Raw bad arithmetic | Undefined percentage/overflow never becomes an ordinary valid-looking zero. |
-| Missing quotes | Scalar/curve/surface unavailable input yields a valid-shaped result or explicit failed candidate, with truthful status. |
-| One product outage | The chosen circuit policy is explicit; healthy products behave as designed. |
-| Reducer recovery | Failure → provider recovery → Clear Cache retries and produces the reduced book. |
-| Multiple portfolios per quote | Risk/PL aggregate correctly while a quote is not portfolio-weighted. |
-| Shared reported identity | Raw member PL precedes reporting; metadata/tenor reductions remain correct. |
-| Current fixture to Stock SQL | The current identity retrieves the real corresponding archived rows. |
-| Same CRDS/Activity, different CPTY/Portfolio | A clicked leaf/column keeps its exact displayed scope. |
-| Nine or more currency splits | No financial contribution disappears without explicit remainder/total. |
-| Added/removed Stock | Changes reconcile prior-to-current; current-only projection is distinctly labeled. |
-| Date commit while Stock mounted | Date pair, loaded snapshot and history agree or explicitly indicate retained older scope. |
-| Statics file switch | Old filter/sort/page/hidden/selection state is cleared for the new schema. |
-| Concurrent Statics editors | Stale base fingerprint fails before overwriting newer saved content, once that feature exists. |
-| History partial availability | Gaps and incomplete totals are distinguishable from complete zero observations. |
-| Cache churn | Bounded entry/byte limits hold across many scopes and resets. |
-| Browser lifecycle | Direct cold route, filters Apply/Cancel, expansion through refresh, handoff edits, playback, theme, and keyboard selection work in mounted pages. |
-
-Some architecture tests assert exact filenames, symbol locations, line limits, or delimiter counts. Keep import-direction/public-contract checks, but replace brittle checks when they obstruct a legitimate simplification. A JavaScript file with balanced braces can still have broken behavior; a correct extracted helper can fail a line-count/inventory test. Do not add more source-string assertions in place of a missing behavioral regression.
-
-<a id="part-src-newtests-17"></a>
-> **Source: `NEWTESTS.md` — 16. Development recipes.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-16-development-recipes"></a>
-### 16. Development recipes
-
-<a id="src-newtests-161-add-a-product-without-bypassing-the-system"></a>
-#### 16.1 Add a product without bypassing the system
-
-1. Define the actual position and quote grain, formula/unit convention, tenor axes and order authority.
-2. Add the unique ProductSpec key/source/type/Greek in `domain/s02_products.py`.
-3. Add/bind the exact adapter boundary and register it in `services/s05_sources.py`; support generic loader fallback only if its contract is truly appropriate.
-4. Provide readiness/inventory and threshold coverage, plus Portfolio/reported mappings where applicable.
-5. Trace release schema, SearchCatalog, family labels, scalar/curve/surface plotting and history contracts. Do not add a fake quote just to satisfy a plot.
-6. Test raw connector shapes, duplicate/absent quotes, formulas, mapped/unmapped positions, reporting, committed reads, search and one complete page interaction.
-
-<a id="src-newtests-162-change-a-chart"></a>
-#### 16.2 Change a chart
-
-Start at the actual builder, determine its input grain and metric authority, and document what the current plot makes hard to answer. Change the smallest renderer/style helper, preserving data order and nulls. Verify a real scalar/curve/surface case and a sparse case in a browser. Share style conventions where useful; do not move every chart into a newly invented configuration framework.
-
-<a id="src-newtests-163-add-a-page"></a>
-#### 16.3 Add a page
-
-Register the route through `app/s06_routing.py`, add a builder to factory-injected page services, provide the page `layout` and one callback facade, and put small cross-page selection state in the shared shell only if another page needs it. New source data still needs a service/typed repository boundary, not page-module global I/O. Include cold/direct URL, empty/error, reset/revision and path-prefix cases.
-
-There are exactly five application pages in this baseline. Cash Flow is a New Trades calculation/classification in the Risk workflow; it is not a sixth native Cashflows page. A future page for it would need the registration and ownership work above.
-
-<a id="src-newtests-164-add-a-portfolio-reporting-leaf-carefully"></a>
-#### 16.4 Add a Portfolio reporting leaf carefully
-
-Portfolio already exists as a position identity and as a Stock/P&L filter. Exposing it as a Risk reporting leaf is a presentation change, not permission to aggregate source positions away or add Portfolio to market quote keys. A naive addition to the generic view-dimension registry can duplicate the prepared `portfolio` column because the current dashboard conversion already includes it as position metadata. The companion fix guide contains the tested small recipe and its current/proposed status. Validate unique prepared columns and main/detail callbacks across product families; do not assume a dropdown entry alone completes the change.
-
-At the subsequently reported 100k-row/300–400-portfolio scale, use the selected-scope paged design in section 7.2 first. The two-file leaf recipe alone has no display budget and should not be treated as the production implementation. Reuse existing scope resolution and aggregation rather than adding another financial data model.
-
-<a id="src-newtests-165-change-governance-or-persistence"></a>
-#### 16.5 Change governance or persistence
-
-Modify the authoritative domain schema/validator first. Trace its CSV editor, source loader/cache, refresh/release, affected selectors and archive representation. Preserve old archives unless migration is an explicit supported operation. For persistent drafts/adjustments, define whether the operation replaces one row, a portfolio, or a whole file; atomically replacing bytes is not enough to define business conflict behavior.
-
-<a id="src-newtests-166-diagnose-a-merge-or-missing-plot"></a>
-#### 16.6 Diagnose a merge or missing plot
-
-Use `rg` to locate the live validator and inspect keys at each boundary. Record exact columns/dtypes, row and unique-key counts, duplicate groups, Open-only/Current-only/matched keys, tenor rank collisions, Portfolio mapping, and raw/reported identity. A blank chart can start in a source identity mismatch, not Plotly. Fix that boundary before spending time on chart styling.
-
-<a id="part-src-newtests-18"></a>
-> **Source: `NEWTESTS.md` — 17. Practical roadmap.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-17-practical-roadmap"></a>
-### 17. Practical roadmap
-
-<a id="src-newtests-171-order-work-by-trust-then-clarity-then-capability"></a>
-#### 17.1 Order work by trust, then clarity, then capability
-
-**First: correctness and recovery.** Address the reproduced calculation/missing-data issues, Stock identity and scope mismatches, silent split omission, reducer recovery, and date/revision state. Bound history caches and add the minimum behavioral regressions. Preserve atomic snapshot publication and source validation.
-
-**Second: make the daily workflow legible.** Unify scope/date/unit labels, show incomplete/stale observations, improve chart comparison scales, split level/change plots, keep exact values available, and distinguish current holdings from changes. Refine Statics save impact and stale-edit handling. Integrate reviewed previews one actual component at a time.
-
-**Third: remove maintenance friction.** Consolidate prepared-data lifecycle; reduce canonical↔lowercase schema round trips; remove unused Stock hierarchy code and obsolete arguments after checking callers; isolate older archive readers if still required; relax brittle architecture tests; batch exact Stock history requests; load selected detail lazily.
-
-**Then add capabilities that reuse existing authority:**
-
-| Development | Why it fits | Prerequisite / smallest useful version |
-|---|---|---|
-| Data-quality/freshness panel | Users need to know whether a low risk or PL number is complete. | Reuse snapshot errors/status/dates and expose matched/missing quote coverage; do not invent a second health database. |
-| “What changed?” comparison | Revision/date comparisons make large risk moves actionable. | Exact identity + stable scope; show added/removed/changed rows and contributions. |
-| P&L exceptions review | Turns Validate P&L into a prioritized investigation workflow. | Explicit Predict/Colossus/adjustment sources, gap handling and drill-through. |
-| Stock reconciliation | Explains daily market-value movement including exits. | Existing outer comparison plus a Changes view and waterfall. |
-| Saved investigation context | Reopening a useful filter/identity/metric scope reduces repeated setup. | Save small versioned IDs/filters/date mode, not full financial frames; define stale revision behavior. |
-| Scenario shocks | ProductSpec and sensitivities can support a bounded “what if” tool. | Explicit unit conventions and valuation approximation; one reviewed product/shock family first. Do not imply full repricing or approved risk limits. |
-| Export of reviewed scope | Users may need exact inspected rows and provenance. | Bounded selected scope with date/revision/source/unit metadata and appropriate data-handling boundary. |
-
-Avoid adding distributed workers, Redis, a plugin system, a universal table schema, or a generic workflow engine merely because the repository is large. Introduce infrastructure only for an observed deployment, concurrency, durability or latency need. A coherent one-process application with explicit immutable reads can remain the simplest correct design.
-
-<a id="src-newtests-172-what-is-not-implemented-by-this-guide"></a>
-#### 17.2 What is not implemented by this guide
-
-The roadmap, live-app chart replacements, new browser tests, Stock redesign, broader preparation/history-cache consolidation, conflict control, scenarios, and expanded exceptions tooling are proposals. The standalone chart gallery and synthetic history tools have been delivered as local artifacts; they are not integrated application features. The Statics view reset and the focused Risk hierarchy-index/cache lifecycle redesign are local application changes. The latter's final validation is recorded separately in section 15.3. Portfolio grouping/paging remains unapplied. Consult the companion `FIXESMD` document for the exact reviewed implementation sequence and code changes; this manual is the architecture/test reference.
-
-<a id="part-src-newtests-19"></a>
-> **Source: `NEWTESTS.md` — 18. Complete tracked file inventory.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-18-complete-tracked-file-inventory"></a>
-### 18. Complete tracked file inventory
-
-The following inventory is generated from `git ls-files` and the live Python AST at the stated baseline, with local Statics and Risk cache responsibilities updated below. The tool-manifest update changes an expected filename set without changing module ownership or the tracked inventory. Every tracked source/config/test/document/notebook/asset outside repeated archive leaves is listed. “Entry points” selects useful public symbols (or private owner symbols where a module is intentionally internal), not every local expression/helper. The earlier sections explain their interactions; the tables make ownership findable.
-
-<a id="src-newtests-181-application-package"></a>
-#### 18.1 Application package
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/app/__init__.py`](cube/app/__init__.py) | Application composition, startup, routing, and diagnostics. | Package exports/marker; inspect importing modules for use. |
-| [`cube/app/s01_settings.py`](cube/app/s01_settings.py) | Runtime configuration for local, JupyterHub, and WSGI launches. | `env_flag`, `normalize_path_prefix`, `resolve_data_path`, `RuntimeSettings` |
-| [`cube/app/s02_contracts.py`](cube/app/s02_contracts.py) | Structural types at the boundary between Dash and the refresh pipeline. | `AdjustmentRepositoryProtocol`, `RefreshProgressProtocol`, `RefreshHealthProtocol`, `SearchResultProtocol`, `RefreshSnapshotProtocol`, `ControlSnapshotProtocol`, `PLSnapshotProtocol`, `FrameReadProtocol`, `RefreshManagerProtocol` |
-| [`cube/app/s03_logging.py`](cube/app/s03_logging.py) | Small structured timing helpers for startup, pages, and lazy queries. | `attach_application_log_handler`, `recent_application_log_text`, `clear_application_logs`, `configure_runtime_logging`, `perf_span`, `reset_performance_warnings` |
-| [`cube/app/s04_startup.py`](cube/app/s04_startup.py) | Process-owned cold-start coordination for the risk cube. | `StartupStatus`, `StartupCoordinator` |
-| [`cube/app/s05_progress.py`](cube/app/s05_progress.py) | Small, frame-free startup and refresh status serialization. | `progress_payload` |
-| [`cube/app/s06_routing.py`](cube/app/s06_routing.py) | Native Dash page catalogue for the V5 application shell. | `register_native_pages` |
-| [`cube/app/s07_factory.py`](cube/app/s07_factory.py) | Dash application factory and HTTP boundary configuration. | `build_app` |
-| [`cube/app/s08_applogs.py`](cube/app/s08_applogs.py) | Bounded, process-local application log modal for operators. | `build_app_log_panel`, `register_app_log_callbacks` |
-
-<a id="src-newtests-182-domain"></a>
-#### 18.2 Domain
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/domain/__init__.py`](cube/domain/__init__.py) | Pure risk-cube contracts, calculations, and governance. | Package exports/marker; inspect importing modules for use. |
-| [`cube/domain/s01_schema.py`](cube/domain/s01_schema.py) | Authoritative portfolio-configuration and reporting-field schema. | `PortfolioField` |
-| [`cube/domain/s02_products.py`](cube/domain/s02_products.py) | Immutable product contracts and the authoritative product catalogue. | `ProductMarketConnector`, `ProductBulkMarketConnector`, `GenericMarketConnector`, `ProductionIntegrationError`, `AxisSpec`, `ProductSpec`, `DirectPLClassification`, `ProductConnectorAdapter` |
-| [`cube/domain/s03_calculations.py`](cube/domain/s03_calculations.py) | Strict source validation and product-level market/P&L calculations. | `market_date_for`, `checker_date_for`, `risk_date_for`, `get_risk`, `get_market_open`, `get_market_status`, `get_product_risk`, `get_product_market_open`, `get_product_market_status`, `get_product_market`, `get_product_pl`, `build_all_pl` |
-| [`cube/domain/s04_crossgamma.py`](cube/domain/s04_crossgamma.py) | Pure validation and dual-leg development of portfolio Cross Gamma risk. | `validate_cross_gamma_rows`, `cross_gamma_market_scope`, `build_cross_gamma_rows` |
-| [`cube/domain/s05_newtrades.py`](cube/domain/s05_newtrades.py) | Pure New Trades validation, MarketBook joins, and P&L calculation. | `validate_new_trade_rows`, `new_trade_market_scope`, `build_new_trade_rows` |
-| [`cube/domain/s06_reporting.py`](cube/domain/s06_reporting.py) | Validated reporting identities applied after raw market P&L calculation. | `load_reported_underlying_mapping`, `attach_reported_underlying` |
-| [`cube/domain/s07_governance.py`](cube/domain/s07_governance.py) | Portfolio governance, reporting identity, promotion, and release views. | `load_config`, `load_thresholds`, `load_reported_underlyings`, `load_pinned_promotions`, `apply_baseline_promotions`, `apply_pinned_promotions`, `evaluate_promotions`, `apply_thresholds`, `merge_config`, `to_dashboard_frame`, `build_dashboard_dataframe` |
-| [`cube/domain/s08_pnl.py`](cube/domain/s08_pnl.py) | Pure P&L-send mapping, aggregation, and adjustment rules. | `PLSendValidationError`, `normalize_market_date`, `load_plsend_mapping`, `load_historical_pl`, `load_legacy_pl_history_leaf`, `load_pl_history`, `normalize_pl_history_types`, `validate_pl_history_frame`, `select_pl_history_series`, `pl_history_period_bounds`, `pl_history_period_values`, `load_portfolio_governance`, `normalize_pl_send_rows`, `validate_pl_send_rows`, `empty_pl_send_frame`, `build_pl_send_base`, `collapse_pl_send_rows`, `apply_adjustment_overlay` |
-| [`cube/domain/s09_stock.py`](cube/domain/s09_stock.py) | Pure Stock-to-Portfolio mapping at the governed Portfolio grain. | `normalize_stock_promotion_threshold`, `prepare_stock_hierarchy`, `summarize_stock_hierarchy`, `summarize_visible_stock_hierarchy`, `validate_stock_frame`, `map_stock_portfolios`, `compare_stock_snapshots`, `map_stock_comparison_portfolios`, `filter_stock_comparison` |
-| [`cube/domain/s10_search.py`](cube/domain/s10_search.py) | Immutable, exact-identity lookup catalog for one committed Cube refresh. | `SearchResult`, `ResolvedHistoryIdentity`, `SearchCatalog`, `build_search_catalog` |
-| [`cube/domain/s11_tenorreduction.py`](cube/domain/s11_tenorreduction.py) | Pure post-P&L reduction of one-axis Tenor Swap risk vectors. | `MatrixProvider`, `load_reduced_tenor_catalog`, `validate_reduction_matrix`, `validate_credit_tenor_mapping`, `ReducedTenorReducer`, `reduce_tenor_swap` |
-
-<a id="src-newtests-183-adapters"></a>
-#### 18.3 Adapters
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/adapters/__init__.py`](cube/adapters/__init__.py) | Strict external connector adapters owned by Rebirth V5. | Package exports/marker; inspect importing modules for use. |
-| [`cube/adapters/s01_common.py`](cube/adapters/s01_common.py) | Shared validation helpers for site-owned Risk and Market connectors. | `RiskSource`, `MarketSource`, `exact_frame`, `exact_status`, `exact_underlying`, `market_frame` |
-| [`cube/adapters/s02_ir.py`](cube/adapters/s02_ir.py) | Strict IR connector adapters. | `build_ir_adapters` |
-| [`cube/adapters/s03_fx.py`](cube/adapters/s03_fx.py) | Strict FX connector adapters. | `build_fx_adapters` |
-| [`cube/adapters/s04_credit.py`](cube/adapters/s04_credit.py) | Strict Credit connector adapter. | `build_credit_adapter` |
-| [`cube/adapters/s05_commodities.py`](cube/adapters/s05_commodities.py) | Working Commodity Delta curve adapter example. | `build_commo_adapter` |
-| [`cube/adapters/s06_crossgamma.py`](cube/adapters/s06_crossgamma.py) | Strict Cross Gamma sensitivity adapter with deterministic Credit fixtures. | `CrossGammaSource`, `build_cross_gamma_adapter`, `get_cross_gamma` |
-| [`cube/adapters/s07_newpositions.py`](cube/adapters/s07_newpositions.py) | Strict raw-blotter adapter scaffold for intraday new trades. | `NewPositionsSource`, `validate_new_positions`, `build_new_positions_adapter`, `get_new_positions` |
-| [`cube/adapters/s08_stock.py`](cube/adapters/s08_stock.py) | Validated Stock connector boundary with a replaceable temp implementation. | `StockSource`, `normalize_stock_date`, `StockConnectorAdapter`, `build_stock_adapter`, `load_stock_archive_leaf`, `load_stock_history`, `get_stock` |
-
-<a id="src-newtests-184-services"></a>
-#### 18.4 Services
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/services/__init__.py`](cube/services/__init__.py) | Runtime services that coordinate domain work. | Package exports/marker; inspect importing modules for use. |
-| [`cube/services/s01_snapshots.py`](cube/services/s01_snapshots.py) | Immutable refresh errors, committed views, progress, and health models. | `RefreshInProgressError`, `StaleRefreshError`, `StaleResetGenerationError`, `RefreshSnapshot`, `ControlSnapshot`, `PLSnapshot`, `FrameRead`, `RefreshProgressSnapshot`, `RefreshHealthSnapshot` |
-| [`cube/services/s02_state.py`](cube/services/s02_state.py) | Committed refresh state, defensive reads, progress, and atomic commits. | `_callable_name`, `_product_progress_label`, `_safe_failure_location`, `_log_refresh_metrics`, `_RefreshStateMixin` |
-| [`cube/services/s03_adjustments.py`](cube/services/s03_adjustments.py) | Validated date/portfolio CSV storage for active P&L adjustments. | `AdjustmentPersistenceError`, `empty_persisted_adjustments`, `LocalCsvAdjustmentRepository` |
-| [`cube/services/s04_savedviews.py`](cube/services/s04_savedviews.py) | Durable shared saved filter-view repository. | `SavedViewError`, `SavedViewConflictError`, `SavedViewValidationError`, `SavedFilterView`, `normalize_saved_view_name`, `SavedFilterViewRepository` |
-| [`cube/services/s05_sources.py`](cube/services/s05_sources.py) | Lazy site-owned connector boundary over explicit temp CSV fixtures. | `TempCsvConnectorError`, `get_market_state`, `get_risk_checker`, `get_risk`, `get_cross_gamma_sensitivities`, `get_new_trades`, `get_market_open`, `get_market_status`, `get_fx_delta_market_open_bulk`, `get_fx_delta_market_status_bulk`, `get_portfolio_config`, `get_risk_thresholds`, `get_reported_underlyings`, `get_pinned_promotions`, `get_colossus_pl`, `send_sog_pl`, `send_portfolio_pl`, `get_product_connector_adapters`, `build_production_refresh_manager` |
-| [`cube/services/s06_refresh.py`](cube/services/s06_refresh.py) | Atomic refresh orchestration with fail-soft last-good reads. | `ConnectorCallTimeoutError`, `ConnectorCallBusyError`, `ConnectorRefreshBudgetError`, `RiskRefreshManager` |
-| [`cube/services/s07_tenorreduction.py`](cube/services/s07_tenorreduction.py) | Temporary reduced-tenor catalogue and injectable matrix provider boundary. | `get_reduced_tenor_catalog_source`, `get_reduced_tenor_matrix`, `get_credit_tenor_mapping` |
-| [`cube/services/s08_jtd.py`](cube/services/s08_jtd.py) | Lazy lookup for the optional Jump-to-Default reference table. | `JTDReferenceError`, `jtd_reference_rows` |
-
-<a id="src-newtests-185-history"></a>
-#### 18.5 History
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/history/__init__.py`](cube/history/__init__.py) | Canonical immutable-history and archive API for Rebirth V5. | Package exports/marker; inspect importing modules for use. |
-| [`cube/history/s01_models.py`](cube/history/s01_models.py) | Strict, lazy Risk and Market history contracts for the native Data page. | `HistoryValidationError`, `RiskFilterView`, `HistoryIdentity`, `HistoryHandoff`, `HistoryCatalogEntry`, `HistoryIdentityCatalog`, `HistoryQuery`, `HistoryAxisOrder`, `HistoryOrdering`, `HistoryBundle`, `resolve_actual_period_dates` |
-| [`cube/history/s02_contracts.py`](cube/history/s02_contracts.py) | Flat, atomic archives for one official Risk Explorer snapshot per date. | `RiskArchiveValidationError`, `OfficialSnapshot`, `RiskArchive`, `CompletedArchiveDay`, `ArchiveResult`, `archive_leaf_path`, `validate_risk_archive_frame`, `validate_colossus_frame`, `validate_market_archive_frame`, `validate_stock_archive_frame` |
-| [`cube/history/s03_io.py`](cube/history/s03_io.py) | Atomic archive persistence, manifest validation, and date discovery. | `load_risk_archive`, `load_risk_colossus_archive`, `load_stock_archive_frame`, `list_completed_v4_archive_days`, `list_queryable_v4_archive_days`, `list_completed_market_dates`, `archive_official_snapshot`, `archive_from_manager` |
-| [`cube/history/s04_queries.py`](cube/history/s04_queries.py) | Bounded archive projections and exact Risk, Market, and P&L queries. | `build_history_portfolio_authority`, `project_archive_to_pl_history`, `load_shared_pl_history`, `load_risk_history_for_identity`, `load_market_history_for_identity`, `load_full_market_history_for_identity`, `clear_archive_caches` |
-| [`cube/history/s05_store.py`](cube/history/s05_store.py) | Lazy generation-scoped SQL access for Risk and Market history. | `ArchiveSQLStore` |
-| [`cube/history/s06_repository.py`](cube/history/s06_repository.py) | Lazy Data-page catalog and bounded Risk/Market history repository. | `ArchiveHistoryRepository` |
-| [`cube/history/s07_sql.py`](cube/history/s07_sql.py) | Lazy in-memory DuckDB views and bounded P&L history queries. | `PLHistoryHierarchyResult`, `PLHistorySeriesResult`, `PLHistoryRowsResult`, `PLRiskSummaryResult`, `open_history_database`, `open_history_query_database`, `SQLPLHistoryRepository` |
-
-<a id="src-newtests-186-shared-ui"></a>
-#### 18.6 Shared UI
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/ui/__init__.py`](cube/ui/__init__.py) | Shared presentation helpers owned by the Rebirth V5 UI boundary. | Package exports/marker; inspect importing modules for use. |
-| [`cube/ui/s01_constants.py`](cube/ui/s01_constants.py) | Shared schema, hierarchy, and metric constants for the Rebirth V5 UI. | `get_active_groups`, `get_active_alt_groups`, `compose_detail_metric`, `split_detail_metric` |
-| [`cube/ui/s02_aggregation.py`](cube/ui/s02_aggregation.py) | Risk preparation/filtering and hierarchy aggregation; reusable immutable-scope numeric/quote indexes with conservative retained-data accounting. | `tenor_sort_key`, `tenor_axis_order`, `prepare_risk_data`, `apply_filters`, `preserve_pinned_promotions`, `recompute_filtered_promotion`, `filter_ir_family`, `credit_measure_column`, `credit_measure_available`, `credit_measure_values`, `apply_credit_measure`, `decimals_for`, `format_number`, `number_sign_class`, `selected_underlying_sort_metric`, `ordered_unique`, `selected_dimension`, `hierarchy_groups`, `dimension_title`, `row_key`, `parse_row_key`, `triggered_pattern_click`, `frame_for_context`, `hierarchical_market_value`, `average_move`, `HierarchyAggregationIndex`, `_MarketQuoteIndex`, `memory_bytes`, `aggregate_values`, `should_show_sum`, `display_metric`, `default_open_rows`, `visible_tree_level`, `tree_scope`, `detail_frame` |
-| [`cube/ui/s03_filters.py`](cube/ui/s03_filters.py) | Reusable Dash controls and callbacks for shared saved filter views. | `matches_activity_1_to_3_base`, `SavedFilterViewControls`, `saved_view_options`, `build_saved_filter_view_bar`, `selected_filter_payload`, `committed_filter_state`, `committed_filter_state_values`, `base_saved_filter_view`, `is_base_saved_view`, `is_custom_saved_view`, `selected_saved_view_label`, `saved_view_control_values`, `saved_view_apply_request`, `saved_view_request_values`, `saved_view_request_id`, `saved_view_request_matches_base`, `register_saved_filter_view_callbacks` |
-| [`cube/ui/s04_components.py`](cube/ui/s04_components.py) | Cross-page Dash components for tables, loading, and refresh lifecycle. | `build_aggregate_pl_table`, `build_cube_loader`, `build_header_utilities`, `build_operating_date_content`, `build_shared_refresh_shell`, `build_initial_load_layout` |
-
-<a id="src-newtests-187-risk-page"></a>
-#### 18.7 Risk page
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/pages/risk/__init__.py`](cube/pages/risk/__init__.py) | Native Dash Pages entry for the V5 Risk dashboard. | `layout`, `register_callbacks` |
-| [`cube/pages/risk/s01_common.py`](cube/pages/risk/s01_common.py) | V5 Risk-page constants, controls, labels, and common presentation helpers. | `reporting_filter_map`, `quick_risk_filter_map`, `metric_title` |
-| [`cube/pages/risk/s02_state.py`](cube/pages/risk/s02_state.py) | V5 Risk-page action/date state and prepared/filtered/reduced data ownership; bounded reusable Cross indexes, epoch invalidation and separate Explorer/workspace render lifetimes. | `_RiskDataCache`, `hierarchy_index`, `render_explorer`, `rendered`, `risk_action_view_token`, `risk_exclude_selected`, `filter_unmapped_portfolios`, `normalize_forced_dates`, `normalize_view_date`, `auto_refresh_enabled`, `commodity_market_enabled`, `risk_checker_enabled`, `collect_forced_dates`, `snapshot_forced_dates`, `snapshot_forced_view_date`, `make_force_draft`, `draft_forced_dates`, `draft_base_dates`, `draft_view_date`, `draft_base_view_date`, `force_dates_dirty`, `cancel_force_dates`, `rebase_force_draft`, `ForceApplyResult`, `apply_force_dates`, `persisted_force_dates` |
-| [`cube/pages/risk/s03_defaults.py`](cube/pages/risk/s03_defaults.py) | V5 Risk-only immutable Filter View defaults. | `DefaultRiskFilterSelection`, `resolve_default_risk_activities`, `default_risk_filter_values`, `default_risk_filter_payload` |
-| [`cube/pages/risk/s04_handoff.py`](cube/pages/risk/s04_handoff.py) | Typed Quick Risk/Market handoff into the V5 native Data page. | `build_risk_filter_view`, `build_history_handoff`, `register_callbacks` |
-| [`cube/pages/risk/s05_charts.py`](cube/pages/risk/s05_charts.py) | V5 Risk-page tenor state, line, heatmap, matrix, and detail-panel builders. | `build_surface_matrix_table`, `detail_tenor_partitions`, `detail_tenor_view_state`, `selected_context_title`, `build_line_chart`, `build_tenor_heatmap`, `build_detail_panel_with_state` |
-| [`cube/pages/risk/s06_explorertables.py`](cube/pages/risk/s06_explorertables.py) | V5 Cross and Split VA hierarchy presentation; standard Cross accepts a reusable aggregation index and consistently uses its frame. | `metric_class`, `metric_header`, `build_columns`, `build_tree_rows`, `build_risk_table`, `build_alt_risk_table`, `build_credit_multi_table`, `build_small_table` |
-| [`cube/pages/risk/s07_explorer.py`](cube/pages/risk/s07_explorer.py) | V5 Explorer callbacks; reusable standard Cross/Credit Single indexes and uncached serialized component builds for all Explorer presentations. | `register_explorer_callbacks` |
-| [`cube/pages/risk/s08_quickrisk.py`](cube/pages/risk/s08_quickrisk.py) | V5 Quick Risk controls and position-grain result presentation. | `build_quick_search`, `build_quick_risk_figure`, `build_quick_search_pivot` |
-| [`cube/pages/risk/s09_quickmarket.py`](cube/pages/risk/s09_quickmarket.py) | V5 Quick Market controls, quote-grain results, and lazy history presentation. | `build_quick_market_search`, `quick_market_history_cell_state`, `quick_market_history_identity`, `quick_market_history_date_window`, `build_quick_market_history_result`, `build_quick_market_result` |
-| [`cube/pages/risk/s10_search.py`](cube/pages/risk/s10_search.py) | V5 callback-only helpers for Quick Risk search interactions. | `_combine_udl_browser_search`, `_quick_search_result_parts`, `_combine_udl_dropdown_options`, `_normalise_quick_search_index`, `_prune_quick_search_indexes`, `_product_shaped_quick_search_indexes`, `_render_quick_search_pivot` |
-| [`cube/pages/risk/s11_promotion.py`](cube/pages/risk/s11_promotion.py) | Explicit, revision-bound promotion generations for the V5 Risk page. | `PromotionBasis`, `PromotionRow`, `PromotionGeneration`, `baseline_promotion_generation`, `calculate_current_view_promotion`, `promotion_basis_is_stale`, `promotion_basis_summary`, `apply_promotion_generation`, `promotion_table`, `build_promotion_generation_controls` |
-| [`cube/pages/risk/s12_promotecallbacks.py`](cube/pages/risk/s12_promotecallbacks.py) | V5 page-owned callbacks for explicit Risk promotion generations. | `RiskPromotionCacheProtocol`, `register_promotion_callbacks` |
-| [`cube/pages/risk/s13_workspacetables.py`](cube/pages/risk/s13_workspacetables.py) | V5 promotions, exposure, and new-trade table presentation. | `top_book_exposure_frame`, `top_promotions_frame`, `build_top_promotions_table`, `top_book_hierarchy_frame`, `default_top_book_open_rows`, `build_top_book_exposures`, `new_trade_detail_frame`, `build_jtd_reference_table`, `build_new_trade_detail_table` |
-| [`cube/pages/risk/s14_workspacecallbacks.py`](cube/pages/risk/s14_workspacecallbacks.py) | V5 Risk-page workspace callback ownership. | `register_workspace_callbacks` |
-| [`cube/pages/risk/s15_refresh.py`](cube/pages/risk/s15_refresh.py) | V5 Risk-page startup and refresh callback ownership. | `register_refresh_callbacks` |
-| [`cube/pages/risk/s16_view.py`](cube/pages/risk/s16_view.py) | Committed V5 Risk-page layout, date editor, checker, and mapping disclosures. | `build_risk_date_editor`, `build_risk_checker_inventory`, `build_unmapped_books_table`, `build_layout` |
-| [`cube/pages/risk/s17_callbacks.py`](cube/pages/risk/s17_callbacks.py) | Public V5 Risk-page callback composition boundary. | `register_callbacks` |
-
-<a id="src-newtests-188-data-page"></a>
-#### 18.8 Data page
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/pages/data/__init__.py`](cube/pages/data/__init__.py) | Native V5 Risk and Market history page. | `layout` |
-| [`cube/pages/data/s01_selection.py`](cube/pages/data/s01_selection.py) | Pure direct-selection helpers owned by the V5 Data page. | `effective_identity_mode`, `matching_entries`, `risk_type_options`, `risk_greek_options`, `underlying_options`, `selected_value`, `catalog_key_for_handoff`, `direct_history_handoff` |
-| [`cube/pages/data/s02_view.py`](cube/pages/data/s02_view.py) | Layout and ProductSpec-shaped figures owned by the native Data page. | `build_data_page`, `empty_history_figure` |
-| [`cube/pages/data/s03_callbacks.py`](cube/pages/data/s03_callbacks.py) | Page-owned lazy query and playback callbacks for V5 Data history. | `serialize_history_bundle`, `history_breadcrumb`, `history_request_payload`, `query_history_bundle`, `poll_archive_generation`, `load_archive_catalog`, `register_callbacks` |
-
-<a id="src-newtests-189-stock-page"></a>
-#### 18.9 Stock page
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/pages/stock/__init__.py`](cube/pages/stock/__init__.py) | Native V5 route and composition boundary for the Stock page. | `build_stock_page_route`, `layout` |
-| [`cube/pages/stock/s01_data.py`](cube/pages/stock/s01_data.py) | Stock filter contracts, date normalization, and source loading. | `StockPageData`, `default_stock_activities`, `stock_activity_options`, `stock_display_rows`, `default_stock_filter_values`, `stock_history_identities`, `default_stock_dates`, `normalize_stock_date_pair`, `stock_filter_map`, `stock_exclude_selected`, `stock_filter_options`, `load_stock_page_data` |
-| [`cube/pages/stock/s02_history.py`](cube/pages/stock/s02_history.py) | V5 page-owned, lazy Stock archive queries and presentation helpers. | `StockHistoryCatalogResult`, `StockHistoryQueryProtocol`, `stock_history_identity_token`, `stock_history_identity_from_token`, `stock_history_identity_options`, `stock_history_date_range`, `normalize_stock_history_frame`, `SQLStockHistoryRepository`, `build_stock_history_empty_figure`, `stock_value_history_frame`, `build_stock_value_history_figure` |
-| [`cube/pages/stock/s03_view.py`](cube/pages/stock/s03_view.py) | Small, page-owned components for the V5 Stock workflow. | `stock_table_records`, `stock_pivot_columns`, `build_stock_table`, `build_stock_position_detail`, `build_stock_filter_bar`, `build_stock_history_section`, `stock_summary_text`, `build_stock_page_shell`, `build_stock_page_from_data`, `build_stock_page_placeholder`, `build_stock_page`, `build_stock_page_from_sources` |
-| [`cube/pages/stock/s04_callbacks.py`](cube/pages/stock/s04_callbacks.py) | Page-owned callbacks for the single-flow V5 Stock page. | `register_callbacks` |
-| [`cube/pages/stock/s05_pivot.py`](cube/pages/stock/s05_pivot.py) | Small, page-owned Stock pivot projection. | `StockPivotResult`, `normalize_stock_pivot_controls`, `stock_pivot_path_token`, `stock_pivot_path_from_token`, `normalize_stock_pivot_open_paths`, `toggle_stock_pivot_path`, `build_stock_pivot`, `stock_pivot_row_payload` |
-
-<a id="src-newtests-1810-pl-page"></a>
-#### 18.10 P&L page
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/pages/pnl/__init__.py`](cube/pages/pnl/__init__.py) | Native V5 page entry and callback facade for the governed P&L workflow. | `layout`, `register_callbacks` |
-| [`cube/pages/pnl/s01_common.py`](cube/pages/pnl/s01_common.py) | Shared contracts for the single authoritative V5 P&L page. | `PLHistoryQueryProtocol`, `PLRiskSummaryQueryProtocol`, `PLSendConfig`, `pl_filter_map`, `committed_pl_filter_values`, `pl_cache_generation`, `pl_filter_options`, `pl_external_filter_map`, `apply_pl_filters` |
-| [`cube/pages/pnl/s02_editor.py`](cube/pages/pnl/s02_editor.py) | Pure governed V5 P&L editor and effective-row helpers. | `_is_checked`, `_governance`, `_display_records`, `_domain_frame`, `_risk_type_options`, `_risk_greek_options`, `_datatable_options`, `_editor_dropdowns` |
-| [`cube/pages/pnl/s03_history.py`](cube/pages/pnl/s03_history.py) | Plotly figure for the inline, lazy Aggregate P&L history view. | `build_pl_history_figure` |
-| [`cube/pages/pnl/s04_sender.py`](cube/pages/pnl/s04_sender.py) | P&L send/editor layout owned independently from the page shell. | `build_pl_send_sections` |
-| [`cube/pages/pnl/s05_sendcallbacks.py`](cube/pages/pnl/s05_sendcallbacks.py) | Callbacks for governed V5 P&L adjustment, editing, and sending. | `register_pl_send_callbacks` |
-| [`cube/pages/pnl/s06_validation.py`](cube/pages/pnl/s06_validation.py) | Official historical Risk comparison for the V5 Validate P&L section. | `normalize_validate_pl_open_paths`, `build_validate_pl_comparison`, `build_validate_pl_table`, `build_validate_pl_section`, `register_validate_pl_callbacks` |
-| [`cube/pages/pnl/s07_view.py`](cube/pages/pnl/s07_view.py) | V5 Dash components for governed P&L adjustment, send, and exploration. | `build_pl_inline_history_section`, `build_pl_filter_bar`, `build_pl_page` |
-| [`cube/pages/pnl/s08_aggregate.py`](cube/pages/pnl/s08_aggregate.py) | P&L-page filter ownership and historical summary callbacks. | `register_pl_aggregate_callbacks` |
-| [`cube/pages/pnl/s09_drilldown.py`](cube/pages/pnl/s09_drilldown.py) | Inline, lazy history for the current Aggregate P&L table. | `register_pl_history_callbacks` |
-| [`cube/pages/pnl/s10_summary.py`](cube/pages/pnl/s10_summary.py) | Dedicated Risk Type → Greek → Underlying P&L summary components. | `path_token`, `decode_open_paths`, `build_pl_summary_table` |
-
-<a id="src-newtests-1811-statics-page"></a>
-#### 18.11 Statics page
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`cube/pages/static_data/__init__.py`](cube/pages/static_data/__init__.py) | Public facade for the V5 Statics Dash page. | Package exports/marker; inspect importing modules for use. |
-| [`cube/pages/static_data/s01_store.py`](cube/pages/static_data/s01_store.py) | Small validated, atomic CSV store for the Statics page. | `StaticDataStore` |
-| [`cube/pages/static_data/s02_view.py`](cube/pages/static_data/s02_view.py) | Read and governed-write layout for the Statics page. | `build_static_data_table`, `build_static_data_page`, `layout` |
-| [`cube/pages/static_data/s03_callbacks.py`](cube/pages/static_data/s03_callbacks.py) | Page-owned callbacks for Statics read and governed write modes. | `register_callbacks` |
-
-<a id="src-newtests-1812-root-packages-and-route-fallback"></a>
-#### 18.12 Root packages and route fallback
-
-| File | Responsibility |
-|---|---|
-| [`cube/__init__.py`](cube/__init__.py) | Rebirth V5 application package. |
-| [`cube/pages/__init__.py`](cube/pages/__init__.py) | V5 Dash page services backed by the active Flask application. `page_services()` reads the active Flask app configuration. |
-| [`cube/pages/s01_notfound.py`](cube/pages/s01_notfound.py) | Explicit native Dash Pages fallback owned by the V5 page package. |
-
-<a id="src-newtests-1813-browser-assets"></a>
-#### 18.13 Browser assets
-
-| File | Responsibility |
-|---|---|
-| [`assets/s01_shell.css`](assets/s01_shell.css) | Theme tokens, base typography/shell/layout and shared colors. Its old “one stylesheet” header does not describe the now-split asset tree. |
-| [`assets/s02_controls.css`](assets/s02_controls.css) | Shared controls, disclosures, tables and current/legacy date-picker styling. |
-| [`assets/s03_risk.css`](assets/s03_risk.css) | Risk workspace, Aggregate P&L, Top Promotions and Explorer presentation. |
-| [`assets/s04_pnl.css`](assets/s04_pnl.css) | P&L send/editor/native DataTable presentation. |
-| [`assets/s05_responsive.css`](assets/s05_responsive.css) | Responsive and supporting panel rules, including unmapped views. |
-| [`assets/s06_visuals.css`](assets/s06_visuals.css) | Statics and Stock/table/visual page presentation. |
-| [`assets/s07_history.css`](assets/s07_history.css) | Native Data page, history projections/playback and inline historical views. |
-| [`assets/s08_promotions.css`](assets/s08_promotions.css) | Explicit promotion-generation actions and scope/status presentation. |
-| [`assets/s09_playback.js`](assets/s09_playback.js) | ProductSpec-shaped Data history projections, slices, comparisons and browser-local playback. |
-| [`assets/s10_theme.js`](assets/s10_theme.js) | Shared theme, Plotly appearance, shell motion and loader helpers; exposes helpers to later assets. |
-| [`assets/s11_tables.js`](assets/s11_tables.js) | Native-table selection/copy/resize and dynamic UI-hook discovery. |
-| [`assets/s12_refresh.js`](assets/s12_refresh.js) | Shared cold-start/retry/polling and refresh-progress browser lifecycle. |
-| [`assets/s13_risk.js`](assets/s13_risk.js) | Risk hierarchy/cell delegated events, click tokens and keyboard shortcuts. |
-| [`assets/s14_app_logs.css`](assets/s14_app_logs.css) | Shared header utilities and bounded app-log modal styling. |
-| [`assets/s14_pnl.js`](assets/s14_pnl.js) | Native P&L DataTable range-selection bridge and local validation-tree expansion. |
-
-<a id="src-newtests-1814-tools"></a>
-#### 18.14 Tools
-
-| File | Responsibility | Entry points / owners |
-|---|---|---|
-| [`tools/__init__.py`](tools/__init__.py) | Package marker; no runtime behavior. | Package exports/marker; inspect importing modules for use. |
-| [`tools/s01_fixtures.py`](tools/s01_fixtures.py) | Generate deterministic connectors and streamed realistic history fixtures. | `FixtureSource`, `OfficialHistoryFixture`, `FixtureValidationError`, `build_datasets`, `validate_datasets`, `build_official_history_fixture`, `iter_official_history_fixtures`, `validate_official_history_fixture`, `probe_representative_history_leaf`, `main` |
-| [`tools/s02_archive.py`](tools/s02_archive.py) | Jupyter Scheduler entry point for the daily official Risk archive. | `resolve_archive_root`, `resolve_colossus_loader`, `run_scheduled_archive`, `run_from_env`, `main` |
-| [`tools/s03_benchmark.py`](tools/s03_benchmark.py) | Measure Rebirth V5 startup and lazy-history paths on checked-in scale data. | `BenchmarkResult`, `run_benchmarks`, `main` |
-
-<a id="src-newtests-1815-tests-complete-file-map"></a>
-#### 18.15 Tests: complete file map
-
-Counts below are test function definitions in the inspected live source, not collected parametrized cases. A module’s listed purpose is its current scope; the new tests recommended in section 15 are not implied to exist.
-
-| File | Scope | Test definitions |
-|---|---|---:|
-| [`tests/s01_schema.py`](tests/s01_schema.py) | High-signal tests for the governed schema and product catalogue. | 6 |
-| [`tests/s02_checker.py`](tests/s02_checker.py) | Checker, readiness, and business-date contract tests. | 16 |
-| [`tests/s03_adapters.py`](tests/s03_adapters.py) | Executable examples for every checked-in personal adapter. | 10 |
-| [`tests/s04_market.py`](tests/s04_market.py) | MarketBook, status routing, risk join, and tenor-order tests. | 21 |
-| [`tests/s05_pl.py`](tests/s05_pl.py) | Governed P&L aggregation, overlay, history, and adjustment-storage tests. | 28 |
-| [`tests/s06_ui.py`](tests/s06_ui.py) | Stable component-level checks for collapsible search and status-aware charts. | 35 |
-| [`tests/s07_integration.py`](tests/s07_integration.py) | One fast end-to-end refresh over the explicit temp connector boundaries. | 29 |
-| [`tests/s08_feeds.py`](tests/s08_feeds.py) | Focused temp-connector partition-cache tests. | 5 |
-| [`tests/s09_plui.py`](tests/s09_plui.py) | PL disclosure laziness and application-factory boundary checks. | 20 |
-| [`tests/s10_reads.py`](tests/s10_reads.py) | Targeted committed-state reads avoid unrelated DataFrame copies. | 3 |
-| [`tests/s11_fixtures.py`](tests/s11_fixtures.py) | Canonical temp-fixture generator contract tests. | 13 |
-| [`tests/s12_startup.py`](tests/s12_startup.py) | Cold-start shell, worker ownership, watchdog, and failure tests. | 25 |
-| [`tests/s13_publish.py`](tests/s13_publish.py) | V5 runtime bundle and Plotly publish boundary regression tests. | 6 |
-| [`tests/s14_reporting.py`](tests/s14_reporting.py) | Governed Reported Underlying mapping and post-P&L aggregation tests. | 10 |
-| [`tests/s15_overlays.py`](tests/s15_overlays.py) | Focused contracts for the supported raw supplemental-risk paths. | 3 |
-| [`tests/s16_refreshshell.py`](tests/s16_refreshshell.py) | Persistent refresh lifecycle checks for native Dash Pages. | 16 |
-| [`tests/s17_stock.py`](tests/s17_stock.py) | Contracts for dated Stock comparison, local filters, and lazy callbacks. | 33 |
-| [`tests/s18_newpositions.py`](tests/s18_newpositions.py) | Focused tests for the raw New Trades blotter adapter scaffold. | 17 |
-| [`tests/s19_riskfilters.py`](tests/s19_riskfilters.py) | Risk filters/Portfolio boundaries, explicit generations, hierarchy-index reuse/bounds/immutability and concurrent render/invalidation regressions. | 52 |
-| [`tests/s20_connectors.py`](tests/s20_connectors.py) | Connector-boundary clarity and fixture isolation tests. | 4 |
-| [`tests/s21_provenance.py`](tests/s21_provenance.py) | Regression tests for the compact active product-pipeline contracts. | 2 |
-| [`tests/s22_refreshdates.py`](tests/s22_refreshdates.py) | Force-date browser lifecycle and readiness-label regressions. | 4 |
-| [`tests/s23_savedviews.py`](tests/s23_savedviews.py) | Page-local saved filter-view storage and component contracts. | 14 |
-| [`tests/s24_plhistory.py`](tests/s24_plhistory.py) | Live inline P&L history figure and observed-series contracts. | 2 |
-| [`tests/s25_crossgamma.py`](tests/s25_crossgamma.py) | Focused pure contracts for portfolio-level XGAMMA development. | 18 |
-| [`tests/s26_newtrades.py`](tests/s26_newtrades.py) | Integrated New Trades calculation and runtime-publication regressions. | 6 |
-| [`tests/s27_expandable.py`](tests/s27_expandable.py) | Cross-surface visual contracts for expandable hierarchy controls. | 6 |
-| [`tests/s28_validation.py`](tests/s28_validation.py) | Official historical Risk comparison and Validate P&L regressions. | 17 |
-| [`tests/s29_archive.py`](tests/s29_archive.py) | Official flat Risk archive, projection, and scheduler contracts. | 44 |
-| [`tests/s30_history.py`](tests/s30_history.py) | V3.2 typed history, exact archive query, and frozen-order contracts. | 14 |
-| [`tests/s31_data.py`](tests/s31_data.py) | Focused native Data handoff, lazy query, and playback tests. | 18 |
-| [`tests/s32_observability.py`](tests/s32_observability.py) | Structured V5 performance logging contracts. | 8 |
-| [`tests/s33_riskstate.py`](tests/s33_riskstate.py) | Rebirth V5 Risk defaults and explicit-promotion contracts. | 3 |
-| [`tests/s34_riskpivot.py`](tests/s34_riskpivot.py) | Focused Risk Explorer layout regressions. | 1 |
-| [`tests/s35_pipelinearch.py`](tests/s35_pipelinearch.py) | Final V5 pipeline ownership and legacy-boundary guards. | 2 |
-| [`tests/s36_riskarch.py`](tests/s36_riskarch.py) | Ownership guards for the modular V5 Risk page. | 6 |
-| [`tests/s37_domainarch.py`](tests/s37_domainarch.py) | V5 domain/service ownership through ordered implementation modules. | 2 |
-| [`tests/s38_uiarch.py`](tests/s38_uiarch.py) | V5 shared-UI ownership and page-isolation guards. | 4 |
-| [`tests/s39_assets.py`](tests/s39_assets.py) | Deterministic ownership and content integrity for V5 frontend assets. | 7 |
-| [`tests/s40_pagearch.py`](tests/s40_pagearch.py) | Final V5 page-tree ownership with no compatibility package. | 4 |
-| [`tests/s41_modulearch.py`](tests/s41_modulearch.py) | Meaningful P&L and Stock page-module ownership guards. | 3 |
-| [`tests/s42_statics.py`](tests/s42_statics.py) | V5 Statics read/write contracts. | 10 |
-| [`tests/s43_reducedtenor.py`](tests/s43_reducedtenor.py) | Focused contracts for the pure reduced-Tenor Swap engine. | 18 |
-| [`tests/s44_tenorreductionsource.py`](tests/s44_tenorreductionsource.py) | Temporary matrix-provider boundary checks. | 3 |
-| [`tests/s45_failurevisibility.py`](tests/s45_failurevisibility.py) | Cold-start failure reasons remain visible in progress and terminal logs. | 4 |
-| [`tests/s46_applogs.py`](tests/s46_applogs.py) | Bounded application-log modal regressions. | 5 |
-| [`tests/s48_jtd.py`](tests/s48_jtd.py) | Jump-to-Default reference-table regressions. | 4 |
-| [`tests/s48_pinnedpromotions.py`](tests/s48_pinnedpromotions.py) | Pinned-promotion and selectable Top Promotions contracts. | 4 |
-
-<a id="src-newtests-1816-runtime-deployment-and-tool-configuration"></a>
-#### 18.16 Runtime, deployment and tool configuration
-
-| File | Responsibility |
-|---|---|
-| [`app.py`](app.py) | Only runtime composition/CLI entrypoint: `create_app`, `RuntimeSettings`, injected services, module `app` and WSGI `server`. |
-| [`publish.py`](publish.py) | Fixture-specific validation, minimal runtime staging, staged Parquet compression, and Plotly publish command. Not a dry-run-only utility. |
-| [`gunicorn.conf.py`](gunicorn.conf.py) | One gthread worker; environment-configured threads/timeout; graceful shutdown/keepalive. |
-| [`plotly-cloud.toml`](plotly-cloud.toml) | Existing Plotly application identity and URL slug; not runtime financial configuration. |
-| [`requirements.txt`](requirements.txt) | Pinned runtime Python dependencies and conditional non-Windows Gunicorn. |
-| [`requirements-dev.txt`](requirements-dev.txt) | Runtime dependencies plus Plotly Cloud publishing CLI, pytest, and Ruff. |
-| [`pytest.ini`](pytest.ini) | Discovers `tests/s*.py`, sets test root and reporting options. |
-| [`.gitignore`](.gitignore) | Ignores local environments/caches/logs/private inputs/adjustments/pending archive and scratch DB files. It deliberately tracks completed fixture archives. |
-| [`.gitattributes`](.gitattributes) | Text/newline normalization and binary treatment for Parquet/images/PDF. |
-
-<a id="src-newtests-1817-tracked-connector-and-reference-files"></a>
-#### 18.17 Tracked connector and reference files
-
-The headers below come from the actual CSVs. Fixture values are demonstration data. No missing `s10` file is inferred from numbering.
-
-| File | Purpose | Exact header |
-|---|---|---|
-| [`data/s01_readiness.csv`](data/s01_readiness.csv) | Per Risk Type/Greek source Age, used to choose Risk dates. | Risk Type, Risk Greek, Age |
-| [`data/s02_checker.csv`](data/s02_checker.csv) | Not-ready Risk inventory: file identifier and product metadata. | Risk Type, Risk Greek, MRX File, Product |
-| [`data/s03_risk.csv`](data/s03_risk.csv) | Raw product Risk/dRisk, position identity, Group, Vol Score and governed measure pairs. | Source Type, Underlying, Tenor Swap, Tenor Option, Portfolio, Group, Risk, dRisk, Vol Score, Risk SP01, dRisk SP01, Risk PSP01, dRisk PSP01, Risk PM01, dRisk PM01, Risk PM01P, dRisk PM01P, Risk Theta, dRisk Theta, Risk JTD, dRisk JTD |
-| [`data/s04_open.csv`](data/s04_open.csv) | Opening quotes and connector-owned tenor orders. | Source Type, Underlying, Tenor Swap, Tenor Option, Tenor Swap Order, Tenor Option Order, Open |
-| [`data/s05_current.csv`](data/s05_current.csv) | Current market quotes and connector-owned tenor orders. | Source Type, Underlying, Tenor Swap, Tenor Option, Tenor Swap Order, Tenor Option Order, Current |
-| [`data/s06_portfolios.csv`](data/s06_portfolios.csv) | One-row-per-Portfolio product/activity/signoff/category governance; Statics-writable. | Portfolio, Product, Activity, SignoffGroup, Category |
-| [`data/s07_thresholds.csv`](data/s07_thresholds.csv) | Exact product PL/Risk/dRisk positive thresholds; Statics-writable. | Risk Type, Risk Greek, PL, Risk, dRisk |
-| [`data/s08_concerto.csv`](data/s08_concerto.csv) | Risk Type/Greek to Concerto field mapping; Statics-writable. | Risk Type, Risk Greek, ConcertoField |
-| [`data/s09_reported.csv`](data/s09_reported.csv) | Raw-to-reported Underlying mapping; Statics-writable. | Risk Type, Risk Greek, Underlying, Reported Underlying |
-| [`data/s11_matrix.csv`](data/s11_matrix.csv) | Non-Credit exact product/Underlying to reduced-tenor matrix name; Statics-readable only. | Risk Type, Risk Greek, Underlying, MatrixName |
-| [`data/s12_pinned.csv`](data/s12_pinned.csv) | Exact pinned promotion identities consumed by governance; not in current Statics whitelist. | Risk Type, Risk Greek, Reported Underlying, Underlying |
-| [`data/s13_jtd.csv`](data/s13_jtd.csv) | Optional exact-Underlying reference rows shown by JTD detail; not in current Statics whitelist. | Underlying |
-
-<a id="src-newtests-1818-notebooks-existing-guides-and-experiment-artifacts"></a>
-#### 18.18 Notebooks, existing guides and experiment artifacts
-
-| File | Purpose / status |
-|---|---|
-| [`README.md`](README.md) | Existing operating/release guide. Contains useful exact contracts; some prose is stale (for example the claim that it is the only Markdown file and an older test inventory). Verify behavior against code. |
-| [`FIX1.md`](FIX1.md) | Bounded market-call design note: deadlines, shared refresh circuit, partial/missing legs and optional FX Delta bulk hooks. |
-| [`experiments/fix12.md`](experiments/fix12.md) | Proposed product-isolated market circuit. It is not implemented by the presence of this document. |
-| [`experiments/fix13.md`](experiments/fix13.md) | Proposed market split/tenor aggregation and Risk-lag investigation. Treat proposed equations/changes as design until traced to live code. |
-| [`experiments/fix14.md`](experiments/fix14.md) | Saved-view selection/cleared-filter note labeled implemented on v2-fix; live shared-filter code/tests are the authority for current behavior. |
-| [`experiments/fix15.md`](experiments/fix15.md) | v3 pins/JTD/logging/cold-path note; its P&L diagnostic ideas remain explicitly unimplemented proposals. |
-| [`experiments/fix16.md`](experiments/fix16.md) | v3 lazy reduced-tenor caching design note; current `_RiskDataCache` implements the reuse, with recovery limitations documented in this guide. |
-| [`experiments/v3-header-buttons.png`](experiments/v3-header-buttons.png) | Historical UI screenshot supporting experiment notes; not a current browser acceptance test. |
-| [`jobs/s01_archive.ipynb`](jobs/s01_archive.ipynb) | Official daily-archive notebook: optional explicit project root, project discovery/environment, shared idempotent scheduler invocation. |
-| [`jobs/s02_explore.ipynb`](jobs/s02_explore.ipynb) | Read-only SQL exploration notebook: project discovery, in-memory views, available-date counts and example grouped Risk query. |
-
-<a id="src-newtests-1819-repeated-immutable-archive-files"></a>
-#### 18.19 Repeated immutable archive files
-
-Tracked archive coverage: **1,310 files in 262 dated leaves**, 2025-08-21 through 2026-08-21. Each leaf is represented by the following five explicitly accounted-for file roles; there is no application source hidden inside this grouping.
-
-| Relative pattern | Tracked files | Role |
-|---|---:|---|
-| `data/histo/YYYY-MM-DD/_SUCCESS` | 262 | Completion/authority manifest: schema, dates, revision, shape, hashes and fixture marker. |
-| `data/histo/YYYY-MM-DD/colossus.parquet` | 262 | Official portfolio/Underlying/type/Greek PL source. |
-| `data/histo/YYYY-MM-DD/market.parquet` | 262 | Complete official quote-grain MarketBook with tenor order. |
-| `data/histo/YYYY-MM-DD/risk.parquet` | 262 | Committed governed risk/exposure/P&L snapshot rows. |
-| `data/histo/YYYY-MM-DD/stock.parquet` | 262 | Exact Stock position observations. |
-
-<a id="src-newtests-1820-local-changes-and-additions-produced-during-this-review"></a>
-#### 18.20 Local changes and additions produced during this review
-
-The tracked changes below include the earlier Statics/test-manifest edits and the later Risk cache implementation/regressions. The additional files are documentation or standalone tools/preview artifacts and are not automatically loaded by `app.py`. This is a working-tree status distinction, not an assertion that they have been committed or deployed. See section 15.3 for the validation stage of each change.
-
-| File | Role |
-|---|---|
-| [`cube/pages/static_data/s03_callbacks.py`](cube/pages/static_data/s03_callbacks.py) | Tracked application change: reset the selected Statics file's dependent Write-picker state when the file changes. |
-| [`tests/s42_statics.py`](tests/s42_statics.py) | Tracked regression change: exercise the Statics file-switch reset. |
-| [`tests/s35_pipelinearch.py`](tests/s35_pipelinearch.py) | Tracked test-manifest change: add `s04_chart_previews.py`, `s05_demo_history.py` and `s06_read_demo_history.py` to the exact allowed tools set; retain all existing boundary checks. |
-| [`cube/ui/s02_aggregation.py`](cube/ui/s02_aggregation.py) | Tracked Risk cache change: document immutable scope reuse and account retained frame, numeric-array and quote-array storage through `memory_bytes`. |
-| [`cube/pages/risk/s02_state.py`](cube/pages/risk/s02_state.py) | Tracked Risk cache change: four-entry/256-MiB hierarchy LRU keyed by owned frame identity and normalized Credit measure; strong references, epoch invalidation, unowned/oversize bypass, filter race checks, uncached serialized Explorer builds and guarded workspace render insertion. |
-| [`cube/pages/risk/s06_explorertables.py`](cube/pages/risk/s06_explorertables.py) | Tracked Risk cache change: accept a reusable standard Cross index and use its frame consistently; keep a local-index fallback for other callers. |
-| [`cube/pages/risk/s07_explorer.py`](cube/pages/risk/s07_explorer.py) | Tracked Risk cache change: use indexed standard Cross/Credit Single and `render_explorer` for every Explorer view; retain independent SplitVA/Credit Multi aggregation. |
-| [`tests/s19_riskfilters.py`](tests/s19_riskfilters.py) | Tracked regression change: 12 added test function definitions cover Risk index reuse, scope/measure isolation, ownership/memory bounds and concurrent invalidation/render behavior; final verification is recorded in section 15.3. |
-| [`NEWTESTS.md`](#src-newtests) | This architecture, operating, test and development reference. |
-| [`FIXESMD.md`](#src-fixesmd) | Companion implementation/fix guide; consult its exact status and change scope. |
-| `tools/s04_chart_previews.py` | Local standalone read-only renderer of synthetic archived examples; not imported by the application. |
-| `tools/s05_demo_history.py` | Local optional synthetic archive generator using existing fixture/atomic-writer contracts, with required isolated output and provenance validation. |
-| `tools/s06_read_demo_history.py` | Local read-only synthetic archive example through real Data, P&L and Stock repositories; dates and identity come from that archive. |
-| `docs/chart-previews/index.html` | Locally generated offline Plotly preview gallery, not the live app. |
-| `docs/chart-previews/data.json` | Locally generated preview data payload used by the gallery; does not replace source/archive data. |
-
-These three optional Python files and two generated preview files are not included in this documentation-only publication. The complete tool sources are embedded in [FIXESMD.md](#src-fixesmd); follow its instructions to create the tools and generate the gallery locally. Workspace logs/results also remain local, and example absolute paths must be adapted to your checkout.
-
-The surrounding workspace also contains review logs and reproduction scripts (`review_repro_*.py`), the synthetic `cache-scale-probe.py`/`cache-scale-results.json` measurement, and an external `rebirth-tenor-alternatives.html` preview. They are investigation artifacts outside the application checkout. Their presence is not runtime wiring.
-
-<a id="src-newtests-1821-inventory-verification-and-maintenance"></a>
-#### 18.21 Inventory verification and maintenance
-
-The baseline inventory above accounts for **196 non-archive tracked files** and **1,310 archive files**, totaling **1,506 tracked files**. It includes **153 Python files**, of which **48 are test modules**. Boilerplate package markers are listed rather than silently omitted. Notebook code cells are described without executing the notebooks. Generated preview files are listed separately from the tracked baseline.
-
-When the source changes, regenerate the inventory from `git ls-files`, inspect changed module symbols and callback dependencies, update the source baseline/date, and move only actually completed roadmap items into current-behavior sections. Do not update this document by copying an older architecture diagram that uses removed package paths.
 
 <a id="part-src-fixesmd-11"></a>
 > **Source: `FIXESMD.md` — Session work ledger.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
@@ -4835,6 +3670,8 @@ In this chapter:
 
 <a id="part-src-optimisations-09"></a>
 > **Source: `OPTIMISATIONS.md` — Appendix A — exact locally implemented cache patch.** Local tested cache fix plus proposed optimisations; isolated measurements do not establish production capacity. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
+
+> **Selected cache patch — APPLY this focused five-file cache patch once. KEEP its regression tests. The FIXESMD combined patch contains the same cache change and is not another required step.**
 
 <a id="src-optimisations-appendix-a--exact-locally-implemented-cache-patch"></a>
 ### Appendix A — exact locally implemented cache patch
@@ -5746,6 +4583,8 @@ print(json.dumps(result, indent=2))
 
 <a id="part-src-fixesmd-14"></a>
 > **Source: `FIXESMD.md` — Appendix A — complete applied application/test patch.** Local tested fixes plus proposals, optional tools and dated review evidence; use the master roadmap and select overlapping patches once. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
+
+> **Selected implementation path — KEEP the complete patch as reference. APPLY its Statics callback/test changes and, when using the optional tools, their manifest changes. SKIP its five Risk-cache file changes if you already applied the focused OPTIMISATIONS patch. Do not apply this entire bundle a second time.**
 
 <a id="src-fixesmd-appendix-a--complete-applied-applicationtest-patch"></a>
 ### Appendix A — complete applied application/test patch
@@ -7916,14 +6755,13 @@ print(json.dumps(result, indent=2))
 <a id="chapter-11"></a>
 ## Chapter 11 — Source register and original document navigation
 
-Only FIXESMD.md, NEWTESTS.md and OPTIMISATIONS.md are consolidated here. Their source text is retained in topic chapters, with rewritten navigation and explicit provenance. Other repository Markdown files remain separate. The three original guides remain available at the pinned source commit.
+Only FIXESMD.md and OPTIMISATIONS.md are consolidated here. Their implementation sections and complete code blocks are retained in topic chapters. Four prose references to the excluded architecture guide have been removed or rewritten; no implementation step depends on that guide. Other repository Markdown files remain separate.
 
 ### Original files and retained content
 
 | Original Markdown file | Topic chapters | Original blob SHA |
 |---|---|---|
 | [FIXESMD.md](#src-fixesmd) | [Chapter 2](#chapter-02), [Chapter 3](#chapter-03), [Chapter 4](#chapter-04), [Chapter 6](#chapter-06), [Chapter 7](#chapter-07), [Chapter 8](#chapter-08), [Chapter 9](#chapter-09), [Chapter 10](#chapter-10), [Chapter 11](#chapter-11) | `bef138a35b9650e4ce2f1b7c3a7230f3836206fc` |
-| [NEWTESTS.md](#src-newtests) | [Chapter 2](#chapter-02), [Chapter 9](#chapter-09), [Chapter 11](#chapter-11) | `e1d653a5e16da3c9edd2f2445d8ac824e48437f0` |
 | [OPTIMISATIONS.md](#src-optimisations) | [Chapter 3](#chapter-03), [Chapter 5](#chapter-05), [Chapter 9](#chapter-09), [Chapter 10](#chapter-10), [Chapter 11](#chapter-11) | `a230acfd461c7ae0b84527a201d2483f3b659113` |
 
 <a id="src-fixesmd"></a>
@@ -7934,7 +6772,7 @@ Local tested fixes plus proposals, optional tools and dated review evidence; use
 - [FIXESMD — exact changes, operation and next implementation steps](#part-src-fixesmd-00) — Chapter 11.
 - [0. Read this distinction first](#part-src-fixesmd-01) — Chapter 11.
 - [1. How to use this manual](#part-src-fixesmd-02) — Chapter 11.
-- [Part A — establish the exact starting point](#part-src-fixesmd-03) — Chapter 3.
+- [Part A — establish the exact starting point](#part-src-fixesmd-03) — Chapter 2.
 - [Part B — reproduce the implemented Statics and Risk cache fixes](#part-src-fixesmd-04) — Chapter 3.
 - [Part C — Portfolio on the main Risk page](#part-src-fixesmd-05) — Chapter 6.
 - [Part D — the new chart results and how to reproduce them](#part-src-fixesmd-06) — Chapter 8.
@@ -7953,32 +6791,6 @@ Local tested fixes plus proposals, optional tools and dated review evidence; use
 - [Appendix F — full Data/Stock/P&L review, retained with its original date](#part-src-fixesmd-19) — Chapter 10.
 - [Appendix G — full Portfolio verification scripts](#part-src-fixesmd-20) — Chapter 10.
 - [Appendix H — complete scoped cache comparison script](#part-src-fixesmd-21) — Chapter 10.
-
-<a id="src-newtests"></a>
-#### NEWTESTS.md
-
-Architecture, operation, test inventory and future-development reference; not an additional patch bundle. [Original source at the preserved commit](https://github.com/streamlitdash/Rebirth-V5/blob/950ea707a50f8d12beafa363855207ecc5ed505d/NEWTESTS.md).
-
-- [Rebirth V5: architecture, operating guide, tests, and development map](#part-src-newtests-00) — Chapter 11.
-- [Navigation](#part-src-newtests-01) — Chapter 11.
-- [1. Purpose and boundaries](#part-src-newtests-02) — Chapter 2.
-- [2. How to run and use the application](#part-src-newtests-03) — Chapter 2.
-- [3. Architecture and dependency direction](#part-src-newtests-04) — Chapter 2.
-- [4. Boot, shared shell, and refresh](#part-src-newtests-05) — Chapter 2.
-- [5. Financial contracts and calculation sequence](#part-src-newtests-06) — Chapter 2.
-- [6. State, caches, and persistence](#part-src-newtests-07) — Chapter 2.
-- [7. Risk page](#part-src-newtests-08) — Chapter 2.
-- [8. Data page](#part-src-newtests-09) — Chapter 2.
-- [9. Stock page](#part-src-newtests-10) — Chapter 2.
-- [10. P&L page](#part-src-newtests-11) — Chapter 2.
-- [11. Statics page](#part-src-newtests-12) — Chapter 2.
-- [12. History, archive jobs, and notebooks](#part-src-newtests-13) — Chapter 2.
-- [13. Frontend assets and charts](#part-src-newtests-14) — Chapter 2.
-- [14. Configuration, deployment, and diagnostics](#part-src-newtests-15) — Chapter 2.
-- [15. Test strategy and observed verification](#part-src-newtests-16) — Chapter 9.
-- [16. Development recipes](#part-src-newtests-17) — Chapter 9.
-- [17. Practical roadmap](#part-src-newtests-18) — Chapter 9.
-- [18. Complete tracked file inventory](#part-src-newtests-19) — Chapter 9.
 
 <a id="src-optimisations"></a>
 #### OPTIMISATIONS.md
@@ -8019,7 +6831,7 @@ The delivered local version consists of:
 1. The existing two-file **Statics Write picker fix**, implemented and browser-tested.
 2. **`tools/s04_chart_previews.py`**, an optional standalone Plotly preview generator, plus generated `docs/chart-previews/index.html` and `data.json`. The Dash app does not import this tool.
 3. **`tools/s05_demo_history.py` and `tools/s06_read_demo_history.py`**, optional synthetic-history generation/read tools. They use existing archive and reader contracts. They do not install a scheduler or real-data connector.
-4. **`FIXESMD.md` and `NEWTESTS.md`**, the requested manuals. `NEWTESTS.md` contains the complete component/file inventory, architecture and test map.
+4. **The fixes manual**, now included in this consolidated implementation guide. The separate architecture inventory is excluded from this edition.
 5. The Portfolio proposal and review reproductions, included below. The main Risk grouping is **not changed** in this local app version.
 6. The exact tool-file manifest in `tests/s35_pipelinearch.py` now includes the three new optional tools. The legacy-boundary assertions remain in place.
 7. The **Risk Explorer cache change** in four application modules, with regressions in `tests/s19_riskfilters.py`: reuse a bounded numeric/quote index across expansion states, stop retaining Explorer component trees, and guard refresh/clear publication. Exact placement is in Steps B4–B5 and every diff hunk is in Appendix A.
@@ -8043,45 +6855,6 @@ Navigation: [Baseline](#src-fixesmd-part-a--establish-the-exact-starting-point) 
 Follow Parts A–E in order to reproduce the delivered version. Part F is the explicit migration plan for reviewed issues that remain unimplemented. Do not treat a proposal as a tested patch. The appendices include full source for every new Python tool and the full applied application diff, so the delivered version can be reconstructed without omitted code.
 
 The Portfolio and history/Stock sections include their own numbered instructions. They distinguish a currently supported action, a tested proposal, and a future feature needing integration. Locations use **file path + function/constant name**; line numbers in earlier evidence are baseline pointers and can move after edits.
-
-<a id="part-src-newtests-00"></a>
-> **Source: `NEWTESTS.md` — Rebirth V5: architecture, operating guide, tests, and development map.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-rebirth-v5-architecture-operating-guide-tests-and-development-map"></a>
-### Rebirth V5: architecture, operating guide, tests, and development map
-
-**Inspected:** 6 September 2026. **Source baseline:** `8f65a1124e54702597347967c7064eb4f7edf133`.
-
-**Publication destination:** `streamlitdash/Rebirth-V5`, branch `v4`. This publication adds the manuals only. The reviewed and tested snapshot is the source baseline above plus the documented local changes; publication does not install those application, test or optional tool changes into `v4`.
-
-This is a guide to the code that exists in this checkout, followed by a prioritized development plan. It is not a claim that every proposed fix or plot preview has been integrated. Local application changes now include the Statics file-switch reset and the Risk hierarchy-index/cache lifecycle redesign described in sections 6 and 7. Their files and regressions are listed in section 18.20. The exact tool-file manifest in `tests/s35_pipelinearch.py` also includes the three new standalone review tools; its legacy-boundary checks remain intact. Portfolio expansion, chart replacements and the broader history/Stock proposals remain unapplied. This documentation change itself does not alter financial calculations, connectors, plots, or deployment.
-
-The complete tracked non-archive file inventory and test-file map are at the end. Repeated archive leaves are grouped by their exact common contract; package initializers are still listed because some contain real page composition. Source filenames and symbols are the authority when older README or experiment notes disagree.
-
-<a id="part-src-newtests-01"></a>
-> **Source: `NEWTESTS.md` — Navigation.** Architecture, operation, test inventory and future-development reference; not an additional patch bundle. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
-
-<a id="src-newtests-navigation"></a>
-### Navigation
-
-1. [Purpose and boundaries](#src-newtests-1-purpose-and-boundaries)
-2. [How to run and use the application](#src-newtests-2-how-to-run-and-use-the-application)
-3. [Architecture and dependency direction](#src-newtests-3-architecture-and-dependency-direction)
-4. [Boot, shared shell, and refresh](#src-newtests-4-boot-shared-shell-and-refresh)
-5. [Financial contracts and calculation sequence](#src-newtests-5-financial-contracts-and-calculation-sequence)
-6. [State, caches, and persistence](#src-newtests-6-state-caches-and-persistence)
-7. [Risk page](#src-newtests-7-risk-page)
-8. [Data page](#src-newtests-8-data-page)
-9. [Stock page](#src-newtests-9-stock-page)
-10. [P&L page](#src-newtests-10-pl-page)
-11. [Statics page](#src-newtests-11-statics-page)
-12. [History, archive jobs, and notebooks](#src-newtests-12-history-archive-jobs-and-notebooks)
-13. [Frontend assets and charts](#src-newtests-13-frontend-assets-and-charts)
-14. [Configuration, deployment, and diagnostics](#src-newtests-14-configuration-deployment-and-diagnostics)
-15. [Test strategy and observed verification](#src-newtests-15-test-strategy-and-observed-verification)
-16. [Development recipes](#src-newtests-16-development-recipes)
-17. [Practical roadmap](#src-newtests-17-practical-roadmap)
-18. [Complete tracked file inventory](#src-newtests-18-complete-tracked-file-inventory)
 
 <a id="part-src-optimisations-00"></a>
 > **Source: `OPTIMISATIONS.md` — OPTIMISATIONS — Rebirth V5 performance audit and exact change guide.** Local tested cache fix plus proposed optimisations; isolated measurements do not establish production capacity. Original wording such as “current”, “implemented” and “not published” belongs to that source's stated date/baseline.
