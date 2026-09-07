@@ -236,6 +236,16 @@ Add in the same place:
 
 This uses the Portfolio column already present in the current risk data. It adds a searchable, multiple-selection Portfolio filter and a Portfolio choice beside Product, Activity and the other Explorer dimensions. No connector or market-data change is needed.
 
+All three pages should offer these five filters: **Activity, Signoff Group, Portfolio, Category and Sub Category**.
+
+| Page | Starting code | Action in this chapter |
+|---|---|---|
+| Risk | Four visible filters; Portfolio is excluded | Add Portfolio as the fifth filter |
+| Stock | All five filters are already built | Keep its existing Portfolio filter |
+| P&L | All five filters are already built | Keep its existing Portfolio filter |
+
+The filters are inside each page's **Saved views** section. Each page keeps its own applied selection. The extra Portfolio grouping choice described below is a separate Risk Explorer feature.
+
 With **Cross → Dimension: Portfolio**, Portfolio replaces Activity as the final hierarchy level, after the existing tenor and Split levels. It is not inserted above every underlying. Expand a branch to see its books; parent values still sum all positions within the applied filters. Activity remains the default dimension.
 
 With **SplitVA → Dimension: Portfolio**, selected portfolios become columns. More than 20 matching portfolios produces a message asking you to use Cross or narrow the Portfolio filter. This is a display-width limit, not a data-loading limit.
@@ -647,7 +657,7 @@ Replace with:
 
 ### 2.17. Use the Portfolio controls after the final restart
 
-1. Open Risk's **Filter View**, type a known book into **Portfolio**, select it, and press **Apply filters**. Choosing a value only edits the draft until you apply it.
+1. Open Risk's **Saved views**, type a known book into **Portfolio**, select it, and press **Apply filters**. Choosing a value only edits the draft until you apply it.
 2. Open **Risk explorer → Cross** and choose **Portfolio** under **Dimension**. Open one underlying through its tenor and Split levels. The final rows should be portfolios rather than Activity values. A Spot or unused tenor axis may be skipped, as before.
 3. Apply two books that share an underlying and tenor. Their Risk, dRisk and P&L must add to the corresponding parent within the same Greek. Open, Current and Move remain quote values, not sums multiplied by two books. A missing quote stays unavailable.
 4. Clear only the Portfolio selection and press **Apply filters**. Broader totals should return, subject to your other active filters. Clearing Portfolio does not clear Activity or category filters.
@@ -656,6 +666,25 @@ Replace with:
 7. Close and reopen a few branches. Closed children should disappear and return with the same figures. The existing prepared/filtered data cache remains, so this does not reread connectors on every click.
 
 There is no source-row cap in this change. It removes the repeated HTML retention and avoids a 400-column pivot, but opening a very large number of branches at once still creates a large page. It cannot guarantee that an unknown server memory allowance will accommodate every expansion of 100,000 rows.
+
+### 2.18. Keep and check the fifth filter on Stock and P&L
+
+1. Open `cube/pages/stock/s01_data.py`. Keep this existing assignment unchanged:
+
+   ```python
+   STOCK_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
+   ```
+
+2. Open `cube/pages/pnl/s01_common.py`. Keep this existing assignment unchanged:
+
+   ```python
+   PL_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
+   ```
+
+3. Keep the existing `for field in STOCK_FILTER_FIELDS` loop in `build_stock_filter_bar` in `cube/pages/stock/s03_view.py`, and the `for field in PL_FILTER_FIELDS` loop in `build_pl_filter_bar` in `cube/pages/pnl/s07_view.py`. These already build all five dropdowns from the shared list. Keep their existing callbacks and component IDs: `stock-portfolio-filter` and `pnl-portfolio-filter`. Add no duplicate dropdown or callback.
+4. After the final restart, open **Saved views** on Stock. Confirm all five filter labels appear, select a known Portfolio, and press **Apply filters**. Its displayed positions should follow that Portfolio selection. Clear Portfolio and apply again to restore the broader view within the other active filters.
+5. Repeat on the P&L page. Its P&L view should follow its own applied Portfolio selection. This is the page's main Portfolio filter, separate from any Portfolio selector inside the sending controls.
+6. Return to Risk and confirm its fifth filter is also present. Changing the Stock or P&L selection should not silently change Risk's selection.
 
 ## 3. Make Data work on its own with a searchable, scrollable dropdown
 
