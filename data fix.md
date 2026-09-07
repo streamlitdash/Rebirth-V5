@@ -1,4 +1,4 @@
-# Data fix — standalone Data, Full-tenor troubleshooting and bulk market calls
+# Data fix — independent search, current Market, Full-tenor troubleshooting and bulk calls
 
 This is a step-by-step implementation and troubleshooting manual for the existing application in JupyterHub. Keep the completed Risk cache, Stock/P&L correctness and unified Data work. Apply small edits to the files actually launched by your notebook; do not overwrite whole modules with older copies.
 
@@ -7,13 +7,14 @@ The saved source explains the intended wiring, but the modified files and runnin
 ## Read this first: order and boundaries
 
 1. **[Chapter 1](#data-dependency):** verify the one-callback Data dependency repair if you have already applied it. It allows catalogue initialization without a selection arriving from Risk.
-2. **[Chapter 2](#data-troubleshooting):** identify the first remaining Data failure: mounting, catalogue, editing, Load, archive read or rendering. Apply only the correction supported by that observation.
-3. **[Chapter 3](#full-tenor):** trace a fresh Full-tenor click from the browser to the server and tree builder. Compare it with the working Reduced-to-Full sequence, correct the identified boundary, then remove the temporary diagnostics.
-4. **[Chapter 4](#bulk-market):** add bulk Commodity Delta/Vega and connect FX Delta through the existing adapters. Do this after the interaction diagnosis so connector and display changes are not confused.
+2. **[Chapter 5](#standalone-current):** complete the new standalone-data correction. Make the picker use current identities plus archive identities, then include the selected current Market observation as the latest actual date, or the only date when history is empty. Complete both halves; picker-only edits cannot make an archive-only reader display current data.
+3. **[Chapter 2](#data-troubleshooting):** if an interaction still fails, identify whether mounting, editing, Load, archive reading or rendering is responsible. Follow Chapter 5's current-plus-archive catalogue and loader wiring where it replaces older archive-only instructions.
+4. **[Chapter 3](#full-tenor):** trace a fresh Full-tenor click from the browser to the server and tree builder. Compare it with the working Reduced-to-Full sequence, correct the identified boundary, then remove the temporary diagnostics.
+5. **[Chapter 4](#bulk-market):** add bulk Commodity Delta/Vega and connect FX Delta through the existing adapters. Do this after the interaction diagnosis so connector and display changes are not confused.
 
 For every source-edit job: stop the process before restarting it, make the described source backup, find the named function, change only the specified block, save, run the supplied ordinary Python syntax/read-only checks, and restart using the same launcher. Existing completed work must remain in place. A Python fence is a notebook cell only when the step says to run it; a source replacement belongs in the named editor location. Do not paste every fence into one notebook cell.
 
-Data must work both by direct selection and by optional Quick Risk/Quick Market prefill. Direct history choices require completed compatible archives. A live quote or position does not create past observations.
+Data must work both by direct selection and by optional Quick Risk/Quick Market prefill. Direct choices must include current committed identities even without archive observations. Current Market supplies a real dated observation; it does not create missing past observations. Chapter 5 corrects the earlier archive-only discovery design and supersedes that restriction throughout this manual.
 
 Commodity market identity is **Underlying plus the original Tenor Swap**. For example, requesting `(BRENT, DEC26)` and `(GOLD, MAR27)` does not request `(BRENT, MAR27)` or `(GOLD, DEC26)`. Commodity Vega has the same single tenor axis in this application. FX Delta has no tenor axis in its connector request and keeps its Underlying-only bulk call. Reduced display labels must never replace source quote identities.
 
@@ -27,7 +28,7 @@ The intended result is:
 
 1. Open Data directly.
 2. Choose Risk, Market or Both.
-3. Search the series dropdown and select an available archived series.
+3. Search the series dropdown and select an available series. After Chapter 5, this includes current committed identities and compatible archived identities.
 4. For Both, select the opposite-kind companion when required.
 5. Choose the period and press Load.
 
@@ -76,7 +77,7 @@ Keep these responsibilities:
 
 | Keep | Why |
 |---|---|
-| `refresh_archive_catalog` and `load_archive_catalog` | They obtain the choices for standalone browsing. |
+| `refresh_archive_catalog` | Keep its output ownership; Chapter 5 replaces its body and archive-only helper call with current-plus-archive discovery. |
 | `poll_archive_generation` | It checks archive metadata and handles cache reset. |
 | The generation interval and Clear Cache input | They initialize and refresh the catalogue independently of a selected series. |
 | `edit_workspace` and the searchable series picker | They already support selecting a catalogue entry without a Quick selection. |
@@ -545,8 +546,8 @@ If duplicate or retired registrations are found, back up `cube/pages/data/s03_ca
 ### D. Separate an empty archive from a broken picker
 
 1. Enter Data directly and open Diagnostics. Do not use a Quick button to make the options appear.
-2. If the message is **Archive ready**, note the Risk and Market counts separately. Choose a kind whose count is greater than zero before judging its dropdown. A readable Risk archive does not imply a readable Market archive.
-3. If the message says there are no completed compatible archive identities, inspect the archive root used by the running application and completed history availability. The dropdown is built from archived exact identities. Live Risk rows and live Market quotes do not, by themselves, create dated archive history. Do not remove the completed/schema checks or fabricate historical dates to fill the picker.
+2. After Chapter 5 the message is **Search ready** and includes current and archived identity counts. Note Risk and Market counts separately. If it still says only **Archive ready**, check that the updated callback source is the one running. A readable Risk archive does not imply a readable Market archive.
+3. If there are no completed compatible archive identities, current identities must still appear after Chapter 5. Check that the existing refresh manager is passed into Data and its current catalogue is populated. Archive failures remain visible under Diagnostics; do not remove completed/schema checks. Current Market can supply its real dated observation without an archive file. Current Risk identity discovery alone does not supply missing Risk history.
 4. If the message stays **Preparing archive choices…**, inspect the generation/clear status beside it. A generation error may be the actual cause. In `cube/pages/data/s02_view.py::build_data_page`, the metadata interval must be mounted with `n_intervals=0` and polling enabled. Keep `data-history-cache-state-store` and `data-history-catalog-store` mounted once. In `refresh_archive_generation`, keep initial execution enabled. Do not gate initialization on a selected series or Quick payload.
 5. If counts are positive but options are blank, inspect the Network response for the callback whose output includes `data-series-picker.options`. Expect an `options` array for the current kind. A missing callback invocation means a registration/mount/trigger problem; a successful response returning an empty array despite a nonempty eligible catalogue points to `edit_workspace`'s event/option logic.
 6. In `cube/pages/data/s03_callbacks.py::edit_workspace`, inspect only the page-absence guard first. With the Data page mounted, an empty `data-series-picker.value`, absent Quick payload and absent loaded request are normal. They must not make this callback return before constructing options. If the guard incorrectly requires one of those values, remove that requirement from this guard; keep the absent-page check based on the optional Data mode control being `None`. Do not change the no-request guard in `load_workspace`.
@@ -723,7 +724,7 @@ Expected: direct entry, Quick import, a later direct edit, return navigation and
 4. Expect `"function"` for all three. If a function is missing, inspect the existing export object at the end of `assets/s09_playback.js`; retain its other exports and add only the missing implemented function's export. Do not register an old player callback again. If source exports are correct but Console sees an older file, reload assets after confirming the running application serves the edited folder.
 5. If Dash reports the wrong number of returned values, compare the existing clientside registration's Output order in `s03_callbacks.py` with the corresponding JavaScript return array. Correct the mismatched branch, including empty/error returns, to return one value for every declared Output in the exact same order. Keep one callback owner for each figure, table and player property.
 6. In Both, check each panel separately. One exact date can have Risk without Market or Market without Risk. Show a missing-observation caption and null values for the absent observation; do not hide the panel, choose a nearby date, or fill it with zero. Market quote values must not use the Risk Sum slice.
-7. Move the slider and use Play/Pause. The successful archive request must remain the same. These are browser rendering actions on the loaded bundle. If they start server reads, inspect the Inputs of `load_workspace`: keep only the request, cache-state and reset stores, and remove an accidentally added player/slider Input from that loader together with its matching Python argument. Keep player Inputs in the clientside player registration.
+7. Move the slider and use Play/Pause. The successful request must remain the same. These are browser rendering actions on the loaded bundle. If they start server reads, inspect the Inputs of `load_workspace`: keep the request, cache-state and reset stores plus the successful data-revision trigger specified in Chapter 5. Remove an accidentally added player/slider Input from that loader together with its matching Python argument. Keep player Inputs in the clientside player registration.
 
 Back up the exact Python or JavaScript file before a conditional edit. Parse changed Python; use the existing JavaScript syntax check only if its runtime is already available. Then restart/reload as appropriate and repeat the failing chart action. A syntax result alone does not prove the visual or financial result is correct.
 
@@ -2652,3 +2653,804 @@ for relative in BULK_FILES:
 4. Restart the app. Its previous single-Underlying Commodity routing and existing FX bulk routing should return. A rollback restores the connector implementation; it does not reverse any source data or archived observations.
 
 The final implementation retains the existing product adapters, validator/merge pipeline, atomic snapshot commits, dates, status authority, formulae, Risk/matrix bundle and Full/Reduced UI state. It adds one optional callable to ProductConnectorAdapter and one immutable requested-pair tuple in each relevant market leg's metadata for cache reuse. Catalogue frames and other request-building work remain local to one refresh; there is no new global table cache.
+
+<a id="standalone-current"></a>
+
+## Chapter 5 — Make standalone search independent of archives and include current Market
+
+Apply this chapter after the unified Risk / Market / Both workspace exists. Keep the callback dependency correction in Chapter 1. This chapter replaces the archive-only discovery rule and adds current Market observations; the older troubleshooting instructions must not be used to restore archive-only choices afterwards.
+
+The earlier design had a real omission. `load_archive_catalog` asks only `repository.catalog()` for choices. The Quick handoff can insert a virtual choice even when that catalogue is empty. Consequently, Quick navigation can work while direct search has no choices. Fixing callback initialization alone does not fix that omission. There is a second possible problem with older archives: the exact-identity reader supports a bounded legacy fallback, whereas the catalogue uses the stricter schema-v4 index. Keep archive validation; do not pretend an archive-index failure means there is no history.
+
+The resulting behavior is:
+
+1. Open Data directly and choose Risk, Market or Both.
+2. The searchable picker includes identities from the current committed application data, plus identities discovered in compatible archives. No Quick click is required.
+3. Select an exact identity and press Load. A current Market identity with no archive observations still produces its current curve, surface or scalar observation.
+4. Archive history precedes the current Market observation on its actual market date. In normal current-date operation, that is the final date and the initial selected date.
+5. If an archive already contains the same identity on that date, the displayed current snapshot replaces that identity's archived observation for that date. Earlier dates remain unchanged. The archive files themselves are not changed.
+6. A past custom range remains a past range. Do not append an out-of-range current point. A forced old market date is displayed honestly; do not rename it to the computer's calendar date or place it after later dates.
+
+This adds current **Market** observations. It makes current Risk identities searchable too, but does not manufacture current Risk history or add Risk observations to the archive. Risk with no stored observations must say so, including in Both.
+
+### 5.1 — Find the actual files and make a small backup
+
+1. Stop the running application through its existing JupyterHub launcher. Do not construct another app merely to inspect callbacks.
+2. Find the source folder containing `cube`. Use the same source-folder variable as your normal launcher. In that folder, locate these exact definitions:
+
+   | File | Definition to find |
+   |---|---|
+   | `cube/services/s02_state.py` | `_RefreshStateMixin`, `resolve_history_identity` |
+   | `cube/app/s02_contracts.py` | `RefreshManagerProtocol` |
+   | `cube/app/s07_factory.py` | `register_data_callbacks(app, history_repository)` |
+   | `cube/pages/data/s03_callbacks.py` | `register_callbacks`, `refresh_archive_catalog`, `query_workspace_bundle`, `load_workspace` |
+   | `cube/history/s06_repository.py` | `ArchiveHistoryRepository.read`, `available_dates`, `_available_dates_and_legacy` |
+
+3. Copy each file you will edit to a backup folder outside the imported `cube` package. Retain its relative path. Use a new backup directory so this does not replace an earlier backup.
+4. Keep your completed cache, tenor, bulk-adapter, Portfolio and Data-layout changes. The steps below add methods or replace named callback/helper definitions. They do not instruct you to replace entire files.
+5. Confirm that `data-revision-store` exists in the shared application layout and is already updated after a successful application refresh. Reuse it. Do not add a second revision store or an interval that refreshes market data.
+
+### 5.2 — Expose current identities through the existing manager
+
+1. Open `cube/services/s02_state.py`.
+2. Inside `_RefreshStateMixin`, immediately after `resolve_history_identity` and before the next method, **ADD** this method. Use the same four-space method indentation as its neighbors:
+
+   ```python
+   def data_history_identities(self) -> tuple[ResolvedHistoryIdentity, ...]:
+       """Read current identity metadata from one committed search catalogue."""
+       with self._state_lock:
+           catalog = self._search_catalog
+       if catalog is None:
+           return ()
+       resolved = []
+       for identity_mode in ("reported", "underlying"):
+           for value in catalog.combine_udl_options(identity_mode=identity_mode):
+               resolved.append(catalog.resolve_history_identity(
+                   "risk", value, identity_mode=identity_mode,
+               ))
+       for value in catalog.market_udl_options():
+           resolved.append(catalog.resolve_history_identity(
+               "market", value, identity_mode="underlying",
+           ))
+       return tuple(resolved)
+   ```
+
+3. **KEEP** the existing `ResolvedHistoryIdentity` import from `cube.domain.s10_search`. Add that name to the existing import only if missing.
+4. Open `cube/app/s02_contracts.py`. Directly below `import pandas as pd`, **ADD** `from cube.domain.s10_search import ResolvedHistoryIdentity` if that name is not already imported. Inside `RefreshManagerProtocol`, immediately after `resolve_history_identity`, **ADD**:
+
+   ```python
+   def data_history_identities(self) -> tuple[ResolvedHistoryIdentity, ...]: ...
+   ```
+
+5. Keep `combine_udl_options`, `market_udl_options`, the Quick callbacks and the existing SearchCatalog. The new method captures one catalogue reference for the whole operation. It does not call a provider, use the full defensive `manager.snapshot` copy or create a new global cache. It returns identity metadata only; no position rows are sent to the browser.
+
+### 5.3 — Pass the existing manager into the Data callbacks
+
+1. Open `cube/pages/data/s03_callbacks.py`. Find the existing `register_callbacks` definition.
+2. **ADD** `manager` as its third argument, preserving the first two arguments and any existing annotations:
+
+   ```python
+   def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, manager) -> None:
+   ```
+
+3. Open `cube/app/s07_factory.py`. **REPLACE only** this call:
+
+   ```python
+   register_data_callbacks(app, history_repository)
+   ```
+
+   with:
+
+   ```python
+   register_data_callbacks(app, history_repository, refresh_manager)
+   ```
+
+4. Search the application source for `register_data_callbacks(` and for calls through another alias imported from `cube.pages.data`. Update any real additional registration call to pass the manager it already uses. Do not instantiate a new manager or register the Data callbacks twice.
+5. If the factory deliberately has no manager, it may pass `None`; archive-only discovery still works in that configuration. A normal running Risk application must pass its actual refresh manager.
+
+### 5.4 — Merge current and archived identity choices
+
+1. Open `cube/pages/data/s03_callbacks.py`.
+2. In its existing `from cube.history import (...)` block, **ADD** `HistoryCatalogEntry`, `HistoryIdentityCatalog` and `RiskArchiveValidationError` if missing. Keep `HistoryHandoff`, `HistoryValidationError`, `Mapping` and `content_key` already used by the workspace. Directly below the third-party imports, **ADD** `from duckdb import Error as DuckDBError`; DuckDB is already used by the archive reader.
+3. **ADD** the following helper immediately above `register_callbacks`. Keep the old `load_archive_catalog` helper if any other caller imports it; the Data callback will stop calling it.
+
+   ```python
+   def load_data_catalog(manager, repository, cache_state):
+       """Discover current identities independently of archive availability."""
+       current_entries = []
+       archive_entries = []
+       notes = []
+       if manager is not None:
+           try:
+               for resolved in manager.data_history_identities():
+                   handoff = HistoryHandoff.from_resolved_identity(
+                       resolved,
+                       metric="risk" if resolved.kind == "risk" else "current",
+                   )
+                   current_entries.append(HistoryCatalogEntry(
+                       kind=handoff.kind,
+                       identity=handoff.identity,
+                       source_revision=handoff.source_revision,
+                       snapshot_date=handoff.snapshot_date,
+                   ))
+           except (RuntimeError, TypeError, ValueError) as error:
+               # Do not publish an incomplete current catalogue as complete.
+               current_entries = []
+               notes.append(f"Current choices unavailable: {error}")
+       else:
+           notes.append("No current-data manager is attached.")
+
+       archive_generation = None
+       if isinstance(cache_state, Mapping):
+           archive_generation = cache_state.get("generation")
+       if archive_generation:
+           try:
+               archive = repository.catalog()
+               archive_entries = list(archive.entries)
+               archive_generation = archive.generation
+           except (OSError, DuckDBError, HistoryValidationError,
+                   RiskArchiveValidationError, TypeError, ValueError) as error:
+               notes.append(f"Archive choices unavailable: {error}")
+       else:
+           notes.append("Archive metadata is preparing; current choices are available independently.")
+
+       # The key includes kind and the entire typed identity, not its label.
+       # Current metadata wins for an exact identity also present in archives.
+       by_key = {entry.key: entry for entry in archive_entries}
+       by_key.update({entry.key: entry for entry in current_entries})
+       entries = tuple(sorted(by_key.values(), key=lambda entry: (
+           entry.kind, entry.identity.risk_type.casefold(),
+           entry.identity.risk_greek.casefold(), entry.identity.underlying.casefold(),
+           entry.identity.identity_mode, entry.identity.source_types,
+       )))
+       generation = content_key({
+           "archive_generation": archive_generation,
+           "entries": [entry.to_mapping() for entry in entries],
+       })
+       catalog = HistoryIdentityCatalog(generation=generation, entries=entries)
+       risk_count = sum(entry.kind == "risk" for entry in entries)
+       market_count = sum(entry.kind == "market" for entry in entries)
+       status = (
+           f"Search ready: {risk_count:,} Risk and {market_count:,} Market choices. "
+           f"Current identities: {len(current_entries):,}; "
+           f"archived identities: {len(archive_entries):,}."
+       )
+       if not entries:
+           status += " No current or compatible archived identities are available yet."
+       if notes:
+           status += " " + " ".join(notes)
+       return catalog.to_mapping(), status
+   ```
+
+4. The catalogue's `generation` above is only the version of the picker metadata. **KEEP** `data-history-cache-state-store.data['generation']` as the real repository/archive generation. Do not copy the catalogue hash into that store, pass it as an SQL generation or compare it with a loaded bundle's archive generation. Those are different responsibilities.
+5. Keep the full typed identity, including all Risk Source Types and reported/raw mode. Do not merge similar display labels or fabricate a Market companion for a reported Risk basket.
+6. A legacy archive-index warning may coexist with current choices. This makes current identities selectable and preserves the existing exact-identity legacy reader. It does not migrate old archives or promise discovery of archive-only identities inside unsupported legacy catalogue files. If those additional identities are needed, deal with that explicit archive compatibility warning separately; never disable validation.
+
+### 5.5 — Populate the picker on initial entry and successful refresh
+
+1. Still in `cube/pages/data/s03_callbacks.py::register_callbacks`, find the entire decorated `refresh_archive_catalog` definition.
+2. **REPLACE its decorator and body together** with this single callback. Keep its existing function name to make ownership easy to inspect:
+
+   ```python
+   @app.callback(
+       Output("data-history-catalog-store", "data"),
+       Output("data-catalog-status", "children"),
+       Input("data-history-cache-state-store", "data"),
+       Input("data-revision-store", "data"),
+       State("data-history-catalog-store", "data"),
+       prevent_initial_call=False,
+   )
+   def refresh_archive_catalog(cache_state, _data_revision, current):
+       payload, status = load_data_catalog(manager, repository, cache_state)
+       return (no_update if payload == current else payload), status
+   ```
+
+3. **REMOVE** the old early return that waits for `cache_state['generation']` before offering any choices. Remove the old comparison that skips work merely because the archive generation is unchanged. A new current snapshot can change available identities while the archive has not changed.
+4. **KEEP** the existing single `edit_workspace` callback as owner of `data-series-picker.options` and `.value`, companion values, draft and selected request. The catalogue callback above owns only the catalogue store and Diagnostics status. Do not write picker options from both callbacks.
+5. In `edit_workspace`, make sure an initial/catalogue event works when `raw_quick` is `None`. **REMOVE** an unconditional `if not raw_quick: return ...` if your implementation has one. Preserve its guard for genuinely absent page controls and its separate optional fresh-Quick event handling.
+6. Keep the event priority correction in Chapter 2: initial hydration/catalogue changes must not mistake empty layout values for a new user selection or clear a valid draft. With no prior selection, show the available options and keep Load disabled until a series is chosen.
+7. Keep the corrected `refresh_archive_generation` inputs from Chapter 1. Do not reconnect the selected request, picker or Quick handoff to archive-generation polling. Do not put the Play interval on either server callback.
+8. The catalogue is refreshed on page initialization, an actual change to archive cache state, or a successful application data revision. It is not regenerated on every typed character, slider drag or playback tick.
+
+### 5.6 — Continue with current Market observation loading
+
+The picker changes above solve discoverability. They are not enough to display an unarchived current quote: the archive-only reader would still return no dates. Complete the following current Market steps before declaring this fixed.
+
+### 5.7 — Include the committed current Market snapshot in Data
+
+This change makes the current Market snapshot available from Data itself. When completed historical observations exist, the current snapshot joins them on the date slider. With no historical observations, its real Market Date is the only date. Opening Data and pressing Load read the application's already committed MarketBook; neither action calls a market provider or writes an archive.
+
+Use the Market Date carried by that committed snapshot. A Friday snapshot does not become Monday data because Monday is the computer's date. When this is the newest actual observation, it is the last slider date. If a forced or old snapshot is older than an archived observation, keep chronological order and identify its actual date in the caption.
+
+#### 5.7.1 — Keep the selection and history boundaries
+
+1. Stop the existing application using the same method used to start it. Save separate dated backups of every Python file changed below and of `assets/s09_playback.js`. Keep the factory backup from the manager-wiring step too. Keep completed archives untouched.
+2. Keep the unified Risk / Market / Both picker, the single `edit_workspace` callback, the single `load_workspace` callback, and the draft/request separation already implemented.
+3. Keep `data-history-cache-state-store.data["generation"]` as the archive generation. Do not add the live revision to this field: the archive reader compares it with `repository.generation()`.
+4. Keep current Market rows at exact Source Type + Risk Type + Risk Greek + raw Underlying + the ProductSpec tenor axes. Portfolio, reported-underlying mappings, Risk filters and Sum controls must not change Market quotes.
+5. Use the same already committed snapshot once per Load. Do not call `refresh`, an adapter, a provider, `archive`, or a second application constructor in this path.
+6. The following repository changes assume the existing `available_dates(handoff)` method, `_available_dates_and_legacy(handoff)` extraction and `read(..., max_cells=...)` work are present. Keep their legacy exception condition and the existing preallocation checks. Do not restore an older whole repository module over them.
+
+### 5.8 — Add one bounded exact Market read to the existing manager
+
+1. Open `cube/services/s02_state.py`. In its existing `from cube.domain.s10_search import (...)` block, add `RISK_TYPE` and `RISK_GREEK` if absent. Keep the existing `SOURCE_TYPE`, `UNDERLYING`, `PRODUCT_SPECS_BY_SOURCE_TYPE`, `FrameRead` and pandas imports.
+2. Find the class containing `read_frame`, `combine_udl_options` and `resolve_history_identity`. Add this method directly after `read_frame`, at the same method indentation. It captures one snapshot reference before filtering and copies only the selected identity's rows.
+
+```python
+    def read_data_market_identity(
+        self,
+        *,
+        source_type: str,
+        risk_type: str,
+        risk_greek: str,
+        underlying: str,
+        max_rows: int,
+    ) -> FrameRead | None:
+        if type(max_rows) is not int or max_rows < 1:
+            raise ValueError("Data Market row limit must be a positive integer")
+        spec = PRODUCT_SPECS_BY_SOURCE_TYPE.get(source_type)
+        if spec is None or (risk_type, risk_greek) != (
+            spec.risk_type, spec.risk_greek
+        ):
+            raise ValueError("Data Market identity does not match its product")
+        if not isinstance(underlying, str) or not underlying.strip():
+            raise ValueError("Data Market requires an exact raw Underlying")
+        selected_underlying = underlying.strip()
+        with self._state_lock:
+            committed = self._snapshot
+        if committed is None:
+            return None
+        frame = committed.market_frame
+        required = (SOURCE_TYPE, RISK_TYPE, RISK_GREEK, UNDERLYING)
+        missing = [column for column in required if column not in frame]
+        if missing:
+            raise ValueError(f"Committed MarketBook is missing identity fields: {missing}")
+        mask = (
+            frame[SOURCE_TYPE].eq(source_type)
+            & frame[RISK_TYPE].eq(risk_type)
+            & frame[RISK_GREEK].eq(risk_greek)
+            & frame[UNDERLYING].eq(selected_underlying)
+        )
+        count = int(mask.sum())
+        if count > max_rows:
+            raise ValueError(
+                f"Current Market identity has {count:,} rows; the Data limit is "
+                f"{max_rows:,}. Its rows were not truncated."
+            )
+        return FrameRead(
+            revision=committed.revision,
+            market_date=committed.market_date,
+            checker_date=committed.checker_date,
+            risk_checker_enabled=committed.risk_checker_enabled,
+            frame=frame.loc[mask].copy(deep=True).reset_index(drop=True),
+        )
+```
+
+3. Open `cube/app/s02_contracts.py`. Inside `RefreshManagerProtocol`, directly after `read_frame`, add this declaration. Keep the existing `FrameReadProtocol` definition.
+
+```python
+    def read_data_market_identity(
+        self,
+        *,
+        source_type: str,
+        risk_type: str,
+        risk_greek: str,
+        underlying: str,
+        max_rows: int,
+    ) -> FrameReadProtocol | None: ...
+```
+
+4. This is a committed-memory read. Do not implement it by calling `snapshot` and copying every Risk/P&L frame, or by calling `pivot_combined`. A Market-only tenor is retained even when no position owns it.
+
+### 5.9 — Normalize the injected current rows without changing archive rules
+
+1. Open `cube/history/s06_repository.py`. Add `from collections.abc import Mapping` if absent. Keep its pandas, date, history model, Source Type/Risk Type/Greek/Underlying, Market Date, Snapshot Date, Revision and `MARKET_ARCHIVE_COLUMNS` imports.
+2. Add this complete module-level helper immediately before `class ArchiveHistoryRepository`. It validates one small payload produced inside the Data loader. It accepts Live as Live; the Official-only archive validator remains unchanged.
+
+```python
+def prepare_data_current_market(handoff, current_market):
+    """Return validated exact current rows and their real date, without I/O."""
+    if current_market is None:
+        return None, None
+    if not isinstance(handoff, HistoryHandoff) or handoff.kind != "market":
+        raise HistoryValidationError("Current Market rows require a Market handoff")
+    if not isinstance(current_market, Mapping) or set(current_market) != {
+        "revision", "market_date", "rows"
+    }:
+        raise HistoryValidationError("Invalid current Market payload")
+    revision = _nonnegative_int(current_market["revision"], label="current revision")
+    market_date = _date(current_market["market_date"], label="current Market Date")
+    raw = current_market["rows"]
+    if not isinstance(raw, pd.DataFrame):
+        raise HistoryValidationError("Current Market rows must be a DataFrame")
+    if len(raw) > HISTORY_RAW_ROW_BUDGET:
+        raise HistoryValidationError("Current Market rows exceed the Data row limit")
+    missing = [column for column in MARKET_ARCHIVE_COLUMNS if column not in raw]
+    if missing:
+        raise HistoryValidationError(f"Current Market is missing columns: {missing}")
+    if raw.empty:
+        return None, None
+    identity = handoff.identity
+    if identity.identity_mode != "underlying" or len(identity.source_types) != 1:
+        raise HistoryValidationError("Current Market requires one exact raw source")
+    expected = {
+        SOURCE_TYPE: identity.source_types[0],
+        RISK_TYPE: identity.risk_type,
+        RISK_GREEK: identity.risk_greek,
+        UNDERLYING: identity.underlying,
+    }
+    for column, value in expected.items():
+        if not raw[column].eq(value).all():
+            raise HistoryValidationError(f"Current Market has a different {column}")
+    observed_dates = raw[MARKET_DATE].map(
+        lambda value: _date(value, label="row Market Date")
+    )
+    if not observed_dates.eq(market_date).all():
+        raise HistoryValidationError("Current rows disagree with the snapshot Market Date")
+    statuses = set(raw["Market Status"].tolist())
+    if not statuses or not statuses.issubset({"Live", "OFFICIAL"}):
+        raise HistoryValidationError("Current Market has an invalid Market Status")
+    if len(statuses) != 1:
+        raise HistoryValidationError("One current Market identity has mixed statuses")
+    keys = [SOURCE_TYPE, RISK_TYPE, RISK_GREEK, UNDERLYING]
+    keys.extend(axis.column for axis in identity.axes)
+    if raw.duplicated(keys, keep=False).any():
+        raise HistoryValidationError("Current Market contains duplicate exact quotes")
+    rows = raw.loc[:, list(MARKET_ARCHIVE_COLUMNS)].copy(deep=True)
+    for column in ("Open", "Current", "Move"):
+        rows = _numeric_metric(rows, column)
+    for axis in identity.axes:
+        _canonical_axis_order(rows, axis)
+    rows[MARKET_DATE] = market_date.isoformat()
+    rows.insert(0, REVISION, revision)
+    rows.insert(0, SNAPSHOT_DATE, market_date.isoformat())
+    return rows, market_date
+```
+
+3. Keep `validate_market_archive_frame` unchanged. It is correct for stored Official archives to reject Live quotes. This new helper does not write data and does not call that Official-only validator.
+4. Keep missing Open/Current/Move values missing. The helper validates numeric representation but does not invent a missing quote or recalculate a financial formula.
+
+### 5.10 — Exclude a replaced archive date before its SQL row limit
+
+For the selected Market identity, the current snapshot owns its own Market Date in this view. If that date is also archived, show the complete current identity for that date once. Do not average the two observations, duplicate the slider date, or fill today's absent tenor from the archived copy. The archive on disk remains intact.
+
+1. Open `cube/history/s05_store.py`. Find `ArchiveSQLStore.rows`.
+2. Add `exclude_date: str | None = None` immediately after its `max_rows: int` parameter. Keep this a keyword-only parameter and keep every other parameter unchanged.
+3. In this method's `parameters` list, find the final three values `start_date`, `end_date`, `max_rows + 1`. Insert `exclude_date` twice between `end_date` and `max_rows + 1`, so that the end of the list is exactly:
+
+```python
+            start_date,
+            end_date,
+            exclude_date,
+            exclude_date,
+            max_rows + 1,
+```
+
+4. In this same method's SQL only, immediately after `AND CAST({_quoted(date_column)} AS DATE) BETWEEN ? AND ?`, insert:
+
+```sql
+                      AND (CAST(? AS DATE) IS NULL
+                           OR CAST({_quoted(date_column)} AS DATE) <> CAST(? AS DATE))
+```
+
+5. Keep `ORDER BY`, the `LIMIT ?` placeholder and all identity predicates. The two new values are bound parameters, not interpolated user SQL. Existing callers omit `exclude_date` and retain their existing behavior.
+
+### 5.11 — Insert current rows before dates, period selection and canonical allocation
+
+1. Return to `cube/history/s06_repository.py`, method `read`. Its signature becomes:
+
+```text
+    def read(
+        self,
+        query: HistoryQuery,
+        *,
+        max_cells: int | None = None,
+        current_market=None,
+    ) -> HistoryBundle:
+```
+
+2. Keep the validation of `query`, `max_cells` and the calculation of `effective_max_cells`.
+3. Find the existing assignment `date_column = RISK_DATE if handoff.kind == "risk" else MARKET_DATE`. Immediately after it, add:
+
+```python
+        current_rows, current_date = prepare_data_current_market(
+            handoff, current_market
+        )
+```
+
+4. Find the existing `available_dates, legacy_raw = self._available_dates_and_legacy(handoff)`. Immediately after it and before `resolve_actual_period_dates`, add:
+
+```python
+        if current_date is not None:
+            available_dates = tuple(sorted({*available_dates, current_date}))
+```
+
+5. Keep `dates = resolve_actual_period_dates(available_dates, query)` and the date-count guard. Immediately after that guard, add:
+
+```python
+        include_current = current_date is not None and current_date in dates
+        archive_dates = tuple(
+            value for value in dates
+            if not include_current or value != current_date
+        )
+```
+
+6. In the `if legacy_raw is not None:` branch only, use `archive_dates` instead of `dates` for the empty check and `selected_date_values`. The complete branch becomes:
+
+```python
+        if legacy_raw is not None:
+            if legacy_raw.empty or not archive_dates:
+                period_rows = legacy_raw.iloc[0:0].copy()
+            else:
+                selected_date_values = set(archive_dates)
+                parsed_dates = legacy_raw[date_column].map(
+                    lambda value: _date(value, label=date_column)
+                )
+                period_rows = legacy_raw.loc[
+                    parsed_dates.isin(selected_date_values)
+                ].copy()
+```
+
+7. In the immediately following empty-archive branch, replace `elif not dates:` with `elif not archive_dates:`. Keep its empty DataFrame projection unchanged.
+8. In this method's `self._store.rows(...)` call only, replace `start_date=dates[0].isoformat()` with `start_date=archive_dates[0].isoformat()` and `end_date=dates[-1].isoformat()` with `end_date=archive_dates[-1].isoformat()`. Add this argument after `max_rows=self._max_rows`:
+
+```python
+                exclude_date=(
+                    current_date.isoformat() if include_current else None
+                ),
+```
+
+9. Keep the existing bounded SQL read and its returned-row guard. After the entire legacy/empty/SQL branch finishes, immediately before `if handoff.kind == "risk": period_rows = _apply_risk_filters(...)`, add:
+
+```python
+        if include_current:
+            expected_rows = len(period_rows) + len(current_rows)
+            if expected_rows > self._max_raw_rows:
+                raise HistoryValidationError(
+                    f"History plus current Market has {expected_rows:,} exact rows; "
+                    f"the limit is {self._max_raw_rows:,}. Choose a narrower period."
+                )
+            period_rows = pd.concat(
+                [period_rows, current_rows], ignore_index=True, sort=False
+            )
+```
+
+10. Keep every later Risk-filter, date normalization, numeric, raw-row, axis-order, canonical preallocation and canonical result-size guard. Current rows now participate before those operations. Do not concatenate a new date onto the finished browser bundle after its allocation checks.
+11. Keep the `HistoryBundle` constructor unchanged. Its `dates`, `selected_rows`, `raw_rows` and `values` now include the current observation only when the selected period includes its real date.
+12. Do not add current Market dates or values to a Risk-only bundle. In Both, Risk can have no observation on the final Market date. The renderer must show that Risk observation as missing.
+
+### 5.12 — Capture one current snapshot before calculating the workspace calendar
+
+1. Open `cube/pages/data/s03_callbacks.py`. Add this import once:
+
+```python
+from cube.history.s06_repository import prepare_data_current_market
+```
+
+2. Add this helper immediately before `query_workspace_bundle`. Its argument is the existing refresh manager passed into `register_callbacks` by the factory, not a newly constructed manager.
+
+```python
+def capture_data_current_market(refresh_manager, handoff):
+    if handoff is None or refresh_manager is None:
+        return None
+    if handoff.kind != "market":
+        raise HistoryValidationError("Current snapshot capture requires Market")
+    identity = handoff.identity
+    read = refresh_manager.read_data_market_identity(
+        source_type=identity.source_types[0],
+        risk_type=identity.risk_type,
+        risk_greek=identity.risk_greek,
+        underlying=identity.underlying,
+        max_rows=HISTORY_RAW_ROW_BUDGET,
+    )
+    if read is None or read.frame.empty:
+        return None
+    payload = {
+        "revision": int(read.revision),
+        "market_date": pd.Timestamp(read.market_date).date().isoformat(),
+        "rows": read.frame,
+    }
+    # Validate before this date influences presets or the date slider.
+    prepare_data_current_market(handoff, payload)
+    return payload
+```
+
+3. Complete the two labeling helpers in the next section before restarting. Then **replace only the existing `query_workspace_bundle` function** with the full implementation below. Keep `common_bounds`, `parse_workspace_request`, `content_key`, the draft reducer and serialization helper. If `DATA_WORKSPACE_BYTE_BUDGET` already exists, retain its single definition rather than adding another.
+
+```python
+DATA_WORKSPACE_BYTE_BUDGET = 16 * 1024 * 1024
+
+
+def query_workspace_bundle(
+    repository, raw_request, cache_state, reset_generation, *, refresh_manager=None
+):
+    selected = parse_workspace_request(raw_request)
+    if type(reset_generation) is not int or reset_generation < 0:
+        raise HistoryValidationError("Reset generation must be a nonnegative integer")
+    if any(item.reset_generation != reset_generation for item in selected.values()):
+        raise HistoryValidationError("This selection predates Clear Cache; select it again")
+    start_generation = repository.generation()
+    cached_generation = (
+        cache_state.get("generation") if isinstance(cache_state, Mapping) else None
+    )
+    if cached_generation and cached_generation != start_generation:
+        raise HistoryValidationError("Archive changed; wait for its index and press Load again")
+    # A missing initial polling value is not a reason to block a current read.
+    # Reading generation directly still makes archive validation authoritative.
+    start_revision = None
+    start_manager_reset = None
+    if "market" in selected and refresh_manager is not None:
+        start_revision = int(refresh_manager.health.revision)
+        start_manager_reset = int(refresh_manager.reset_generation)
+        if start_manager_reset != reset_generation:
+            raise HistoryValidationError("Clear Cache is still completing; press Load again")
+    current_market = capture_data_current_market(
+        refresh_manager, selected.get("market")
+    )
+    if current_market is not None and current_market["revision"] != start_revision:
+        raise HistoryValidationError("Current data changed during capture; press Load again")
+    available_by_kind = {
+        kind: repository.available_dates(handoff)
+        for kind, handoff in selected.items()
+    }
+    if current_market is not None:
+        current_date = pd.Timestamp(current_market["market_date"]).date()
+        available_by_kind["market"] = tuple(sorted({
+            *available_by_kind.get("market", ()), current_date
+        }))
+    start, end = common_bounds(raw_request, available_by_kind)
+    remaining = HISTORY_CANONICAL_CELL_BUDGET
+    raw_count = 0
+    panels = {}
+    if start is not None and end is not None:
+        for kind in ("risk", "market"):
+            if kind not in selected:
+                continue
+            if remaining <= 0:
+                raise HistoryValidationError("This workspace exceeds the history cell limit")
+            handoff = selected[kind]
+            query = HistoryQuery(
+                handoff, period="custom", start_date=start, end_date=end
+            )
+            bundle = repository.read(
+                query, max_cells=remaining,
+                current_market=current_market if kind == "market" else None,
+            )
+            if bundle.generation != start_generation:
+                raise HistoryValidationError("Archive changed during load; press Load again")
+            raw_count += len(bundle.raw_rows)
+            if raw_count > HISTORY_RAW_ROW_BUDGET:
+                raise HistoryValidationError(
+                    "Combined Risk/Market rows exceed the workspace limit; narrow the period"
+                )
+            panel = serialize_history_bundle(bundle)
+            if kind == "market":
+                panel = label_data_market_panel(panel, bundle, current_market)
+            else:
+                panel["unit_label"] = "Risk (source units)"
+            remaining -= len(bundle.values)
+            panels[kind] = panel
+            del bundle
+    if repository.generation() != start_generation:
+        raise HistoryValidationError("Archive changed during load; press Load again")
+    if start_revision is not None:
+        if int(refresh_manager.health.revision) != start_revision:
+            raise HistoryValidationError("Current data changed during load; press Load again")
+        if int(refresh_manager.reset_generation) != start_manager_reset:
+            raise HistoryValidationError("Clear Cache occurred during load; press Load again")
+    dates = sorted({observed for panel in panels.values() for observed in panel["dates"]})
+    envelope = {
+        "schema_version": 1,
+        "request": raw_request,
+        "display_mode": raw_request["display_mode"],
+        "panels": panels,
+        "dates": dates,
+        "resolved_start": start.isoformat() if start is not None else None,
+        "resolved_end": end.isoformat() if end is not None else None,
+        "generation": start_generation,
+        "reset_generation": reset_generation,
+        "key": content_key({
+            "request": raw_request,
+            "generation": start_generation,
+            "panels": {kind: panel["key"] for kind, panel in panels.items()},
+        }),
+    }
+    encoded = json.dumps(envelope, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > DATA_WORKSPACE_BYTE_BUDGET:
+        raise HistoryValidationError("Workspace exceeds 16 MiB; choose a narrower period")
+    if dates:
+        counts = "; ".join(
+            f"{kind.title()}: {len(panel['dates']):,} dates, {len(panel['values']):,} cells"
+            for kind, panel in panels.items()
+        )
+        status = (
+            f"Loaded {raw_request['period']} ({envelope['resolved_start']} to "
+            f"{envelope['resolved_end']}). {counts}."
+        )
+    else:
+        status = "No observations match this identity and period."
+    return envelope, status + current_market_workspace_caption(panels)
+```
+
+4. Find the entire decorated `load_workspace` definition inside `register_callbacks(app, repository, manager=None)`. **Replace its decorator and body together** with this one callback. Keep its existing three Outputs and do not use `allow_duplicate`.
+
+```python
+    @app.callback(
+        Output("data-history-bundle-store", "data"),
+        Output("data-history-status", "children"),
+        Output("data-identity-breadcrumb", "children"),
+        Input("data-history-request-store", "data"),
+        Input("data-history-cache-state-store", "data"),
+        Input("reset-generation-store", "data"),
+        Input("data-revision-store", "data"),
+        running=[(Output("data-load-history-button", "children"), "Loading…", "Load")],
+    )
+    def load_workspace(raw_request, cache_state, reset_generation, _data_revision):
+        if raw_request is None:
+            return None, "Choose a series and press Load", "No loaded selection"
+        try:
+            envelope, status = query_workspace_bundle(
+                repository, raw_request, cache_state, reset_generation,
+                refresh_manager=manager,
+            )
+            selected = parse_workspace_request(raw_request)
+            caption = " | ".join(
+                f"{kind.title()}: {item.identity.risk_type} / "
+                f"{item.identity.risk_greek} / {item.identity.underlying} / "
+                f"{item.identity.identity_mode} / {', '.join(item.identity.source_types)}"
+                for kind, item in selected.items()
+            )
+            return envelope, status, caption
+        except (OSError, DuckDBError, HistoryValidationError,
+                RiskArchiveValidationError, RuntimeError, TypeError, ValueError) as error:
+            return None, f"Data load failed: {error}", "No current loaded result"
+```
+
+5. `data-revision-store` changes after the existing application refresh commits. It reloads the current loaded request, so its Market endpoint can update. It does not turn an unsubmitted picker draft into a request. Play, slider, projection, period draft edits and typing are not Inputs of this loader.
+6. Keep the current rows inside this one server call only. The browser receives bounded canonical values, not the payload DataFrame or full MarketBook. Keep missing/corrupt-archive errors visible; do not catch them and pretend the archive is empty.
+
+### 5.13 — Label the current endpoint truthfully and invalidate its browser key
+
+1. In `serialize_history_bundle`, find these lines:
+
+```python
+    if bundle.query.handoff.kind == "market" and metric_column == "Current":
+        metric_column = "Official"
+        browser_values = browser_values.rename(columns={"Current": metric_column})
+```
+
+2. Remove that entire three-line block. Keep `metric_column = bundle.metric_column` and `browser_values = bundle.values`. The Market numeric column remains `Current`; a live endpoint must not be named Official.
+3. Add this complete helper next to `capture_data_current_market`:
+
+```python
+def label_data_market_panel(panel, bundle, current_market):
+    panel["unit_label"] = "Market level (stored quote units)"
+    panel["market_convention"] = bundle.query.handoff.identity.product_spec.market_unit
+    current_date = (
+        str(current_market["market_date"]) if current_market is not None else None
+    )
+    included = current_date is not None and current_date in panel["dates"]
+    current_status = None
+    if included:
+        current_status = str(current_market["rows"]["Market Status"].iloc[0])
+    panel["date_sources"] = {
+        observed: (
+            {"origin": "current", "status": current_status,
+             "revision": int(current_market["revision"])}
+            if included and observed == current_date else
+            {"origin": "archive", "status": "OFFICIAL", "revision": None}
+        )
+        for observed in panel["dates"]
+    }
+    panel["current_snapshot"] = (
+        {"market_date": current_date,
+         "revision": int(current_market["revision"]),
+         "status": current_status,
+         "included": bool(included)}
+        if current_market is not None else None
+    )
+    panel["key"] = content_key({
+        "base": panel["key"],
+        "date_sources": panel["date_sources"],
+        "current_snapshot": panel["current_snapshot"],
+    })
+    panel["uirevision"] = "data-history-" + panel["key"]
+    return panel
+```
+
+4. The complete `query_workspace_bundle` replacement already calls this helper and retains the Risk label `Risk (source units)`. Do not add a subsequent `Official (stored quote units)` assignment that overwrites it.
+
+5. Keep the workspace's content key dependent on each panel key. The current revision and date source are now included in the Market panel key. Two loads with different committed prices must not reuse a stale Plotly/player key merely because archive files did not change.
+6. Add this complete helper immediately after `label_data_market_panel`:
+
+```python
+def current_market_workspace_caption(panels):
+    market = panels.get("market")
+    current = market.get("current_snapshot") if isinstance(market, Mapping) else None
+    if not current:
+        return ""
+    observed = current["market_date"]
+    if not current["included"]:
+        return f" Current snapshot is dated {observed}, outside this selected period."
+    label = "Live" if current["status"] == "Live" else "OFFICIAL"
+    dates = market.get("dates", [])
+    suffix = (
+        " Newer archived observations exist; dates remain in chronological order."
+        if dates and observed < max(dates) else ""
+    )
+    return (
+        f" Current Market snapshot: {observed} ({label}, revision "
+        f"{current['revision']}).{suffix}"
+    )
+```
+
+7. The complete `query_workspace_bundle` replacement already appends this helper to its status. Do not append it twice.
+8. In `assets/s09_playback.js`, add this helper inside the existing closure, before `workspaceMainFigure`:
+
+```javascript
+  function workspaceMarketDateLabel(panel, observed) {
+    const date = String(observed ?? "");
+    if (panel?.kind !== "market") return date;
+    const source = panel.date_sources?.[date];
+    if (!source) return date;
+    return source.origin === "current"
+      ? `${date} · current ${source.status}`
+      : `${date} · archived Official`;
+  }
+```
+
+9. Inside `workspaceMainFigure`, keep raw ISO dates in point lookups, range comparisons, slider values and date-control values. Replace `name: String(dateA)` and `name: String(dateB)` with `name: workspaceMarketDateLabel(panel, dateA)` and `name: workspaceMarketDateLabel(panel, dateB)`. Then find this exact two-line title assignment:
+
+```javascript
+     const title = view === "compare" ? `${metric}: ${dateA} → ${dateB}`
+       : view === "over_time" ? `${metric} over time` : `${metric}: ${day}`;
+```
+
+Replace only that assignment with:
+
+```javascript
+     const title = view === "compare"
+       ? `${metric}: ${workspaceMarketDateLabel(panel, dateA)} → ${workspaceMarketDateLabel(panel, dateB)}`
+       : view === "over_time" ? `${metric} over time`
+       : `${metric}: ${workspaceMarketDateLabel(panel, day)}`;
+```
+
+Keep the following figure return statement unchanged. Do not substitute a decorated date into a financial lookup key.
+10. Ensure an Over time figure uses the `Market level (stored quote units)` axis label and `Current` numeric column. Keep quote numbers unchanged. `market_convention="pips"` is not permission to multiply stored FX quote levels by 10,000.
+11. In the existing `workspacePlayback` function, **KEEP** the behavior that a changed workspace/player key stops playback and selects the last index of the sorted union dates. Do not change that initial index to zero. When the current Market date is the newest selected observation, the chart therefore opens at that endpoint; with current data alone, it opens at its sole date. Keep the one-date player stopped with no attempt to advance beyond that date.
+
+### 5.14 — Check the change with ordinary notebook and browser actions
+
+1. Run this ordinary notebook cell after replacing `APP_ROOT` with the actual application directory. It reads source files without starting the app or fetching data.
+
+```python
+import ast
+from pathlib import Path
+
+APP_ROOT = Path("/replace/with/the/actual/application/folder").expanduser().resolve()
+for relative in (
+    "cube/services/s02_state.py",
+    "cube/app/s02_contracts.py",
+    "cube/app/s07_factory.py",
+    "cube/history/s05_store.py",
+    "cube/history/s06_repository.py",
+    "cube/pages/data/s03_callbacks.py",
+):
+    path = APP_ROOT / relative
+    ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    print("Syntax OK:", relative)
+```
+
+A successful parse establishes syntax only. Inspect every changed callback's argument list and the one factory registration so the same existing manager is passed through to the loader.
+
+2. Restart the existing process and open Data directly. Choose a known current Market identity without visiting Quick Market. Its choice must come from the independent catalogue change, and Load must use the new current read path.
+3. With an empty archive directory already configured for a development copy, choose Market and All. Expect one date: the snapshot's actual Market Date. Expect the same Current values and full tenors as the committed Quick Market view. Do not delete or rename real archive files to create this situation.
+4. With history present, expect chronological archived dates plus the current Market Date. When an archived observation has that same date, expect one observation for that date with the current identity's complete quote rows. Inspect a tenor with no Risk position too.
+5. Use a Custom range ending before the current Market Date. Expect only dates within that range. The current-date caption should say it is outside the selected period. Selecting All again should restore it.
+6. In Both, choose a valid Risk and Market pair. If no Risk archive exists on the Market endpoint date, expect missing Risk there and current Market beside it. No carry-forward, fake Risk point or zero is permitted.
+7. Select an identity absent from the current MarketBook but present in archives. Expect archive-only history. A current date is added only when that exact identity has rows in the committed snapshot.
+8. Refresh the application using its existing control. After a successful commit changes `data-revision-store`, expect the already loaded request to reload with the new committed revision and changed prices when the provider actually supplied them. An unsubmitted picker draft must remain unsubmitted. Press Load again to explicitly retry if a visible mid-load revision error occurred. Play/Pause and dragging the slider must not initiate refreshes or provider reads.
+9. If a tenor-order conflict appears, compare the exact label/order pairs in the archived and current rows. Preserve the explicit error; do not arbitrarily deduplicate ranks or parse tenor labels into an invented order. The new endpoint must obey the same authoritative tenor contract as the history it joins.
+10. If the real Market Date is older than an archived date, expect the explicit chronology caption. Do not change financial dates to force a “today” label. A syntax success, a catalogue choice, and a completed current Load are separate outcomes; record which actually succeeded.
+
+If a source change fails, stop the process, restore only the relevant source backup and restart it. Keep the archive files and the separate independent-catalogue correction. This feature is a read-time combination of stored history and a committed current snapshot, with no new background service, archive writer or unbounded cache.
