@@ -6,6 +6,24 @@ This independent guide covers the disappearing refresh hero, misleading completi
 
 Publishing this document does not change the application. The small DOM corrections include exact replacement snippets; the shared completion classifier is specified step by step and still needs implementation and browser testing. No Portfolio, Data or unrelated historical guides are included here.
 
+## Required behaviour: keep the hero until the whole refresh finishes
+
+**The hero must stay visible for the entire requested refresh, including work after the backend publishes its snapshot and the resulting updates to the visible tables/charts. A backend “complete” sample alone must not close it or end the active refresh display.**
+
+Finish successfully only after all three conditions are confirmed for the same refresh:
+
+1. The backend attempt has finished its work and published the validated result.
+2. The initiating refresh callback has finished its remaining work and returned.
+3. The visible views updated by that refresh have finished their dependent callbacks and rendered the target revision.
+
+While any condition is pending, keep the hero visible, preserve the attempt and elapsed time, and show the real phase: “Refreshing data”, “Finishing refresh” or “Updating displayed tables”. A redraw, navigation within the app, polling failure, timeout, changed status text or old response must never hide it or mark it complete.
+
+If completion cannot be confirmed, keep a visible “Waiting for confirmation” or connection-error message. A confirmed failure must leave a visible failure message. After confirmed success, keep the completed result visible until the next refresh; **do not auto-hide it after a delay**.
+
+“Whole refresh” means the finite work started by this action, including dependent visible results. It does not mean waiting for permanent progress timers, future automatic refreshes or unrelated user activity to stop. Closing/reloading the browser destroys its DOM; reconnect to server status afterwards rather than claiming an old page can remain visible.
+
+The implementation detail is in section 1.10 below. This update changes the guide; it does not deploy the application fix.
+
 ## 1. Refresh hero disappears; Shift+F9 appears to need several attempts
 
 ### 1.1 What is happening, in plain English
@@ -20,7 +38,7 @@ The current hero sometimes treats the end of the browser callback as proof that 
 
 That explains how “running on the server” and “no hero visible” can coexist. It also explains a false-looking flash of green ticks. It does **not** establish that every first or second keypress in your deployment is lost; that requires the single-press check in section 1.3.
 
-The intended behaviour is: **one press, one request; a visible and truthful status; success only when publication is confirmed.** A successful refresh can legitimately produce the same P&L if the input prices did not change.
+The intended behaviour is: **one press, one request; a continuously visible and truthful status; success only after the backend, refresh callback and required visible updates have all finished.** Publication is an intermediate milestone. A successful refresh can legitimately produce the same P&L if the input prices did not change.
 
 ### 1.2 What the checked code proves, and what remains a hypothesis
 
@@ -66,7 +84,7 @@ Keep the current refresh manager, single-writer lock, atomic snapshot commit, la
 
 Remove the assumptions that “callback ended,” “loading spinner ended,” “status text changed,” or “some idle progress arrived” each means financial success. Remove normal-remount abandonment and the automatic 300 ms disappearance. Keep automatic-refresh coalescing: it is explicitly guarded for automatic requests, and the normal no-change shortcut excludes `force_pl=True`.
 
-The core changes belong in `cube/pages/risk/s15_refresh.py` and `assets/s12_refresh.js`. `assets/s13_risk.js` needs only a small trigger guard. Keep the existing server callback signatures and stores for this initial repair. Sections 1.8–1.9 consolidate the browser's completion decisions using metadata already available.
+The lifecycle changes belong in `cube/pages/risk/s15_refresh.py` and `assets/s12_refresh.js`. `assets/s13_risk.js` needs only a small trigger guard. Sections 1.8–1.9 consolidate backend progress decisions. Section 1.10 adds small completion acknowledgements to the existing visible-view callbacks: those are required to wait for the full refresh instead of stopping at the backend commit. Keep the existing financial data path and revision stores; add no frame copies or job framework.
 
 Before editing, make one backup/commit of the application files you will touch. If earlier Commo patches are already installed, use the new behaviour below for **all normal refresh modes**, and remove Commo-only early returns that would compete with it. Do not paste a second copy of the same JavaScript function.
 
@@ -143,7 +161,7 @@ At the beginning of `startRefreshProgress`, before clearing timers or creating a
       }
 ```
 
-This keeps a repeated click from resetting the visible attempt. It is a UI guard, not a replacement for the server writer lock. Keep actual page teardown in `stopRefreshLifecycle()`/the `pagehide` handler.
+This keeps a repeated click from resetting the visible attempt. It is a UI guard, not a replacement for the server writer lock. Preserve this same state during the post-commit “Updating displayed tables” phase too. Keep the shared hero above `page_container` in `cube/app/s07_factory.py`; a page-local loading wrapper must not own or hide it. Check its ancestors as well as its own `hidden` property: a hidden parent still hides the hero. Keep actual page teardown in `stopRefreshLifecycle()`/the `pagehide` handler.
 
 ### 1.7 Record fresh progress without confusing it with a result
 
@@ -166,7 +184,7 @@ Do not use the one-second timestamp tolerance to establish ownership of a manual
 
 Keep the current button/callback wiring and existing progress endpoint. There is no need to add a job queue, new request-store protocol or another copy of the financial data for this initial fix. Add one small pure helper, `classifyRefreshProgress(state, progress)`, beside `progressFingerprint()` in `assets/s12_refresh.js`.
 
-Its job is to return `running`, `committed`, `failed`, `unconfirmed` or `ignored`, together with the accepted progress. This section specifies the implementation logic; it is not a fully written drop-in JavaScript function.
+Its job is to return `running`, `committed`, `failed`, `unconfirmed` or `ignored`, together with the accepted progress. Here `committed` means the backend milestone only; it must enter the full-refresh wait in section 1.10, not call the finalizer. This section specifies the implementation logic; it is not a fully written drop-in JavaScript function.
 
 Implement its state and rules in this order:
 
@@ -178,7 +196,7 @@ Implement its state and rules in this order:
 6. A matching fresh terminal sample must have `running: false`, a terminal stage and `finished_at`. If its error is present, classify failure even when the text equals the previous failure. Do not use `initialErrorText` inequality as the deciding test.
 7. To report a new server commit, also require a successful terminal sample and a revision greater than the fixed baseline. If no new revision is confirmed, say `No new revision confirmed`; do not automatically turn that into failure or success. An explicit no-work/coalesced callback may legitimately retain a revision. Keep operational warnings visible even if a snapshot committed.
 8. A known rejection/busy result from this callback takes precedence over claiming that its requested work succeeded. Use the existing returned status/error content for that result, associated with the observed callback completion. An ambiguous class/text ordering is unconfirmed, not success; the class transition alone is never an acknowledgement.
-9. Cached responses, transport failures, missing identities, old results and process changes cannot establish success. Preserve last confirmed details, show the uncertainty and keep polling while an identified writer is active. After the callback has returned and a fresh sample confirms no active writer but no matching new work, show an unconfirmed terminal result and allow a deliberate retry. Do not automatically resubmit an outcome-unknown action.
+9. Cached responses, transport failures, missing identities, old results and process changes cannot establish success. Preserve the pending attempt and last confirmed details, show the uncertainty and keep the hero visible. Do not finalize, clear state or enable an automatic retry because a poll failed or an idle response arrived. If the callback returned but its result cannot be matched, show “Refresh outcome unconfirmed”; require an explicit reconnect/check before a deliberate retry. Never discard still-pending view updates or automatically resubmit an outcome-unknown action.
 10. Keep startup separate: require its explicit successful phase, positive committed revision, and accepted startup attempt/process identity. Preserve failure/stall/retry and server-restart recovery. Do not use a positive old revision to treat an ordinary warm refresh as completed startup.
 
 The endpoint reads progress and committed health separately. Its `revision` is the server's current revision, not an immutable result attached to a particular browser action. Therefore the honest completion wording is `Server committed revision N` for the accepted observed work. It cannot prove that every requested setting from an unrelated/rejected action was applied. Do not attribute revision N to a specific attempt without matching callback evidence. Keep the callback's rejection and the committed controls visible.
@@ -187,7 +205,7 @@ This deliberately conservative approach can report `Unconfirmed` when very fast 
 
 ### 1.9 Route every progress and completion path through that rule
 
-Keep one completion helper that receives the classification and renders its result. Apply these changes in `assets/s12_refresh.js` in order:
+Keep one completion helper that receives the classification and advances the full-refresh phases in section 1.10. Backend completion advances to callback/view completion; it does not clear the active state. Apply these changes in `assets/s12_refresh.js` in order:
 
 1. **`startRefreshProgress`:** replace its first forced-poll `.then(...)` branch's independent `belongsToAttempt`/revision/timestamp success inference with the classifier. Keep the initial revision baseline fixed. Do not accept an earlier global error as this request's error.
 2. **`handleRefreshStatusTransition`:** keep its running-class tracking, and record `dashCallbackCompletedAt = Date.now()` when the callback ends. Remove the unconditional `finishRefreshProgress()` and the follower branch's `else if (progress)` completion. The end of the class should request fresh confirmation, not declare success.
@@ -196,13 +214,14 @@ Keep one completion helper that receives the classification and renders its resu
 5. **`refreshProgressPoll`, progress-unavailable branch:** preserve reconnect/backoff and show `Progress unavailable; last confirmed ...`. Delete the success fallback based on a cleared spinner/CSS class. Do not cancel an active server job or retry the financial action because its status endpoint is unavailable.
 6. **`recoverReadyBootstrap`:** tighten its ready decision to explicit startup success and the accepted startup/process identity. Preserve its existing one-reload/session guard and cold-layout handoff. A committed revision alone does not identify a completed new startup attempt.
 7. **`syncRefreshLifecycleNodes`:** after reattachment, repaint from `lastAcceptedProgress` and the current classification. Extract only the DOM-paint portion of `startRefreshProgress` into a small `paintRefreshPanel(state)` helper shared by start and reattachment. Keep timer creation, requests and baseline capture outside that helper. This restores titles and mode-specific skipped stages without creating another attempt or trusting arbitrary global progress.
-8. **Every remaining `finishRefreshProgress(` call:** require an explicit classified terminal result. Keep unconfirmed/rejected/busy outcomes visually distinct from committed success. A boolean named `backendConfirmed` is not enough if a caller can set it for any idle object.
+8. **Every remaining `finishRefreshProgress(` call:** successful finalization requires all three completion conditions in section 1.10. A backend `committed` classification alone must not call it. Keep rejection/failure results visible; an unconfirmed state remains visible and pending. A boolean named `backendConfirmed` is not sufficient.
 
 | Evidence | Allowed display |
 |---|---|
 | Click sent; no confirmed work yet | Requested; waiting for server. |
 | Accepted active writer progress | Running, with actual details; qualify foreign/unbound work. |
-| Same observed attempt completes successfully and server revision advances | Server committed revision N. |
+| Same observed attempt commits; refresh callback or view updates are pending | Server committed revision N — finishing refresh/updating displayed tables; hero stays active and visible. |
+| Backend, refresh callback and required views all confirm completion | Refresh complete — revision N; completed hero stays visible. |
 | Callback says busy | This action did not start; optionally follow the identified existing writer. |
 | Callback rejects stale/invalid controls | Show the rejection and existing corrective action. |
 | Accepted attempt fails | Show the current failure, even if its text repeats. |
@@ -211,17 +230,67 @@ Keep one completion helper that receives the classification and renders its resu
 | Progress network failure | Status unavailable; never infer completion. |
 | Server boot ID changed | Previous attempt interrupted/unconfirmed; use existing recovery. |
 
-### 1.10 Make the final display useful rather than a flash
+### 1.10 Wait for all refresh work before finalizing the hero
 
-In `finishRefreshProgress`, take the classified terminal result as an argument. Replace `hasNewError` based on `errorText !== initialErrorText` with that result's classification/error. Treat an unconfirmed result, callback rejection/busy result, failure and confirmed server commit separately; absence of a new error string does not equal success.
+This step is required. Simply removing the 300 ms hide timer fixes the flash but does not prove that the work has finished.
 
-Remove the loop that turns every unskipped stage green. Also amend `renderBackendProgress`: its `if (index < activeIndex)` branch currently marks all preceding stages complete. Preserve actual accepted stage observations instead of automatically completing unsampled earlier stages. Preserve stages actually confirmed by accepted progress. When a fast run is not sampled at every stage, leave those stage details as “Not observed” rather than inventing per-stage ticks; the accepted terminal result still confirms the overall server result. Use “Reused” only when reuse is known from the backend; do not infer it merely because a stage was not sampled. Do not show 100% for an unknown or rejected request.
+#### A. Keep backend completion separate from callback completion
 
-Replace “Validated snapshot is live” with “Server committed revision N” for a committed outcome. Keep the revision publication through `syncCommittedDataRevision`, including its page-consumer and stale-revision protections. If the tables are still rendering, say “Updating displayed tables.” Do not claim the visible figures are on revision N until the relevant table render has confirmed it; a generic Dash loading flag is not a revision-specific acknowledgement.
+In `cube/services/s06_refresh.py`, the successful refresh currently calls `_finish_progress()` before writing its metrics and returning. In `cube/pages/risk/s15_refresh.py`, `refresh_pipeline` then still runs `synchronize_committed_dashboard`, builds status/settings outputs, and returns them to Dash. Therefore even a correct `running: false` progress sample can arrive before the complete action has returned.
 
-Remove the success/failure auto-hide timeout at the end of `finishRefreshProgress`. Keep the terminal result visible until the next refresh. This needs no new close button. Keep clearing the elapsed interval and releasing the active loading indicator on a real terminal result. Next refresh replaces the displayed outcome through the existing start function.
+In `assets/s12_refresh.js`, keep the same `refreshProgressState` when an accepted backend result is committed. Record its target revision and move to “Finishing refresh”. Wait for the initiating callback to settle as well. The observed start/end transition in `handleRefreshStatusTransition` is evidence about that callback only; combine it with the matching backend outcome, never use it alone. A fresh progress response requested after that callback ends helps exclude old in-flight samples. A remounted status node is not a callback-end acknowledgement.
 
-Keep the keyboard's `event.repeat` and disabled-button checks. In the delegated refresh-click handler, ignore a disabled trigger before opening the hero. Keep the existing button dispatch: do not add a second keyboard-specific refresh, `.click()` three times, or a timer that retries financial actions automatically. In `assets/s13_risk.js`, replace only `if (refreshTrigger) {` with `if (refreshTrigger && !refreshTrigger.disabled) {`; keep its body unchanged.
+Keep all work that belongs to a refresh inside the manager/callback's awaited execution. If a connector internally starts a thread/future and returns immediately, change that connector boundary to await/join its result before returning: the hero cannot infer unfinished private work from a returned DataFrame. If following another writer, confirm that writer's end rather than treating this browser's early busy response as its completion. Where current status cannot prove that, remain visibly unconfirmed.
+
+#### B. Require completion of the visible results triggered by the refresh
+
+Setting `data-revision-store` starts more work. For example, `reduce_and_render_risk_view` updates Risk tables/detail, and `risk-initial-render-ready` then triggers Aggregate P&L. The hero must stay active through that second callback too.
+
+1. Before publishing the target revision to the UI, establish the small set of visible results this action will update. Do not let an initially empty set count as “all rendered” before that set is ready. Include active/open widgets; exclude closed lazy widgets and views that the action does not refresh.
+2. Give each required renderer a separate small acknowledgement output, returned alongside its actual table/chart content. Use a distinct memory Store or wrapper attribute per owner; do not make several Python callbacks write one shared mutable map. The acknowledgement should identify the refresh/view request, the actual revision used, and `rendered` or `failed`. No financial rows belong in it.
+3. Return success only with the actual result for the target revision, including a legitimate empty-state result. An exception returns a failed acknowledgement and visible error. `no_update`, an inactive branch, a query-store update, or a newly set revision value does not prove the table was rendered. Preserve every return tuple's Output order/arity.
+4. Deliver the acknowledgement to one lifecycle handler in `assets/s12_refresh.js` through a clientside callback, or observe a revision attribute on the newly rendered wrapper. A `dcc.Store` is not a readable DOM element: do not use `document.getElementById(store_id).data`. When using a Store bridge, let Dash apply the associated content before acknowledging the mounted result; include Plotly's completed-render event for a graph whose drawing is still in flight. Do not acknowledge a figure merely because its Python dictionary was produced.
+5. Accept acknowledgements only for the current action/view identity and its target revision. Ignore late responses from older requests. If newer work supersedes a pending view, explicitly replace that pending target and wait for the replacement; never use an unrelated newer revision as proof the old view completed.
+6. Keep the finite participant list aligned with in-app navigation. Do not wait for a removed page to render nonexistent DOM. Explicitly retire its presentation target and track the refresh-dependent results on the newly mounted page; still wait for any action-owned backend/callback work already started. A short DOM-remount gap is not retirement, success or cancellation. While it is unresolved, preserve the hero and its pending state.
+
+These are the existing owners to update when their results participate:
+
+| Visible result | Existing callback and file |
+|---|---|
+| Risk main/alternate tables and selected detail | `reduce_and_render_risk_view`, `cube/pages/risk/s07_explorer.py` |
+| Aggregate P&L on Risk | `reduce_and_render_aggregate_pl`, `cube/pages/risk/s14_workspacecallbacks.py` |
+| Active Quick Risk result | `render_current_pivot`, `cube/pages/risk/s14_workspacecallbacks.py`; also `render_quick_risk_tenor` if the separate Quick Risk guide has been implemented |
+| Active Quick Market result | `render_market_search`, `cube/pages/risk/s14_workspacecallbacks.py` |
+| Active Top Promotions | `render_top_promotions`, `cube/pages/risk/s14_workspacecallbacks.py` |
+| Open unmapped-books table | `render_unmapped_books`, `cube/pages/risk/s07_explorer.py` |
+| Visible P&L summary updated by this action | `reduce_and_render_pl_summary`, `cube/pages/pnl/s08_aggregate.py` |
+| Open P&L editors updated by this action | `control_editor` registered by `register_editor`, `cube/pages/pnl/s05_sendcallbacks.py` |
+
+For a history-backed summary, acknowledge that its query/render for this refresh has finished; do not claim new historical observations were written. `render_inline_pl_history` in `cube/pages/pnl/s09_drilldown.py` does not ordinarily take a data-revision Input. Include it only if the actual action triggers it; do not create a permanent wait for a callback that will not run.
+
+Keep `renderedDataRevisionFloor()` for its current publication/deduplication purpose. It takes the maximum of several revision signals. **One table reaching revision N cannot prove that every required table reached N.** Neither that maximum nor global `dashIsLoading()` is an all-results completion check.
+
+#### C. Make the finalizer use the whole-refresh result
+
+In `assets/s12_refresh.js`, guard successful `finishRefreshProgress(...)` with all of the following, evaluated together:
+
+```text
+matching backend result confirmed
+AND initiating refresh callback settled
+AND required-view set established
+AND every required view acknowledged its target result
+AND no required result failed or remains unconfirmed
+```
+
+While any condition is pending, do not set `refreshProgressState = null`, clear the elapsed timer, release the active refresh display, or mark 100%. Keep repainting the existing hero with “Finishing refresh” or “Updating displayed tables”. Keep the status check lightweight; do not poll full data frames or build another scheduler.
+
+A confirmed failure/rejection is an error result, not successful completion. Leave the error visible, retain last-good financial data, and account for any still-running work before allowing a new action. A transport timeout only means status is unavailable; it does not mean the refresh finished or failed. Keep the same pending attempt and continue the existing bounded polling/backoff without automatically rerunning it.
+
+Once the complete action has settled, clear its timer and active-work state, but retain its terminal display until the next refresh. Remove the success/failure auto-hide block entirely. If an earlier local patch added a tracked hide timer, cancel it on start/remount and remove the code that schedules it. Do not leave an old timeout capable of hiding a newer hero.
+
+Preserve truthful stage information: remove both the finalizer's sweep that turns all stages green and `renderBackendProgress`'s automatic completion of every preceding stage (`index < activeIndex`). Unsampled stages are “Not observed”; use “Reused” only when that is known. After backend publication, say “Server committed revision N — updating displayed tables”. Use “Refresh complete — revision N” only after the full condition above passes. The completed hero still remains visible.
+
+Keep the keyboard's `event.repeat` and disabled-button checks. In the delegated click handler in `assets/s13_risk.js`, replace only `if (refreshTrigger) {` with `if (refreshTrigger && !refreshTrigger.disabled) {`; keep its body unchanged. Keep one button/keyboard dispatch and do not disable the click target synchronously in the capture handler before Dash receives the event.
 
 ### 1.11 Make sure the P&L view is the one the action can refresh
 
@@ -251,10 +320,11 @@ These are acceptance checks for the implementation. They have **not** been run a
 8. Use two sessions: while one owns the writer, send an action from the other. The second must explicitly report busy/not started. If following the first, it must not claim that its own requested settings/action ran.
 9. Fail twice with exactly the same exception text. Both attempts must show failure and retain last-good data. Also test validation rejection before the manager starts.
 10. Drop progress responses while work is held. Show “Progress unavailable”; never infer success from callback CSS, a timeout, or a cleared spinner. Restore the connection and accept only the right outcome.
-11. Delay table rendering after a valid commit. Distinguish “server committed” from “tables updated”; never roll `data-revision-store` back because an older response arrived.
+11. Delay the final callback work after `_finish_progress`, then separately hold Aggregate P&L after Risk Explorer is ready, then hold an open P&L editor or graph render. In every case the hero must remain visible and active until the last required result finishes. Completing only the backend or first table must not call the finalizer. Never roll `data-revision-store` back because an older response arrived.
 12. Test one shortcut press and one separate button click with changed and unchanged Current inputs. Test archived Summary separately. Record the request count, result and revision for each case.
 13. Check Commo, Reload Risk, Portfolio refresh, Apply dates, Clear Cache and automatic refresh once each. Keep automatic coalescing and existing committed settings/reset protections.
-14. After these checks pass, deploy the coordinated application changes together and repeat the single-press production observation without altering financial inputs. If rolling back, restore the edited files from the same backup. This Markdown-only commit does not require an app restart by itself.
+14. After success, wait longer than the former hide delay: the completed hero must remain visible. Start another refresh before an old hide timer would have fired; that timer must not hide the new attempt. Test that a missing render acknowledgement remains visibly pending and a render failure remains visibly failed. Ongoing progress/automatic-refresh intervals must not keep an otherwise finished action active.
+15. After these checks pass, deploy the coordinated application changes together and repeat the single-press production observation without altering financial inputs. If rolling back, restore the edited files from the same backup. This Markdown-only commit does not require an app restart by itself.
 
 ### 1.13 What to avoid, and why
 
@@ -264,7 +334,7 @@ The existing attempt ID answers “Which server run is this progress describing?
 
 ### 1.14 Source references and limits of this review
 
-All references below are pinned to the inspected commit so the findings remain checkable after `v6` moves:
+All references below are pinned to the inspected commit so the findings remain checkable after `v7` moves:
 
 - [Hero lifecycle and progress polling](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/assets/s12_refresh.js).
 - [Keyboard/button handlers](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/assets/s13_risk.js).
@@ -273,4 +343,4 @@ All references below are pinned to the inspected commit so the findings remain c
 - [Progress identity and completion state](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/services/s02_state.py) and [progress endpoint payload](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/app/s05_progress.py).
 - [Live P&L callback path](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/pnl/s05_sendcallbacks.py) and [archive summary path](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/pnl/s08_aggregate.py).
 
-Verified here: source inspection, four current-source mocked-DOM probes and three Python source probes, and publication of this independent guide. Not verified here: the production root cause of every missed refresh, live adapter freshness, or successful deployment of the proposed application changes.
+Verified here: source inspection, four current-source mocked-DOM probes and three Python source probes, and publication of this independent guide. This follow-up also traced backend completion through refresh callback return and downstream Risk/P&L rendering. Not verified here: the production root cause of every missed refresh, live adapter freshness, the proposed render-acknowledgement implementation, or successful deployment of the application changes.
