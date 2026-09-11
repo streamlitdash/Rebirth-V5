@@ -1,10 +1,16 @@
 # Hero — reliable refresh status and Shift+F9
 
-Implementation guide for `streamlitdash/Rebirth-V5`, branch `v7`. Based on application code at `2220a3f4839318863a9131e3fef8118d0f82fb7d`. Updated 10 September 2026.
+Implementation guide for `streamlitdash/Rebirth-V5`, branch `v7`. Based on application code at `2220a3f4839318863a9131e3fef8118d0f82fb7d`. Updated 11 September 2026.
 
 This independent guide covers the disappearing refresh hero, misleading completion ticks and how to verify a single Shift+F9 P&L refresh. It replaces the earlier Commo-only hero advice. Read the steps in order; keep changes that are already installed and match your deployed code before replacing a block.
 
 Publishing this document does not change the application. The small DOM corrections include exact replacement snippets; the shared completion classifier is specified step by step and still needs implementation and browser testing. No Portfolio, Data or unrelated historical guides are included here.
+
+**11 September implementation status:** sections 1.8–1.10 are a design specification, not a complete executable patch. The later restoration snippet does not supply their missing classifier, phase painter or recovery logic. Do not treat the combined guides as a tested full lifecycle implementation. The reported frozen live-progress behavior needs the actual implemented refresh assets/callbacks before a complete replacement can be verified.
+
+The cold-start publication instruction in `refreshinteract.md` has been corrected: remove its bootstrap exclusion while retaining the financial-page mount guard. Publishing a committed revision must happen before waiting for views to acknowledge that revision. This correction addresses that specific circular-wait risk; it does not by itself repair live stage updates.
+
+Two additional requirements were underspecified below: running samples must remain displayable before terminal/callback completion evidence exists, and an old unconfirmed hero must not silently ignore a new start while the native button still launches a backend action. Those paths need coordinated code and tests against the installed implementation; adding another DOM-restoration call is insufficient.
 
 ## Required behaviour: keep the hero until the whole refresh finishes
 
@@ -118,6 +124,8 @@ Why: an existing positive commit revision means the shell is already populated. 
 Check both cold Risk and cold P&L navigation after this edit. A freshly started/replaced server must still reach its validated initial layout; this guard is not a substitute for the existing server-boot recovery.
 
 ### 1.6 Preserve the active hero when its panel changes
+
+**Integration caveat:** the active-state early return below is not a complete policy for subsequent refreshes. If an unconfirmed old state survives after its callback returns, the native button must not launch a new backend action while this guard silently ignores the new hero start. That recovery path was left unspecified in the original guide and needs the installed lifecycle code to repair correctly.
 
 Open `assets/s12_refresh.js`. In `syncRefreshLifecycleNodes`, keep the calls to `syncRefreshStatusObserver()` and `syncCommittedDataRevision(...)` at the top. Replace everything from its `const state = refreshProgressState;` through the old `abandonRefreshProgress(state);` with:
 

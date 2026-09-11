@@ -1,6 +1,8 @@
-# Quick Risk charts and clientside Data search
+# Quick Risk charts, underlying search and clientside Data search
 
 Updated 11 September 2026 for `streamlitdash/Rebirth-V5`, branch `v7`. This document contains implementation instructions; publishing it does not deploy application code.
+
+**For slow Quick Risk underlying searches, see Part C.** Its two backend replacements can be applied independently of the chart, Data workspace and Hero changes. It includes measured results and the limits of what this fix addresses. Quick Market's reported end-to-end delay still needs inspection of the implemented app.
 
 ## Read first: this corrects the earlier Data instructions
 
@@ -13,7 +15,7 @@ Use this order:
 1. Keep or implement Part A, then check its charts.
 2. Implement this revised Part B on the existing browser-editor workspace. Complete its JavaScript and registration changes together, then restart and hard-refresh.
 3. Apply `JTD.md` independently if needed.
-4. Apply `Hero.md`; include `render_quick_risk_tenor` when Quick Risk participates. Keep any already-implemented completion acknowledgement outputs/returns when adapting the Part A callback.
+4. Read the implementation-status correction at the top of `Hero.md` before changing the refresh lifecycle: its classifier/completion sections are not a complete executable patch. Keep already-working acknowledgement outputs/returns when adapting Part A. Part C does not depend on implementing that lifecycle.
 5. Use `Connectors.md` for live feeds. These display changes do not require a connector migration.
 
 Part A was checked against application source at `2220a3f4839318863a9131e3fef8118d0f82fb7d`. Part B extends the complete clientside editor previously published in `DATA_INTERACTION_FIX.md` at `335bdce6453b7544d4eac436b7094f35c14864c6`, matching the interface you described. GitHub's untouched application source still contains the older Data page: **this document is not a migration from that old page to the unified workspace.** Further local changes to your deployed files have not been inspected. The component and argument contract is listed below so you can compare it directly.
@@ -1527,3 +1529,171 @@ Source references:
 The old Data source in untouched v7 does not contain `workspaceEditor`; the earlier guide above supplied it for the unified implementation. This corrected guide follows that clientside contract instead of pretending the old selector callbacks belong in your current page.
 
 Run `git diff --check` and inspect your own diff before committing application changes. Publishing this Markdown changes the guide only.
+
+## Part C — remove repeated filtering from Quick Risk search
+
+This section fixes a measured Quick Risk search bottleneck in the inspected application source. It is independent of Parts A and B: it changes neither your chart controls nor the clientside Data editor. Publishing this guide does not change your running application.
+
+### C1. What is slow, and what this change does
+
+In `cube/domain/s10_search.py`, `SearchCatalog.search_combine_udl_options()` currently repeats the same shared-filter work separately for every possible matching identity. `_filter_risk_positions()` also selects a wide DataFrame before checking a few filter columns. A restrictive filter can force the search to examine thousands of identities before it has enough choices to return.
+
+The replacement evaluates the filters once per search. It creates a temporary True/False array saying which position rows are visible, then checks the existing identity indexes against that array. The filtering helper reads only the columns actually being filtered. There is no new persistent cache, connector request, callback, debounce timer, or duplicate financial DataFrame.
+
+Keep these existing rules:
+
+- Search returns at most 100 matches plus the current selection when it remains valid. This dropdown limit does not restrict which positions or identities you can read.
+- Quick Risk uses reported identity and applies the shared filters. Exclusion still applies to reporting/Portfolio filters; Split keeps inclusion semantics.
+- Quick Market uses raw identity and the complete MarketBook. Do not apply Portfolio filters to it.
+- Choosing an identity still drives the existing table/chart callbacks. Typing remains an options request.
+
+### C2. Replace the filtering helper
+
+**File: `cube/domain/s10_search.py`.** Save a backup outside the application source directory. Find the top-level `def _filter_risk_positions(`. Replace that entire function through its final `return positions[keep]` with the following. Keep the definitions before and after it.
+
+```python
+def _filter_risk_positions(
+    frame: pd.DataFrame,
+    positions: np.ndarray,
+    risk_filters: Mapping[str, Sequence[str] | None] | None,
+    *,
+    exclude_selected: bool = False,
+) -> np.ndarray:
+    """Filter exact committed risk positions without changing row order.
+
+    Split is a sourced-risk control and always keeps inclusion semantics.
+    ``exclude_selected`` applies only to Portfolio/reporting dimensions, in
+    line with the main Risk filter bar.
+    """
+
+    selected_filters = dict(risk_filters or {})
+    unknown = sorted(set(selected_filters) - set(QUICK_RISK_FILTER_COLUMNS))
+    if unknown:
+        raise ValueError(f"Unknown Quick Risk filters: {unknown}")
+    if len(positions) == 0 or not selected_filters:
+        return positions
+
+    # Read only each active filter column; never copy the wide financial frame.
+    keep = np.ones(len(positions), dtype=bool)
+    for column in QUICK_RISK_FILTER_COLUMNS:
+        raw_selected = selected_filters.get(column)
+        if isinstance(raw_selected, (str, bytes)):
+            raise TypeError(
+                f"Quick Risk filter {column!r} must be a sequence of values"
+            )
+        selected = list(raw_selected or [])
+        if selected:
+            matches = frame[column].iloc[positions].isin(selected).to_numpy()
+            keep &= ~matches if exclude_selected and column != SPLIT else matches
+    return positions[keep]
+```
+
+This preserves the helper's name, arguments, validation and returned position order. Keep its existing callers, including exact pivots. The only change inside the helper is reading each active filter column instead of selecting the entire wide frame.
+
+### C3. Replace the Quick Risk options method
+
+In that same file, find `class SearchCatalog`, then its method `def search_combine_udl_options(`. Replace that entire method, stopping immediately before `@staticmethod` and `def _exact_positions(`, with the following. The four-space indentation places it inside the existing class.
+
+```python
+    def search_combine_udl_options(
+        self,
+        search_value: str | None,
+        *,
+        identity_mode: str = "reported",
+        limit: int = 100,
+        include: str | None = None,
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
+    ) -> tuple[str, ...]:
+        """Return a bounded, case-insensitive slice of exact dropdown values.
+
+        Display-label normalization is precomputed at catalog publication. The
+        scan stops as soon as ``limit`` matches are found. A valid current
+        selection is retained so Dash never clears it merely because its option
+        was paged, but an identity with no rows under the governed filter view
+        is removed immediately.
+        """
+        selected_limit = _validate_limit(limit)
+        terms = _dropdown_search_terms(search_value)
+        positions, options, search_labels = self._quick_risk_index(identity_mode)
+        # Evaluate the shared filters once for this search, not once per identity.
+        # This transient mask contains no financial values and is discarded afterwards.
+        visible = None
+        if risk_filters:
+            all_positions = np.arange(len(self._risk_pivot_frame), dtype=np.int32)
+            filtered = _filter_risk_positions(
+                self._risk_pivot_frame,
+                all_positions,
+                risk_filters,
+                exclude_selected=exclude_selected,
+            )
+            visible = np.zeros(len(self._risk_pivot_frame), dtype=bool)
+            visible[filtered] = True
+        matches: list[str] = []
+        for option, search_label in zip(
+            options,
+            search_labels,
+            strict=True,
+        ):
+            if terms and not all(term in search_label for term in terms):
+                continue
+            if visible is not None and not visible[positions[option]].any():
+                continue
+            matches.append(option)
+            if len(matches) >= selected_limit:
+                break
+
+        if include is not None:
+            if not isinstance(include, str):
+                raise TypeError("included Combine Udl selection must be text")
+            include_positions = positions.get(include)
+            include_visible = include_positions is not None and (
+                visible is None or visible[include_positions].any()
+            )
+            if include_visible and include not in matches:
+                # At most one current selection may sit alongside ``limit``
+                # search matches, keeping the callback payload strictly bounded.
+                matches.insert(0, include)
+        return tuple(matches)
+```
+
+Keep the existing NumPy import (`import numpy as np`), `Mapping`, `Sequence`, `_validate_limit`, `_dropdown_search_terms`, and `_quick_risk_index`. They already exist in this module. No new imports or packages are needed.
+
+Keep `search_market_udl_options()`, the manager methods in `cube/services/s02_state.py`, and both options callbacks in `cube/pages/risk/s14_workspacecallbacks.py`. Do not add another options callback or replace your clientside Data editor. Keep the 100-result callback limit and current-selection handling. The temporary arrays belong to this one function call and are discarded afterwards; nothing is added to `SearchCatalog.__slots__` or stored between users.
+
+### C4. Verify the replacement
+
+1. Check that there is exactly one `_filter_risk_positions` definition and one `SearchCatalog.search_combine_udl_options` method.
+2. Using your application's Python environment, run:
+
+   ```text
+   python -m py_compile cube/domain/s10_search.py
+   python -m pytest tests/s04_market.py tests/s19_riskfilters.py -q
+   ```
+
+3. Restart the application. In Quick Risk, test an empty search, a broad name, and an exact name. Apply one reporting filter and repeat with Exclude enabled. Results must be identical to the previous implementation.
+4. Select an identity, then type unrelated text. A still-valid selection must remain available. If the shared filters remove all its rows, it must no longer be treated as a valid selection.
+5. Confirm Quick Market and the selected Quick Risk chart still work. This change must not query a production connector when typing.
+
+Local validation ran 1,296 comparisons of old and new valid search results, including raw/reported modes, empty filters, include/exclude, missing metadata, selected identities outside the search/limit, no matches, and limits of 1, 3 and 100. Six invalid-input cases and 16 nullable-filter/position-order cases also passed. The source frame remained unchanged and the filter helper ran once per filtered search. All 64 existing tests in the two files above passed against these exact replacement functions.
+
+Invalid filter definitions are now checked before scanning matching labels, so they can raise even when the typed text matches no identity. Valid filter results are unchanged.
+
+The following measurements used 100,000 invented position rows, 400 portfolios and the exact replacement above. Values are median Python function times from three local runs; they exclude browser rendering, network latency and server queueing.
+
+| Search case | Exact identities | Before | After |
+|---|---:|---:|---:|
+| Broad search with a restrictive Portfolio filter | 250 | 135 ms | 3.0 ms |
+| Broad search with a restrictive Portfolio filter | 10,000 | 4,571 ms | 18.7 ms |
+| First 100 results with Split=Risk | 10,000 | 38.0 ms | 1.7 ms |
+| Exact name matching one identity | 10,000 | 3.5 ms | 4.8 ms |
+
+The tradeoff is explicit: a narrow exact query may take slightly longer because the new version evaluates active filters once over all position rows. It removes the much larger cost of repeating DataFrame filtering thousands of times during broad searches. Actual latency depends on your identity count, active filters and deployment.
+
+### C5. Quick Market needs a separate latency check
+
+The inspected Quick Market options method already scans only pre-normalized identity labels, stops after 100 matches, and performs no position filtering or connector I/O. It took approximately 0.008–3 ms in the same local catalog tests. The Quick Risk bottleneck above therefore does not explain a multi-second Quick Market delay by itself.
+
+Keep its existing method for now. In the running application, compare the request triggered by `quick-market-combine-udl.search_value` with its server execution time and the browser's rendering time. A long wait before the response, a slow local modification, and a fast response followed by a blocked browser require different fixes. The deployed callback/asset source and that request trace are needed to identify which applies; this section does not claim to fix an unmeasured Quick Market problem.
+
+To undo only Part C, restore the two original function definitions from your backup and restart. Keep Parts A and B and your unrelated local changes.

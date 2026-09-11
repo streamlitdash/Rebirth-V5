@@ -2,11 +2,25 @@
 
 Apply this after your implemented `Hero.md`. The hero should remain visible until its work finishes **and you should still be able to navigate, change filters, select an underlying and use Quick Risk/Quick Market while it runs**. Those views use the last committed snapshot until a new one is available.
 
-Section 5D adds the complete repair/checks for a hero panel stuck on its waiting placeholder.
+**11 September correction:** section 4 now removes the bootstrap publication gate. The previous instruction to retain that gate conflicts with waiting for views before completing startup. Section 5D repairs replacement markup only; it is not a repair for stopped polling or a classifier rejecting live updates. The broader reported live-progress failure still requires inspection of the implemented application code.
 
 This guide repairs the interaction path. It does not remove the full-completion checks from `Hero.md`. It also supersedes that guide's instruction to preserve the old revision publisher if you already installed the earlier interaction fix.
 
 ## 1. What went wrong, and what is confirmed
+
+The earlier guides were incomplete as an implementation package. Hero sections 1.8–1.10 describe new classification, completion and view-acknowledgement logic without supplying all of that code. Installing a display helper cannot fill those gaps. Do not repeatedly add restoration calls or another poller to address a static hero; inspect the installed lifecycle first.
+
+One specific instruction error is corrected here: the independent publisher must also work while the startup hero remains active. Cold Risk shell hydration can leave `data-revision-store` at 0 even after `refresh-commit-revision` becomes 1. If the hero waits for revision-driven views but the publisher refuses to run in bootstrap mode, those waits can become circular. The initial page can already contain revision-1 content, so this is not proof that every cold-start render is blocked, nor an explanation for all missing live updates. Section 4 removes the conflicting gate while retaining the page-mount check.
+
+For a hero that appears but gives no fresh details, check the actual installed `assets/s12_refresh.js` together with `assets/s13_risk.js` and `cube/pages/risk/s15_refresh.py`. Compare the first browser Console error, successive progress responses and the painter's accepted samples. A response containing changing function/count values establishes backend progress; it does not establish that the painter received them. The unchanged server placeholder alone establishes neither backend failure nor completion.
+
+Keep these boundaries explicit during that inspection:
+
+- `finished_at` and fresh post-callback confirmation govern terminal confirmation. They must not be prerequisites for displaying ordinary running progress.
+- `startup_attempt_id` and the manager's `attempt_id` are different identifiers. Never require equality between them.
+- A new financial action and its hero must have a coordinated start. An old unconfirmed hero cannot silently reject a new UI start while the native button still launches another backend refresh. The earlier unconditional active-state guard did not specify this recovery path.
+
+These are diagnosed guide gaps, not a claim to have inspected or repaired your separately edited app. A complete live-progress replacement must be built and tested against those actual files before being supplied as executable instructions.
 
 The inspected code already supports reading the last good data while a refresh calculates. `RiskRefreshManager` has a writer lock and a separate short-held state lock. The intended design was not to freeze the app.
 
@@ -75,10 +89,33 @@ Check that all of these are true:
 - That callback alone writes `data-revision-store.data`; it uses the actual Store as State to compare revisions.
 - `refresh-commit-revision.children` is **State**, not Input, in that browser callback.
 - `syncCommittedDataRevision` records the newest committed revision; it no longer directly calls `set_props` on `data-revision-store`.
-- `app.canPublishDataRevision()` allows normal refreshes and post-commit view updates. Its cold-start `mode !== "bootstrap"` guard can stay.
+- `app.canPublishDataRevision()` allows publication as soon as the financial layout can consume it, including while the hero remains in bootstrap mode. Remove the old bootstrap exclusion using 4A.1 below.
 - The publisher does not wait for `refresh-busy-store`, `!refreshProgressState`, `dashIsLoading() === false` or “all view acknowledgements received”.
 
 If these checks pass and revision propagation works, keep your publisher. Remove only a locally added wait condition that makes publication depend on the hero finishing. If your Hero baseline capture also needs the removed `renderedDataRevisionFloor()` function, use the coordinated replacement below. Do not restore the old direct Store writer to get that function back.
+
+#### 4A.1 Correct the already-installed bootstrap gate
+
+In `assets/s12_refresh.js`, find this existing assignment from the previous version of this guide:
+
+```javascript
+    app.canPublishDataRevision = () => (
+      refreshProgressState?.mode !== "bootstrap"
+      && Boolean(financialPageCanConsumeRevision())
+    );
+```
+
+Replace that whole assignment with:
+
+```javascript
+    app.canPublishDataRevision = () => (
+      Boolean(financialPageCanConsumeRevision())
+    );
+```
+
+Keep `financialPageCanConsumeRevision()`, the actual Store comparison, the single publisher callback and the existing intervals. This permits notification of a committed revision; it does not start a second refresh or treat publication as completion. If a duplicate bootstrap exclusion remains inside the old `syncCommittedDataRevision`, use the coordinated block in 4B instead of retaining two publisher implementations. Do not add another timer.
+
+Verify a cold Risk start with a deliberately slow visible renderer: revision 1 must reach `data-revision-store` while the hero is still waiting for that renderer. It must not publish to a missing financial layout or invent a revision before the server commits. Repeat with P&L and an ordinary warm refresh. Keep the hero's completion checks intact.
 
 ### 4B. Known complete replacement when your publisher is missing or mixed
 
@@ -100,11 +137,10 @@ Use this section as one coordinated edit only if 4A fails. Skip it if your curre
     app.pendingCommittedDataRevision = 0;
     app.observedPublishedDataRevision = 0;
 
-    // A warm refresh remains interactive, including while the hero waits
-    // for its required views. Cold startup still uses its existing owner.
+    // Publishing must not wait for the hero: the hero can be waiting
+    // for views that need this revision, including after cold startup.
     app.canPublishDataRevision = () => (
-      refreshProgressState?.mode !== "bootstrap"
-      && Boolean(financialPageCanConsumeRevision())
+      Boolean(financialPageCanConsumeRevision())
     );
 
     // Compatibility with the click-baseline capture in Hero.md. This is
@@ -268,7 +304,7 @@ In any newly added Hero JavaScript, remove only page-lock operations such as set
 
 Do not delete `refreshProgressState` to unlock the page. Do not bring back the 300 ms auto-hide timer. Do not make the hero transparent to conceal a still-running task.
 
-### 5D. Restore the full hero when its place contains only “Waiting for Server”
+### 5D. Restore a replaced hero panel; first distinguish a stopped progress lifecycle
 
 This section corrects the missing display-restoration step in `Hero.md` sections 1.6 and 1.9. The pasted 1.6 code made a replacement panel visible, but restoring its contents was left to later prose. A fresh panel could therefore retain its waiting placeholder while the real refresh state survived.
 
@@ -784,7 +820,7 @@ The checked sources are the v7 application baseline and the published `Hero.md`,
 Validation for the proposed snippets passed:
 
 - The modified baseline Python files parse, the full modified refresh JavaScript passes syntax checking, and Dash registers the publisher with exactly one timer Input and the two intended States.
-- Focused JavaScript checks confirm publication during an active normal refresh, preservation of the bootstrap guard, no rollback for old/invalid revision signals, `no_update` for an unchanged Store, and a callable Hero baseline compatibility function.
+- Earlier focused JavaScript checks covered normal-refresh publication, old/invalid revisions, unchanged Store values and the baseline helper. Their expectation that bootstrap publication stay blocked was wrong for the full-wait lifecycle; it is superseded by the 11 September checks below.
 - A local Chrome/Dash browser reproduction held the backend open. With the original `data` dependency, Risk stayed queued; with `modified_timestamp`, the selected Risk view rendered on the last-good revision before refresh ended. Quick Market remained responsive in both cases.
 - The same browser fixture used the exact replacement publisher and held a required Risk renderer after revision 8 committed. Revision 8 still published while refresh state remained active; a separate Market view remained usable; a simple illustrative hero observer stayed pending until the held renderer returned, then retained its terminal display. There were no browser JavaScript errors.
 
@@ -792,8 +828,17 @@ The browser fixture verifies the dependency and publication behaviour; its illus
 
 Additional validation for section 5D passed. The optional Python builder is identical to the verified v7 source; its idle, startup and error layouts were checked for the expected stage structure and unique IDs. The complete JavaScript asset with the documented attachment hooks passes Node syntax checking.
 
-Eleven Chrome checks using the actual Python hero layout and existing progress painter covered running and post-commit remounts, title/stage/meter/ARIA restoration, skipped stages, error text, an existing retained terminal display, a partial mount, a temporary DOM gap, missing old markup, unchanged active-state metadata, a no-mutation same-node path and normal page-button interaction. Restoration before the observer/painter allowed the subsequent newer paint to remain visible. There were no browser JavaScript errors. These are local display/integration checks; they do not implement or verify your complete custom completion classifier, financial adapters, or deployed progress endpoint. The earlier dependency/publisher checks above remain unchanged.
+Eleven Chrome checks using the actual Python hero layout and existing progress painter covered running and post-commit remounts, title/stage/meter/ARIA restoration, skipped stages, error text, an existing retained terminal display, a partial mount, a temporary DOM gap, missing old markup, unchanged active-state metadata, a no-mutation same-node path and normal page-button interaction. Restoration before the observer/painter allowed the subsequent newer paint to remain visible. There were no browser JavaScript errors. These are local display/integration checks; they do not implement or verify your complete custom completion classifier, financial adapters, or deployed progress endpoint. The earlier dependency checks remain relevant; the bootstrap publication expectation is corrected below.
 
 To roll back only this repair, restore the files you changed from the same backup and restart/hard-refresh. If you used step 4B, restore its three files together so that the direct writer and browser callback do not both own the revision Store. Keep your other JTD, Quick Risk, Data and connector work.
 
 Source references: [Risk filter callback](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s07_explorer.py), [refresh callback](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s15_refresh.py), [refresh asset](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/assets/s12_refresh.js), [shell CSS](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/assets/s01_shell.css), and [the Hero guide this supplements](https://github.com/streamlitdash/Rebirth-V5/blob/caaa96fe325d520b3fbcc8f2eae36c709ffc4f2a/Hero.md).
+
+
+### 11 September validation of the publication correction
+
+- Eight browser checks using the exact publisher registration reproduced the old bootstrap gate holding Store revision 0 after commit 1, and verified the corrected gate publishing 1 while bootstrap remained active. They also covered an unmounted financial layout, later mounting, P&L, no committed revision, and unchanged warm publication. No browser JavaScript errors were reported.
+- A disposable copy of the actual Dash app with its CSV fixture adapters completed cold startup and painted different live progress values. With a test-only hold keeping the hero in bootstrap mode, the corrected publisher advanced the actual revision Store to 1 while the real Risk layout showed revision 1 and bootstrap remained active. The initial layout could already contain revision-1 content before the Store advanced. No browser JavaScript errors were reported. Artificial step delays allowed multiple progress samples; this was not a production performance measurement.
+- Full-asset browser checks with controlled progress responses covered bootstrap, P&L, reload, portfolios and automatic modes. The existing restoration helper allowed fresh function/count details to advance through a whole-panel replacement. These checks isolate restoration and polling; they do not implement the unwritten classifier or establish the cause of the separately modified application's frozen hero.
+
+The app code on GitHub v7 is still the original baseline beneath these guides. This update corrects documentation; it does not deploy an app repair or certify that all reported refresh/search issues are resolved.
