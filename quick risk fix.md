@@ -1,5 +1,7 @@
 # Quick Risk charts, underlying search and clientside Data search
 
+**Current implementation order, assuming the earlier guides are installed:** keep Parts A/B; verify Part C; apply Part D; apply the current `Hero.md`; check `refreshinteract.md`; restart once. Part D replaces the earlier Part A4 hierarchy/footer function. Do not reapply an older copy of Part A4 afterward. Your existing Data editor remains clientside.
+
 Updated 11 September 2026 for `streamlitdash/Rebirth-V5`, branch `v7`. This document contains implementation instructions; publishing it does not deploy application code.
 
 **For slow Quick Risk underlying searches, see Part C.** Its two backend replacements can be applied independently of the chart, Data workspace and Hero changes. It includes measured results and the limits of what this fix addresses. Quick Market's reported end-to-end delay still needs inspection of the implemented app.
@@ -1690,10 +1692,1244 @@ The following measurements used 100,000 invented position rows, 400 portfolios a
 
 The tradeoff is explicit: a narrow exact query may take slightly longer because the new version evaluates active filters once over all position rows. It removes the much larger cost of repeating DataFrame filtering thousands of times during broad searches. Actual latency depends on your identity count, active filters and deployment.
 
-### C5. Quick Market needs a separate latency check
+### C5. Continue with the measured Quick Market correction
 
-The inspected Quick Market options method already scans only pre-normalized identity labels, stops after 100 matches, and performs no position filtering or connector I/O. It took approximately 0.008–3 ms in the same local catalog tests. The Quick Risk bottleneck above therefore does not explain a multi-second Quick Market delay by itself.
+The catalog's Market label lookup is already bounded and does no connector I/O. In local catalog tests it took about 0.008–3 ms. The cumulative callback flow still selected the first result automatically, then built its chart and entire values table. Part D below addresses that measured work in both Quick tools and preserves the full selected Risk totals from the earlier guide.
 
-Keep its existing method for now. In the running application, compare the request triggered by `quick-market-combine-udl.search_value` with its server execution time and the browser's rendering time. A long wait before the response, a slow local modification, and a fast response followed by a blocked browser require different fixes. The deployed callback/asset source and that request trace are needed to identify which applies; this section does not claim to fix an unmeasured Quick Market problem.
+Keep the Part C helper if you already installed it. Continue with Part D, then apply the current Hero.md integration. Do not restore the earlier unbounded Market table or the old Data callback split.
 
-To undo only Part C, restore the two original function definitions from your backup and restart. Keep Parts A and B and your unrelated local changes.
+
+## Part D — Finish the cumulative Quick Risk and Quick Market repair
+
+Implement Part C first, this Part D second, and the current `Hero.md` callback receipt integration last. This section assumes the earlier guides have already been applied. It supersedes the Quick Risk table function in Part A4 and the old `all.md` D00 chart aggregation. Keep the dedicated Quick Risk tenor chart from Part A: it already reads the complete selected Risk scope.
+
+This change has three effects:
+
+1. Opening or typing in either underlying picker loads choices only. It waits for you to choose a result before building its data, chart or hierarchy. An existing valid selection is retained while you search.
+2. Quick Market keeps its complete chart but displays values in pages of 50 quote rows. Every quote remains available. A surface's values appear as rows with both tenor columns; the heatmap remains unchanged.
+3. Quick Risk's financial footer still covers the full selected scope even when only 250 leaf groups are displayed. Quote levels are not added together. Incomplete PL shows an unavailable total and explicit coverage.
+
+Keep the clientside Data editor from Part B. Do not add the old five separate Data selector callbacks. No connector, financial calculation, persistent cache, debounce timer or background worker is introduced here.
+
+### D1. Back up these six files
+
+Copy these files to a backup directory before replacing anything:
+
+- `cube/domain/s10_search.py`
+- `cube/app/s02_contracts.py`
+- `cube/pages/risk/s08_quickrisk.py`
+- `cube/pages/risk/s09_quickmarket.py`
+- `cube/pages/risk/s10_search.py`
+- `cube/pages/risk/s14_workspacecallbacks.py`
+
+Each replacement below is a complete function or class. Replace the named definition once; do not append a second copy. Preserve the surrounding imports and unrelated definitions unless an import change is explicitly listed. For nested callbacks, include their `@app.callback(...)` decorator in the replacement and keep their existing indentation inside `register_workspace_callbacks`.
+
+### D2. Keep full financial totals in the catalog result
+
+In `cube/domain/s10_search.py`, replace the complete `SearchResult` dataclass with this version. If an earlier guide added `chart_frame`, remove that field here: the current chart uses the dedicated prepared-Risk path, and the obsolete extra aggregation is removed by the hierarchy replacement immediately below. Other SearchResult callers keep working because `full_totals` has a default.
+
+```python
+@dataclass(frozen=True)
+class SearchResult:
+    """Small defensive result from a single committed catalog revision."""
+
+    revision: int
+    frame: pd.DataFrame
+    risk_dates: Mapping[str, pd.Timestamp]
+    market_date: pd.Timestamp
+    query: str
+    total: int
+    full_totals: Mapping[str, float | None] | None = None
+```
+
+In the same file, replace the complete `SearchCatalog.pivot_combined_hierarchy` method with this version. Keep the existing `_combined_source_rows`, `_combined_pivot`, exact identity maps and Part C filter helper. The new totals use selected Risk positions before the leaf cap; market quotes never contribute to financial totals. The old D00 `chart_frame` calculation is no longer in this method.
+
+```python
+    def pivot_combined_hierarchy(
+        self,
+        combine_udl: str,
+        *,
+        index_columns: Sequence[str] = DEFAULT_PIVOT_INDEX,
+        leaf_limit: int = _MAX_RESULT_LIMIT,
+        identity_mode: str = "reported",
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
+    ) -> SearchResult:
+        """Return independently aggregated ordered prefix levels.
+
+        The deepest groups are capped only after full aggregation. Every
+        visible ancestor is recomputed from all matching source positions and
+        quotes, then filtered to ancestors of those visible leaves. This keeps
+        non-additive Market parent values correct while bounding the payload to
+        at most ``len(index_columns) * leaf_limit`` rows.
+        """
+        selected_index = _validate_pivot_index(index_columns)
+        selected_limit = _validate_limit(leaf_limit)
+        selected_risk, selected_quotes = self._combined_source_rows(
+            combine_udl,
+            selected_index,
+            identity_mode=identity_mode,
+            risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
+        )
+        full_totals = {}
+        for metric in RISK_PIVOT_VALUE_COLUMNS:
+            values = pd.to_numeric(selected_risk[metric], errors="coerce")
+            finite = values.notna() & np.isfinite(values).fillna(False)
+            value = values.where(finite).sum(min_count=1)
+            full_totals[metric] = None if pd.isna(value) else float(value)
+            if metric == "PL":
+                missing = int((~finite).sum())
+                full_totals["PL missing rows"] = missing
+                full_totals["PL total rows"] = len(values)
+                if missing:
+                    full_totals["PL"] = None
+        levels = []
+        for depth in range(1, len(selected_index) + 1):
+            prefix = selected_index[:depth]
+            level = _combined_pivot(
+                selected_risk,
+                selected_quotes,
+                prefix,
+            )
+            if UNDERLYING not in prefix:
+                level.loc[:, list(MARKET_PIVOT_VALUE_COLUMNS)] = np.nan
+            levels.append(level)
+        deepest = levels[-1]
+        total = len(deepest)
+        visible_leaves = deepest.iloc[:selected_limit]
+        output_columns = [
+            HIERARCHY_DEPTH,
+            *selected_index,
+            *COMBINED_PIVOT_VALUE_COLUMNS,
+        ]
+        if visible_leaves.empty:
+            hierarchy = _empty_frame(output_columns)
+        else:
+            lookups: list[dict[tuple, dict[str, object]]] = []
+            for depth, level in enumerate(levels, start=1):
+                prefix = selected_index[:depth]
+                wanted = visible_leaves.loc[:, list(prefix)].drop_duplicates()
+                visible_level = level.merge(
+                    wanted.assign(__hierarchy_wanted__=True),
+                    on=list(prefix),
+                    how="inner",
+                    sort=False,
+                    validate="one_to_one",
+                ).drop(columns="__hierarchy_wanted__")
+                lookups.append(
+                    {
+                        _hierarchy_key(record, prefix): record
+                        for record in visible_level.to_dict("records")
+                    }
+                )
+
+            records: list[dict[str, object]] = []
+            emitted: set[tuple[int, tuple]] = set()
+            for leaf in visible_leaves.to_dict("records"):
+                for depth in range(1, len(selected_index) + 1):
+                    prefix = selected_index[:depth]
+                    key = _hierarchy_key(leaf, prefix)
+                    marker = (depth, key)
+                    if marker in emitted:
+                        continue
+                    emitted.add(marker)
+                    record = dict(lookups[depth - 1][key])
+                    for column in selected_index[depth:]:
+                        record[column] = pd.NA
+                    record[HIERARCHY_DEPTH] = depth
+                    records.append(record)
+            hierarchy = pd.DataFrame.from_records(
+                records,
+                columns=output_columns,
+            )
+
+        return SearchResult(
+            revision=self.revision,
+            frame=hierarchy.copy(deep=True).reset_index(drop=True),
+            risk_dates=MappingProxyType(dict(self.risk_dates)),
+            market_date=self.market_date,
+            query=combine_udl,
+            total=total,
+            full_totals=MappingProxyType(full_totals),
+        )
+```
+
+In `cube/app/s02_contracts.py`, replace the complete `SearchResultProtocol` class with this version. Keep the existing imports (`Mapping`, `Protocol`, `runtime_checkable`, and pandas are already used by this file).
+
+```python
+@runtime_checkable
+class SearchResultProtocol(Protocol):
+    """Defensive quick-search result tied to one committed revision."""
+
+    @property
+    def revision(self) -> int: ...
+
+    @property
+    def frame(self) -> pd.DataFrame: ...
+
+    @property
+    def risk_dates(self) -> Mapping[str, pd.Timestamp]: ...
+
+    @property
+    def market_date(self) -> pd.Timestamp: ...
+
+    @property
+    def query(self) -> str: ...
+
+    @property
+    def total(self) -> int: ...
+
+    @property
+    def full_totals(self) -> Mapping[str, float | None] | None: ...
+```
+
+### D3. Pass and display those totals
+
+In `cube/pages/risk/s10_search.py`, replace `_render_quick_search_pivot` in full. Keep `_quick_search_result_parts` unchanged; other callers still receive its existing three values. This replacement reads the full totals after any required second pivot and passes them to the table.
+
+```python
+def _render_quick_search_pivot(
+    manager: RefreshManagerProtocol,
+    *,
+    combine_udl: object,
+    identity_mode: object = "reported",
+    index_columns: object,
+    is_open: object,
+    risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+    exclude_selected: bool = False,
+):
+    selected_mode = str(identity_mode or "reported").strip().casefold()
+    selected_indexes, restore_index = _normalise_quick_search_index(index_columns)
+    index_update = list(selected_indexes) if restore_index else no_update
+    if not bool(is_open):
+        return None, index_update
+    selected_identity = str(combine_udl or "").strip()
+    if not selected_identity:
+        return (
+            html.Div(
+                "Select a Search Risk value to build the pivot.",
+                className="quick-search-hint",
+                role="status",
+            ),
+            index_update,
+        )
+    try:
+        try:
+            shaped_indexes = _product_shaped_quick_search_indexes(
+                manager,
+                selected_identity,
+                selected_mode,
+                selected_indexes,
+            )
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            shaped_indexes = selected_indexes
+        if shaped_indexes != selected_indexes:
+            selected_indexes = shaped_indexes
+            index_update = list(selected_indexes)
+        pivot = manager.pivot_combined_hierarchy
+        pivot_kwargs: dict[str, object] = {
+            "index_columns": selected_indexes,
+            "leaf_limit": QUICK_RISK_PIVOT_LIMIT,
+            "identity_mode": selected_mode,
+            "risk_filters": risk_filters,
+            "exclude_selected": exclude_selected,
+        }
+        # Filter arguments were added to the manager
+        # contract after the exact-pivot helper first shipped.  Keeping this
+        # small compatibility boundary lets cold fixtures and direct helper
+        # callers use the older read-only protocol without catching a
+        # TypeError raised *inside* the manager implementation.
+        try:
+            pivot_parameters = signature(pivot).parameters
+        except (TypeError, ValueError):
+            pivot_parameters = {}
+        if pivot_parameters and not any(
+            parameter.kind is Parameter.VAR_KEYWORD
+            for parameter in pivot_parameters.values()
+        ):
+            pivot_kwargs = {
+                name: value
+                for name, value in pivot_kwargs.items()
+                if name in pivot_parameters
+            }
+
+        result = pivot(
+            selected_identity,
+            **pivot_kwargs,
+        )
+        frame, total, revision = _quick_search_result_parts(result)
+        effective_indexes = _prune_quick_search_indexes(frame, selected_indexes)
+        if effective_indexes != selected_indexes:
+            pivot_kwargs["index_columns"] = effective_indexes
+            result = pivot(
+                selected_identity,
+                **pivot_kwargs,
+            )
+            frame, total, revision = _quick_search_result_parts(result)
+            index_update = list(effective_indexes)
+        return (
+            build_quick_search_pivot(
+                frame,
+                combine_udl=selected_identity,
+                index_columns=effective_indexes,
+                total=total,
+                revision=revision,
+                full_totals=(result.get("full_totals") if isinstance(result, Mapping) else getattr(result, "full_totals", None)),
+            ),
+            index_update,
+        )
+    except (AttributeError, LookupError, TypeError, ValueError, RuntimeError) as error:
+        _LOGGER.exception("Quick Risk Search render failed")
+        detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
+        return (
+            html.Div(
+                f"Quick Risk Search failed: {type(error).__name__}: {detail[:400]}",
+                className="quick-search-error",
+                role="alert",
+            ),
+            index_update,
+        )
+```
+
+In `cube/pages/risk/s08_quickrisk.py`, replace `build_quick_search_pivot` in full with the following. This supersedes Part A4's copy of this function. Keep the rest of the Quick Risk layout, its separate chart callback and its chart module unchanged. In particular, do not put the removed risk/de-risk chart back inside this table function.
+
+```python
+def build_quick_search_pivot(
+    frame: pd.DataFrame,
+    *,
+    combine_udl: str,
+    index_columns: list[str] | tuple[str, ...],
+    total: int | None = None,
+    revision: int | None = None,
+    full_totals=None,
+) -> html.Div:
+    """Render one bounded, selectable hierarchy returned by the backend catalog."""
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("search result frame must be a pandas DataFrame")
+    selected_indexes = [str(value) for value in index_columns]
+    if not selected_indexes:
+        raise ValueError("at least one pivot index column is required")
+    if len(selected_indexes) != len(set(selected_indexes)):
+        raise ValueError("pivot index columns must be unique")
+
+    metric_columns = (
+        ("Risk", "Risk"),
+        ("dRisk", "dRisk"),
+        ("PL", "PL"),
+        ("Open", "Open"),
+        ("Current", "Current"),
+        ("Move", "Move"),
+    )
+    required = [
+        QUICK_SEARCH_HIERARCHY_DEPTH,
+        *selected_indexes,
+        *(column for column, _ in metric_columns),
+    ]
+    missing = [column for column in required if column not in frame.columns]
+    if missing and not frame.empty:
+        raise ValueError(f"pivot result is missing columns: {', '.join(missing)}")
+
+    depths = pd.to_numeric(
+        frame.get(
+            QUICK_SEARCH_HIERARCHY_DEPTH,
+            pd.Series(dtype="float64"),
+        ),
+        errors="coerce",
+    )
+    if not frame.empty:
+        valid_depths = (
+            depths.notna()
+            & depths.ge(1)
+            & depths.le(len(selected_indexes))
+            & depths.mod(1).eq(0)
+        )
+        if not valid_depths.all():
+            raise ValueError("pivot hierarchy contains an invalid depth")
+
+    shown_leaves = int(depths.eq(len(selected_indexes)).sum())
+    if (
+        shown_leaves > QUICK_RISK_PIVOT_LIMIT
+        or len(frame) > len(selected_indexes) * QUICK_RISK_PIVOT_LIMIT
+    ):
+        raise ValueError("pivot hierarchy exceeds the bounded UI contract")
+    result_total = max(shown_leaves, int(total)) if total is not None else shown_leaves
+    suffix = f" · snapshot {int(revision)}" if revision is not None else ""
+    if frame.empty:
+        return html.Div(
+            [
+                html.Div(
+                    f"No current groups match '{str(combine_udl).strip()}'{suffix}.",
+                    className="quick-search-empty",
+                    role="status",
+                    **{"aria-live": "polite"},
+                )
+            ],
+            className="quick-search-result-set",
+        )
+
+    rows: list[html.Tr] = []
+    emitted_paths: set[str] = set()
+    for record in frame.to_dict("records"):
+        depth = int(record[QUICK_SEARCH_HIERARCHY_DEPTH])
+        index_dimension = selected_indexes[depth - 1]
+        path_tokens = [
+            _quick_search_path_token(record.get(index_column))
+            for index_column in selected_indexes[:depth]
+        ]
+        path = json.dumps(path_tokens, ensure_ascii=False, separators=(",", ":"))
+        parent_path = json.dumps(
+            path_tokens[:-1],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        if path in emitted_paths:
+            raise ValueError("pivot hierarchy contains a duplicate path")
+        if depth > 1 and parent_path not in emitted_paths:
+            raise ValueError("pivot hierarchy child precedes its parent")
+        emitted_paths.add(path)
+
+        display_value = _quick_search_text(record.get(index_dimension))
+        has_children = depth < len(selected_indexes)
+        is_open = has_children and depth == 1
+        if has_children:
+            state = "Collapse" if is_open else "Expand"
+            index_toggle: html.Button | html.Span = html.Button(
+                ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH,
+                type="button",
+                className="row-toggle quick-search-hierarchy-toggle",
+                title=f"{state} {index_dimension}: {display_value}",
+                **{
+                    "aria-label": f"{state} {index_dimension}: {display_value}",
+                    "aria-expanded": str(is_open).lower(),
+                },
+            )
+        else:
+            index_toggle = html.Button(
+                "",
+                type="button",
+                className="row-toggle quick-search-hierarchy-toggle-spacer",
+                disabled=True,
+                tabIndex=-1,
+                **{"aria-hidden": "true"},
+            )
+
+        cells: list[html.Th | html.Td] = [
+            html.Th(
+                [
+                    index_toggle,
+                    html.Span(
+                        display_value,
+                        className="row-label-text quick-search-hierarchy-label",
+                    ),
+                ],
+                scope="row",
+                className=(
+                    "index-cell quick-search-pivot-index "
+                    "quick-search-first-index quick-search-last-index "
+                    "quick-search-hierarchy-index"
+                ),
+                style={"paddingLeft": f"{12 + (depth - 1) * 20}px"},
+                title=f"{index_dimension}: {display_value}",
+                **{
+                    "data-metric": "index",
+                    "data-copy-value": display_value,
+                    "data-index-dimension": index_dimension,
+                },
+            )
+        ]
+        for metric_column, label in metric_columns:
+            raw_value = record.get(metric_column)
+            text_value, sign_class = _quick_search_number(
+                raw_value, column=metric_column
+            )
+            try:
+                numeric_value = float(raw_value)
+                copy_value = str(numeric_value) if np.isfinite(numeric_value) else ""
+            except (TypeError, ValueError):
+                copy_value = ""
+            cells.append(
+                html.Td(
+                    text_value,
+                    className=(
+                        "metric-cell quick-search-number "
+                        f"{'quick-search-pl-column ' if metric_column == 'PL' else ''}"
+                        f"{sign_class}"
+                    ).strip(),
+                    **{
+                        "data-metric": metric_column,
+                        "data-copy-value": copy_value,
+                    },
+                )
+            )
+
+        row_classes = [
+            "quick-search-hierarchy-row",
+            f"quick-search-hierarchy-depth-{depth}",
+        ]
+        if depth == 1:
+            row_classes.append("quick-search-hierarchy-root")
+        if not has_children:
+            row_classes.append("quick-search-hierarchy-leaf")
+        row_props = {
+            "aria-level": str(depth),
+            "data-quick-search-depth": str(depth),
+            "data-quick-search-path": path,
+            "data-quick-search-parent-path": parent_path,
+            "data-quick-search-open": str(is_open).lower(),
+            "data-quick-search-label": display_value,
+            "data-quick-search-dimension": index_dimension,
+        }
+        if has_children:
+            row_props["aria-expanded"] = str(is_open).lower()
+        rows.append(
+            html.Tr(
+                cells,
+                className=" ".join(row_classes),
+                hidden=depth > 2,
+                **row_props,
+            )
+        )
+
+    # Quotes are not additive; financial totals cover the complete selection.
+    leaf_rows = frame.loc[depths.eq(len(selected_indexes))]
+    metric_summaries = {"Open": None, "Current": None, "Move": None}
+    for metric in ("Risk", "dRisk", "PL"):
+        if full_totals is not None:
+            metric_summaries[metric] = full_totals.get(metric)
+        else:
+            values = pd.to_numeric(leaf_rows[metric], errors="coerce")
+            value = values.where(np.isfinite(values).fillna(False)).sum(min_count=1)
+            metric_summaries[metric] = None if pd.isna(value) else float(value)
+
+    if not leaf_rows.empty:
+        total_cells: list[html.Th | html.Td] = [
+            html.Th(
+                html.Span(
+                    "Total — full selected scope" if full_totals is not None else "Displayed groups subtotal",
+                    className="total-label quick-search-total-label",
+                ),
+                scope="col",
+                className="index-cell quick-search-pivot-index quick-search-total-index",
+                style={"fontWeight": "bold"},
+            )
+        ]
+        for metric_column, label in metric_columns:
+            total_value, sign_class = _quick_search_number(
+                metric_summaries[metric_column], column=metric_column
+            )
+            total_cells.append(
+                html.Td(
+                    total_value,
+                    className=(
+                        "metric-cell quick-search-number quick-search-total-cell "
+                        f"{'quick-search-pl-column ' if metric_column == 'PL' else ''}"
+                        f"{sign_class}"
+                    ).strip(),
+                    style={"fontWeight": "bold"},
+                    **{
+                        "data-metric": metric_column,
+                        "data-copy-value": "" if metric_summaries[metric_column] is None else str(metric_summaries[metric_column]),
+                    },
+                )
+            )
+        rows.append(
+            html.Tr(
+                total_cells,
+                className="quick-search-total-row",
+                **{
+                    "data-quick-search-total": "true",
+                },
+            )
+        )
+
+    status = (
+        f"Showing {shown_leaves:,} of {result_total:,} leaf groups "
+        f"across {len(rows):,} hierarchy rows{suffix}"
+    )
+    if full_totals is not None and "PL total rows" in full_totals:
+        count = int(full_totals["PL total rows"])
+        missing = int(full_totals.get("PL missing rows", 0))
+        status += f" · PL available for {count - missing:,} of {count:,} positions"
+    index_header = html.Th(
+        "Index",
+        scope="col",
+        className=(
+            "index-header quick-search-pivot-index-header "
+            "quick-search-first-index quick-search-last-index"
+        ),
+        title="Hierarchy: " + " · ".join(selected_indexes),
+        **{"data-metric": "index"},
+    )
+    metric_headers = [
+        html.Th(
+            label,
+            scope="col",
+            className=(
+                "metric-header quick-search-pivot-metric-header "
+                f"{'quick-search-pl-column' if column == 'PL' else ''}"
+            ),
+            **{"data-metric": column},
+        )
+        for column, label in metric_columns
+    ]
+    return html.Div(
+        [
+            html.Div(
+                status,
+                className="quick-search-result-count",
+                role="status",
+                **{"aria-live": "polite", "aria-atomic": "true"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        "",
+                        className="selection-summary",
+                        **{"aria-live": "polite"},
+                    ),
+                    html.Table(
+                        [
+                            html.Caption(
+                                "Current Risk, PL and Market hierarchy ordered by "
+                                f"{' · '.join(selected_indexes)}",
+                                className="sr-only",
+                            ),
+                            html.Thead(html.Tr([index_header, *metric_headers])),
+                            html.Tbody(rows),
+                        ],
+                        className="cell-selection-table quick-search-pivot-table",
+                        role="treegrid",
+                        **{
+                            "aria-label": "Current combined Quick Search hierarchy",
+                            "data-quick-search-level-count": str(len(selected_indexes)),
+                        },
+                    ),
+                ],
+                className="risk-table-wrap quick-search-pivot-table-wrap",
+                tabIndex=0,
+                **{"aria-label": "Scrollable current combined hierarchy"},
+            ),
+        ],
+        className="quick-search-result-set",
+        **({"data-snapshot-revision": str(revision)} if revision is not None else {}),
+    )
+```
+
+### D4. Stop automatically choosing the first search result
+
+In `cube/pages/risk/s14_workspacecallbacks.py`, replace the two callbacks below, including each existing `@app.callback` block. Keep their search/filter Inputs and current-value State. The key rule is: an empty or still-valid value returns `no_update`; only a previous selection that no longer passes the filters is cleared. No first result is selected on your behalf.
+
+If you already applied the current Hero receipt wrappers, apply Hero's final callback integration again after completing this Part D. The replacements here are the ordinary callback definitions before those wrappers; the final integration must preserve these bodies and add the completion receipt outputs consistently.
+
+```python
+        @app.callback(
+            Output("quick-search-combine-udl", "options"),
+            Output("quick-search-combine-udl", "value"),
+            Input("risk-workspace-tabs", "value"),
+            Input("data-revision-store", "data"),
+            Input("quick-search-combine-udl", "search_value"),
+            Input("split-filter", "value"),
+            Input("dimension-filter-values-store", "data"),
+            Input("risk-filter-exclude-applied-store", "data"),
+            State("quick-search-combine-udl", "value"),
+            prevent_initial_call=False,
+        )
+        def load_combine_udl_options(
+            active_workspace,
+            _revision,
+            search_value,
+            selected_splits,
+            dimension_values,
+            exclude_value,
+            current_value,
+        ):
+            if active_workspace != "quick-risk":
+                return no_update, no_update
+            selected_mode = "reported"
+
+            try:
+                options = _combine_udl_dropdown_options(
+                    refresh_manager.search_combine_udl_options(
+                        search_value,
+                        identity_mode=selected_mode,
+                        limit=100,
+                        include=(str(current_value) if current_value else None),
+                        risk_filters=quick_risk_filter_map(
+                            selected_splits,
+                            dimension_values,
+                        ),
+                        exclude_selected=risk_exclude_selected(exclude_value),
+                    )
+                )
+            except (
+                AttributeError,
+                LookupError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+            ):
+                return no_update, no_update
+
+            values = {option["value"] for option in options}
+            selected = str(current_value or "").strip()
+            if not selected or selected in values:
+                return options, no_update
+            return options, None  # Wait for the user to choose an identity.
+```
+
+```python
+        @app.callback(
+            Output("quick-market-combine-udl", "options"),
+            Output("quick-market-combine-udl", "value"),
+            Input("risk-workspace-tabs", "value"),
+            Input("data-revision-store", "data"),
+            Input("quick-market-combine-udl", "search_value"),
+            State("quick-market-combine-udl", "value"),
+            prevent_initial_call=False,
+        )
+        def load_market_udl_options(
+            active_workspace, _revision, search_value, current_value
+        ):
+            if active_workspace != "quick-market":
+                return no_update, no_update
+            try:
+                options = _combine_udl_dropdown_options(
+                    refresh_manager.search_market_udl_options(
+                        search_value,
+                        limit=100,
+                        include=(str(current_value) if current_value else None),
+                    )
+                )
+            except (AttributeError, LookupError, TypeError, ValueError, RuntimeError):
+                return no_update, no_update
+
+            values = {option["value"] for option in options}
+            selected = str(current_value or "").strip()
+            if not selected or selected in values:
+                return options, no_update
+            return options, None  # Wait for the user to choose an identity.
+```
+
+### D5. Add one paged Quick Market values table
+
+In `cube/pages/risk/s09_quickmarket.py`, change the existing Dash import from:
+
+```python
+from dash import dcc, html
+```
+to:
+```python
+from dash import dash_table, dcc, html
+```
+
+In the same file, replace `build_quick_market_search` in full. This adds one permanent table with the ID `quick-market-values` below `quick-market-results`. Do not create the same table again inside the result builder.
+
+```python
+def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.Div:
+    """Build Quick Market as a disclosure or workspace-tab body."""
+
+    disclosure = html.Details(
+        [
+            html.Summary(
+                [
+                    html.Span(
+                        "Quick Market Search",
+                        className="quick-search-pivot-title",
+                    ),
+                    html.Span(
+                        "Full market tenor structure",
+                        className="quick-search-pivot-values",
+                    ),
+                ],
+                id="quick-market-summary",
+                n_clicks=0,
+                className="quick-search-pivot-summary",
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.H2("Market curves and surfaces"),
+                                    html.P(
+                                        "Select Risk Type, Risk Greek and Underlying. "
+                                        "This reads the complete saved MarketBook, including tenors with no Risk row."
+                                    ),
+                                ],
+                                className="quick-search-heading-copy",
+                            ),
+                            html.Div(
+                                [
+                                    html.Label(
+                                        "Market identity",
+                                        htmlFor="quick-market-combine-udl",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="quick-market-combine-udl",
+                                        options=[],
+                                        value=None,
+                                        clearable=False,
+                                        searchable=True,
+                                        placeholder="Select Risk Type · Risk Greek · Underlying",
+                                        className="quick-search-combine-dropdown",
+                                    ),
+                                ],
+                                className="quick-search-selector-control",
+                            ),
+                            html.Div(
+                                [
+                                    html.Button(
+                                        "Open in Data",
+                                        id="quick-market-open-data",
+                                        n_clicks=0,
+                                        disabled=True,
+                                        type="button",
+                                        className="data-open-button",
+                                    ),
+                                    html.Span(
+                                        "",
+                                        id="quick-market-data-status",
+                                        className="quick-search-selector-help",
+                                        role="status",
+                                    ),
+                                ],
+                                className="quick-search-selector-control data-open-control",
+                            ),
+                        ],
+                        className="quick-search-heading",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Chart", htmlFor="quick-market-view"),
+                            dcc.RadioItems(
+                                id="quick-market-view",
+                                options=[
+                                    {"label": "Auto", "value": "auto"},
+                                    {"label": "Tenor Swap line", "value": "swap"},
+                                    {"label": "Tenor Option line", "value": "option"},
+                                    {"label": "Surface", "value": "surface"},
+                                ],
+                                value="auto",
+                                inline=True,
+                                className="detail-tenor-view-radio",
+                            ),
+                        ],
+                        className="quick-search-dimension-control",
+                    ),
+                    html.Div(
+                        [
+                            html.Label(
+                                "Heatmap",
+                                htmlFor="quick-market-surface-metric",
+                            ),
+                            dcc.RadioItems(
+                                id="quick-market-surface-metric",
+                                options=[
+                                    {"label": "Open", "value": "open"},
+                                    {
+                                        "label": "Market Status",
+                                        "value": "current",
+                                    },
+                                    {"label": "Move", "value": "move"},
+                                ],
+                                value="current",
+                                inline=True,
+                                className="detail-tenor-view-radio",
+                            ),
+                        ],
+                        id="quick-market-surface-metric-control",
+                        className="quick-search-dimension-control",
+                        hidden=True,
+                    ),
+                    dcc.Loading(
+                        html.Div(
+                            "Open this section to read the current MarketBook.",
+                            id="quick-market-results",
+                            className="quick-search-results quick-search-hint",
+                        ),
+                        type="dot",
+                        delay_show=160,
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Market values"),
+                            html.P("50 quote rows per page. The chart includes the full selected tenor structure."),
+                            dash_table.DataTable(
+                                id="quick-market-values",
+                                columns=[], data=[],
+                                page_action="custom", page_current=0,
+                                page_size=50, page_count=0,
+                                sort_action="none", filter_action="none",
+                                style_table={"overflowX": "auto"},
+                                style_cell={"fontFamily": "inherit", "fontSize": 12, "padding": "8px", "textAlign": "right"},
+                                style_data_conditional=[
+                                    {"if": {"column_id": name, "filter_query": "{" + name + "} < 0"}, "color": "#b42318"}
+                                    for name in ("Open", "Current", "Move")
+                                ],
+                            ),
+                        ],
+                        className="quick-market-values-panel",
+                    ),
+                ],
+                className="quick-search-pivot-body",
+            ),
+        ],
+        id="quick-market-details",
+        open=False,
+        className="quick-search-shell quick-search-pivot-details",
+        **{"aria-label": "Quick Market Search"},
+    )
+    if not embedded:
+        return disclosure
+    return html.Div(
+        disclosure.children[1:],
+        id=disclosure.id,
+        className="quick-search-shell quick-search-tab-body",
+        **{"aria-label": "Quick Market Search"},
+    )
+```
+
+Still in `s09_quickmarket.py`, add this helper once, above the module's final `__all__` list. It returns at most 50 rows, preserves connector order and leaves missing quotes blank. The `page_size=50` here matches the DataTable's `page_size=50` above; change both together if you later choose another page size.
+
+```python
+def quick_market_values_page(
+    frame: pd.DataFrame, page_current: object, *, market_status: str,
+) -> tuple[list[dict], list[dict], int, int]:
+    """Return one page of complete quote rows in existing connector tenor order."""
+    page_size = 50
+    axes = [axis for axis in ("Tenor Swap", "Tenor Option") if _market_axis(frame, axis)]
+    columns = [*axes, "Open", "Current", "Move"]
+    metadata = [
+        {
+            "id": name,
+            "name": market_status if name == "Current" else name,
+            "type": "numeric" if name in {"Open", "Current", "Move"} else "text",
+            **({"format": {"specifier": ",.6~f" if name == "Move" else ",.4f"}} if name in {"Open", "Current", "Move"} else {}),
+        }
+        for name in columns
+    ]
+    count = (len(frame) + page_size - 1) // page_size
+    try:
+        page = int(page_current or 0)
+    except (TypeError, ValueError, OverflowError):
+        page = 0
+    page = max(0, min(page, max(0, count - 1)))
+    if frame.empty:
+        return [], metadata, 0, 0
+    selected = frame.loc[:, columns].iloc[page * page_size:(page + 1) * page_size]
+    records = selected.astype(object).where(pd.notna(selected), None).to_dict("records")
+    return records, metadata, count, page
+```
+
+Now replace `build_quick_market_result` in full. Its new optional `include_values` flag keeps existing direct callers compatible. The Quick Market callback will pass `False`, so the full chart is built without a second, unbounded HTML values table. Keep `_market_curve_chart`, `_market_surface_chart`, axis ordering and quote semantics unchanged.
+
+```python
+def build_quick_market_result(
+    frame: pd.DataFrame,
+    *,
+    combine_udl: str,
+    requested_view: str,
+    surface_metric: str,
+    market_status: str,
+    revision: int,
+    include_values: bool = True,
+) -> tuple[
+    html.Div,
+    str,
+    list[dict[str, object]],
+    list[dict[str, str]],
+]:
+    """Render a full-market table and status-aware curve/surface."""
+
+    if frame.empty:
+        return (
+            html.Div(
+                f"No MarketBook rows match '{combine_udl}'.",
+                className="quick-search-empty",
+            ),
+            "auto",
+            [{"label": "Auto", "value": "auto"}],
+            _market_surface_metric_options(market_status),
+        )
+
+    available = {
+        "swap": _market_axis(frame, "Tenor Swap"),
+        "option": _market_axis(frame, "Tenor Option"),
+    }
+    available["surface"] = available["swap"] and available["option"]
+    automatic = (
+        "surface"
+        if available["surface"]
+        else "swap"
+        if available["swap"]
+        else "option"
+        if available["option"]
+        else "auto"
+    )
+    selected = requested_view if available.get(requested_view, False) else automatic
+    labels = {
+        "auto": "Auto",
+        "swap": "Tenor Swap line",
+        "option": "Tenor Option line",
+        "surface": "Surface",
+    }
+    options = [
+        {
+            "label": label,
+            "value": value,
+            "disabled": value != "auto" and not available.get(value, False),
+        }
+        for value, label in labels.items()
+    ]
+
+    chart = None
+    table = None
+    matrix = None
+    matrix_metric = None
+    matrix_label = None
+    if selected == "surface":
+        chart, matrix, matrix_metric, matrix_label = _market_surface_chart(
+            frame,
+            market_status=market_status,
+            metric=surface_metric,
+        )
+        if include_values:
+            table = html.Div(
+                build_surface_matrix_table(
+                    matrix,
+                    matrix_metric,
+                    metric_label=matrix_label,
+                    wrapper_class=(
+                        "risk-table-wrap quick-search-pivot-table-wrap tenor-matrix-wrap"
+                    ),
+                ),
+                className="tenor-surface-pair",
+            )
+    elif selected in {"swap", "option"}:
+        axis = {
+            "swap": "Tenor Swap",
+            "option": "Tenor Option",
+        }[selected]
+        chart = _market_line_chart(frame, axis=axis, market_status=market_status)
+        if include_values:
+            axes = [
+                column
+                for column in ("Tenor Swap", "Tenor Option")
+                if _market_axis(frame, column)
+            ]
+            display_frame = _sort_market_rows(frame, axes)
+            columns = [*axes, "Open", "Current", "Move"]
+            header = [
+                html.Th(
+                    market_status if column == "Current" else column,
+                    className="index-header" if column in axes else "metric-header",
+                )
+                for column in columns
+            ]
+            body = []
+            for record in display_frame.to_dict("records"):
+                cells = []
+                for column in columns:
+                    value = record.get(column)
+                    if column in {"Open", "Current", "Move"}:
+                        text, sign = _quick_search_number(value, column=column)
+                        cells.append(
+                            html.Td(
+                                text,
+                                className=f"metric-cell {sign}",
+                                **{"data-copy-value": "" if pd.isna(value) else str(value)},
+                            )
+                        )
+                    else:
+                        cells.append(
+                            html.Th(
+                                _quick_search_text(value),
+                                scope="row",
+                                className="index-cell",
+                                **{
+                                    "data-copy-value": _quick_search_text(
+                                        value, fallback=""
+                                    )
+                                },
+                            )
+                        )
+                body.append(html.Tr(cells))
+            table = html.Div(
+                html.Table(
+                    [html.Thead(html.Tr(header)), html.Tbody(body)],
+                    className="cell-selection-table quick-search-pivot-table",
+                ),
+                className="risk-table-wrap quick-search-pivot-table-wrap",
+                tabIndex=0,
+            )
+    else:
+        if include_values:
+            axes = [
+                column
+                for column in ("Tenor Swap", "Tenor Option")
+                if _market_axis(frame, column)
+            ]
+            display_frame = _sort_market_rows(frame, axes)
+            columns = [*axes, "Open", "Current", "Move"]
+            header = [
+                html.Th(
+                    market_status if column == "Current" else column,
+                    className="index-header" if column in axes else "metric-header",
+                )
+                for column in columns
+            ]
+            body = []
+            for record in display_frame.to_dict("records"):
+                cells = []
+                for column in columns:
+                    value = record.get(column)
+                    if column in {"Open", "Current", "Move"}:
+                        text, sign = _quick_search_number(value, column=column)
+                        cells.append(
+                            html.Td(
+                                text,
+                                className=f"metric-cell {sign}",
+                                **{"data-copy-value": "" if pd.isna(value) else str(value)},
+                            )
+                        )
+                    else:
+                        cells.append(
+                            html.Th(
+                                _quick_search_text(value),
+                                scope="row",
+                                className="index-cell",
+                                **{
+                                    "data-copy-value": _quick_search_text(
+                                        value, fallback=""
+                                    )
+                                },
+                            )
+                        )
+                body.append(html.Tr(cells))
+            table = html.Div(
+                html.Table(
+                    [html.Thead(html.Tr(header)), html.Tbody(body)],
+                    className="cell-selection-table quick-search-pivot-table",
+                ),
+                className="risk-table-wrap quick-search-pivot-table-wrap",
+                tabIndex=0,
+            )
+
+    result = html.Div(
+        [
+            html.Div(
+                f"{len(frame):,} full-market rows · {market_status} · snapshot {revision}",
+                className="quick-search-result-count",
+            ),
+            *([chart] if chart is not None else []),
+            *([table] if table is not None else []),
+        ],
+        className="quick-search-result-set",
+    )
+    return (
+        result,
+        selected,
+        options,
+        _market_surface_metric_options(market_status),
+    )
+```
+
+### D6. Wire paging without rebuilding the graph
+
+In `cube/pages/risk/s14_workspacecallbacks.py`, find the existing `from .s09_quickmarket import (...)` block. Add `quick_market_values_page,` inside that import block alongside `build_quick_market_result,`. Keep all existing names. The module already imports Dash `ctx`; retain it.
+
+Replace `render_market_search`, including its `@app.callback(...)`, with this complete version. It now has eight ordinary outputs and six Inputs. Remove its old four-output registration; there must be only one callback writing these properties.
+
+A page-only request changes the values table and returns `no_update` for the graph and controls. A different identity, view or committed revision starts at page 1 and redraws the full chart. A response for a different revision is left unapplied until the independent revision publisher requests the coherent view. The final Hero integration adds its receipt output after these eight outputs.
+
+```python
+        @app.callback(
+            Output("quick-market-results", "children"),
+            Output("quick-market-view", "value"),
+            Output("quick-market-view", "options"),
+            Output("quick-market-surface-metric", "options"),
+            Output("quick-market-values", "data"),
+            Output("quick-market-values", "columns"),
+            Output("quick-market-values", "page_count"),
+            Output("quick-market-values", "page_current"),
+            Input("quick-market-combine-udl", "value"),
+            Input("quick-market-view", "value"),
+            Input("quick-market-surface-metric", "value"),
+            Input("risk-workspace-tabs", "value"),
+            Input("data-revision-store", "data"),
+            Input("quick-market-values", "page_current"),
+            prevent_initial_call=True,
+        )
+        def render_market_search(
+            combine_udl, requested_view, surface_metric, active_workspace,
+            _revision, page_current,
+        ):
+            if active_workspace != "quick-market":
+                return None, no_update, no_update, no_update, [], [], 0, 0
+            selected = str(combine_udl or "").strip()
+            if not selected:
+                return (
+                    html.Div("Select a Market identity to build its full tenor view.", className="quick-search-hint"),
+                    no_update, no_update, no_update, [], [], 0, 0,
+                )
+            try:
+                result = refresh_manager.pivot_market_exact(selected, index_columns=QUICK_MARKET_DEFAULT_INDEX)
+                if int(result.revision) != int(_revision or 0):
+                    # The independent revision publisher will request a coherent redraw.
+                    return (no_update,) * 8
+                statuses = result.frame["Market Status"].dropna().unique() if not result.frame.empty else []
+                if not result.frame.empty and len(statuses) != 1:
+                    raise ValueError("exact MarketBook result has an ambiguous Market Status")
+                selected_status = str(statuses[0]) if len(statuses) else "Current"
+                page_only = set(ctx.triggered_prop_ids) == {"quick-market-values.page_current"}
+                requested_page = page_current if page_only else 0
+                records, columns, pages, resolved_page = quick_market_values_page(
+                    result.frame, requested_page, market_status=selected_status,
+                )
+                if page_only:
+                    return no_update, no_update, no_update, no_update, records, columns, pages, resolved_page
+                rendered, resolved, options, surface_options = build_quick_market_result(
+                    result.frame, combine_udl=selected,
+                    requested_view=str(requested_view or "auto"),
+                    surface_metric=str(surface_metric or "current"),
+                    market_status=selected_status, revision=int(result.revision),
+                    include_values=False,
+                )
+                return rendered, resolved, options, surface_options, records, columns, pages, resolved_page
+            except (AttributeError, KeyError, LookupError, TypeError, ValueError, RuntimeError) as error:
+                app.logger.exception("Quick Market Search render failed")
+                detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
+                return (
+                    html.Div(f"Quick Market Search failed: {type(error).__name__}: {detail[:400]}", className="quick-search-error", role="alert"),
+                    no_update, no_update, no_update, [], [], 0, 0,
+                )
+```
+
+### D7. Check the implementation before using it
+
+Run this command from the application root:
+
+```bash
+python -m compileall -q cube/domain/s10_search.py cube/app/s02_contracts.py cube/pages/risk/s08_quickrisk.py cube/pages/risk/s09_quickmarket.py cube/pages/risk/s10_search.py cube/pages/risk/s14_workspacecallbacks.py
+```
+
+Then apply the current Hero callback receipt integration and restart the app once. Check these exact behaviours:
+
+1. Open Quick Risk or Quick Market with no current selection. Choices appear, but no identity is selected automatically.
+2. Type an underlying. Choose the required result explicitly. Typing while an existing valid result is selected keeps that result on screen; it does not repeatedly choose different results.
+3. In Quick Market, select a surface with more than 50 quote rows. The full heatmap appears; the values table offers multiple pages. Both tenor columns are present. Move through the pages: only the table changes.
+4. Switch to a different underlying or chart view. The values table returns to its first page. Refresh the data: the chart and values use the new committed revision together.
+5. Select a Quick Risk identity with more than 250 leaf groups. Its footer says `Total — full selected scope`, and Risk/dRisk include the whole selected scope. Open/Current/Move footer cells are unavailable rather than summed. If one selected position lacks PL, the PL total is unavailable and the coverage caption reports that missing position.
+6. Confirm the Data page still uses its existing clientside editor; these changes do not introduce extra server callbacks for Data typing.
+
+Validation performed against the cumulative candidate, using invented local data:
+
+- Five real-browser interaction checks passed with no page errors. They exercised both actual search boxes, explicit selection, selected-value retention and paging without replacing the graph DOM. The comparison page automatically built a 625-cell Market values table on opening; the corrected page did no selected-data pivot until selection.
+- Quote-page equivalence checks covered all rows, connector order, missing values, invalid page numbers and empty results. Curve, surface and empty-result figure JSON and view/metric options matched the previous builder exactly. Full selected totals were checked using a deliberately one-leaf display cap and missing PL.
+- 52 focused existing domain/Market/Quick Risk UI tests passed. The broader old filter suite still contains expectations incompatible with earlier cumulative changes (for example, rejecting Portfolio as a Risk filter and the old callback signatures); that broader suite was not reported as passing.
+- For an invented 100×100 Market quote grid, median final builder-plus-JSON time over three runs fell from 502.48 ms to 344.41 ms. The first-page response fell from 1,881,315 to 352,590 bytes; 10,000 native HTML data cells were replaced by 50 paged quote rows. The full 10,000-quote chart remained intact. These are local synthetic measurements, not a promise about production connector or network latency.
+
+The earlier suspicion that resolving `Auto` caused a second full Market render was not reproduced: the measured callback graph built it once. No Auto-loop change is part of this repair. The remaining chart cost still scales with the requested full surface; the performance win here comes from avoiding unsolicited work and removing the unbounded HTML value table.
