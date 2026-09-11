@@ -1,30 +1,26 @@
-# Quick Risk charts and faster Data choices
+# Quick Risk charts and clientside Data search
 
-Updated 11 September 2026 for `streamlitdash/Rebirth-V5`, branch `v7`. The application baseline is commit `2220a3f4839318863a9131e3fef8118d0f82fb7d`; later v7 commits have changed documentation only. This is a guide to implement, not an application deployment.
+Updated 11 September 2026 for `streamlitdash/Rebirth-V5`, branch `v7`. This document contains implementation instructions; publishing it does not deploy application code.
 
-## Read this first: order, existing functions and your version
+## Read first: this corrects the earlier Data instructions
 
-1. Implement Part A, then run its checks.
-2. Check the Data layout described below, then implement all of Part B before restarting/testing it. Its browser payload and its consumers must change together.
-3. Implement `JTD.md` if required. It is independent of these chart changes.
-4. Implement `Hero.md`; its section 1.10 must include the new `render_quick_risk_tenor` callback when Quick Risk is active. If already implemented, preserve/add its acknowledgement Output and corresponding return values when adapting this callback; do not lose the completion mechanism by pasting the baseline return tuple over it.
-5. Connect real feeds using `Connectors.md`: shared sources, Cross Gamma, new trades/cashflows, Stock, then P&L/history. No connector migration is required to build these charts.
+**Part A keeps the dedicated Quick Risk chart. Part B now extends your existing clientside Data workspace.** It does not bring back the old Risk Type / Greek / Underlying callbacks.
 
-**You do not need an older guide to create the Data selectors in the inspected v7 baseline.** `choose_risk_type`, `choose_risk_greek`, `choose_underlying` and `choose_history_request` already exist inside `cube/pages/data/s03_callbacks.py::register_callbacks`. They are nested definitions; search inside that function. `choose_history_request` is singular. The Data Underlying dropdown is an inline `dcc.Dropdown(id="data-underlying")` in `s02_view.py`, not a function named `data_underlying_dropdown`.
+The old Part B was written for the original three-selector Python implementation in GitHub. Your earlier guides replaced that layout with Risk / Market / Both and Choose a series, then replaced the Python selection editor with `cube.workspaceEditor` in `assets/data_workspace_editor.js`. Those are different versions. Complete copies of the old callbacks did not make them suitable for your current interface.
 
-This revision includes complete affected function bodies, callback decorators, imports and the dropdown block. "Replace" means remove the old definition and its decorator if the supplied block includes one. "Add" means add it once at the stated indentation. Do not register two callbacks for the same Output, even under different Python names.
+Use this order:
 
-**Version check:** this baseline's Data page has Risk History / Market History tabs and `data-risk-type`, `data-risk-greek`, `data-underlying`. A local version using Risk / Market / Both and a Choose series editor has a different callback contract. The complete baseline copies below make the implementation explicit; they are not a license to overwrite that newer page. For that version, retain its controls and map the server-catalog/search logic to its actual callback Inputs, Outputs and request format. That mapping requires the actual source; unseen code cannot be guaranteed compatible. A missing function alone is not a reason to recreate the old Data page.
+1. Keep or implement Part A, then check its charts.
+2. Implement this revised Part B on the existing browser-editor workspace. Complete its JavaScript and registration changes together, then restart and hard-refresh.
+3. Apply `JTD.md` independently if needed.
+4. Apply `Hero.md`; include `render_quick_risk_tenor` when Quick Risk participates. Keep any already-implemented completion acknowledgement outputs/returns when adapting the Part A callback.
+5. Use `Connectors.md` for live feeds. These display changes do not require a connector migration.
 
-Run from your repository root before editing:
+Part A was checked against application source at `2220a3f4839318863a9131e3fef8118d0f82fb7d`. Part B extends the complete clientside editor previously published in `DATA_INTERACTION_FIX.md` at `335bdce6453b7544d4eac436b7094f35c14864c6`, matching the interface you described. GitHub's untouched application source still contains the older Data page: **this document is not a migration from that old page to the unified workspace.** Further local changes to your deployed files have not been inspected. The component and argument contract is listed below so you can compare it directly.
 
-```powershell
-git status --short
-rg -n 'def (choose_risk_type|choose_risk_greek|choose_underlying|choose_history_request)|data-underlying' cube/pages/data
-rg -n 'def (detail_frame|tenor_axis_order|_meaningful_tenor_mask)|class _RiskDataCache|def register_workspace_callbacks' cube
-```
+Full affected definitions, imports, callback registration and dropdown copies are supplied. Replace each named definition/registration once; keep unrelated local code. Do not overwrite the application folder with older GitHub files, add duplicate Output owners, or recreate old selectors just because their Python names are absent.
 
-Keep your local changes. Use the existing v7 aggregation/cache/filter implementations. If those core contracts are absent too, compare the actual source with v7 before transplanting this guide; do not fill a missing financial calculation with guessed values.
+Before editing, save the affected files using your normal source-control/backup process. Keep JavaScript backups outside `assets/`, where Dash would otherwise load them too. Run `git status --short` if using a checkout and preserve your existing changes.
 
 ## Part A — a dedicated, spacious Quick Risk chart
 
@@ -878,886 +874,656 @@ Append this block to `assets/s03_risk.css`. If this exact block is already prese
 
 After code changes, update tests which still import the deliberately removed `build_quick_risk_figure` or expect its old 3D figure. The replacement tests should target `build_quick_risk_chart` and its registered callback.
 
-## Part B — make Data choices searchable without sending the whole catalog
+## Part B — keep the browser editor and make its choices lighter
 
-This part is now a complete set of replacement definitions, including the callback decorators and helper bodies. It is independent of the Quick Risk chart changes in Part A. Apply all of Part B as one group, then restart and test: a generation-only catalog store and the old catalog consumers cannot run together.
+### B1. Confirm the correct version and keep its responsibilities
 
-### B1. Check the Data version and where the functions belong
+Find these existing items:
 
-The audited GitHub source has Risk History / Market History tabs and these three component IDs: `data-risk-type`, `data-risk-greek`, and `data-underlying`. It uses `ArchiveHistoryRepository` and `HistoryHandoff`.
-
-| What to look for | Exact existing location in the audited source |
+| Location | What must be there |
 |---|---|
-| `choose_risk_type` | Nested inside `cube/pages/data/s03_callbacks.py::register_callbacks` |
-| `choose_risk_greek` | In that same registration function |
-| `choose_underlying` | In that same registration function |
-| `choose_history_request` | In that same registration function; singular **request** |
-| Underlying dropdown | Inline `dcc.Dropdown(id="data-underlying")` inside `cube/pages/data/s02_view.py::build_data_page` |
+| `assets/data_workspace_editor.js` | The exported `window.dash_clientside.cube.workspaceEditor` selection function |
+| `cube/pages/data/s03_callbacks.py`, inside `register_callbacks` | One `app.clientside_callback` registration for `ClientsideFunction(namespace="cube", function_name="workspaceEditor")` |
+| `cube/pages/data/s02_view.py` | `data-display-mode`, `data-series-picker`, `data-companion-picker` and the existing Data workspace stores |
+| Existing Python loader | `load_workspace` and its request parser / `query_workspace_bundle`, including the current-observation reader |
 
-There is no function called `data_underlying_dropdown` or `chooser_history_requests`. The full definitions below remove the need to infer any of their bodies.
+The editor runs in the browser. It edits selections, preserves imported Risk scope, chooses an exact opposite-kind companion when allowed, and emits a request on Load or a fresh Quick handoff. Python still independently validates that request and reads the requested financial data. The existing browser projection/player callbacks continue rendering the loaded bundle.
 
-For the five callback replacements in B6:
+Do not add `choose_risk_type`, `choose_risk_greek`, `choose_underlying` or `choose_history_request`. Do not recreate `data-underlying`. Do not register a Python `edit_workspace` alongside the browser editor.
 
-1. If the named callback exists, replace its complete `@app.callback(...)` decorator **and** function body with the corresponding block below.
-2. If your callback has another name but owns the same Outputs, replace that existing owner; do not add a second owner of those Outputs.
-3. Add a missing block once inside `register_callbacks` only if this same three-selector layout, typed history contracts, and repository wiring are present and no callback owns those Outputs.
-4. Keep all other callbacks in `register_callbacks`. In particular, retain the identity-mode/breadcrumb callbacks, archive-generation polling, history loading, custom-date controls, and clientside playback callbacks. Do not replace the whole `s03_callbacks.py` file or the whole registration function.
+If you have extra deliberate Outputs or a different workspace request schema, compare them before replacing the registration and preserve the corresponding JavaScript return values. The complete copy here has the established thirteen Outputs, with the exact matching argument order in B4.
 
-**Different deployed layout:** if your Data page has the newer Risk / Market / Both workspace with “Choose series”, these replacements are not a migration for it. Its callbacks and state contract need to be mapped from its actual source. Do not recreate the old selectors, add duplicate callback owners, or overwrite the newer page just to make the names match. This guide supplies complete code for the audited GitHub version; it cannot safely replace callbacks in an unseen local variant.
+### B2. Undo only incompatible changes from the previous Part B, if applied
 
-### B2. Keep one server catalog and understand the 100-option limit
+If you did not implement that section, proceed to B3.
 
-The existing archive repository already caches its immutable identity catalog by archive generation. Keep that catalog there. The browser will receive only `{"generation": "..."}` as a readiness marker and at most 100 dropdown options per search.
+1. Preserve your current files, then use your **pre-change working unified-workspace copy** to restore only sections changed by the previous Part B. Keep the chart changes from Part A.
+2. Remove any obsolete Python selector/request registrations you added. Keep one owner of `data-history-request-store.data`: the existing browser editor. Identify the decorator belonging to each removed definition; do not delete neighbouring callbacks.
+3. Restore your working unified catalogue producer and its helper, including the current-data plus archive merge. `data-history-catalog-store.data` must again include its complete `entries` array, alongside its generation/revision metadata. A generation-only dictionary is incompatible with this editor.
+4. If you replaced a current-plus-history helper with the old archive-only `load_archive_catalog(repository, cache_state)`, restore your prior helper body and signature. Returning archive entries alone would still lose current-only choices. Do not take that helper from untouched GitHub v7 as a substitute for your unified implementation.
+5. Restore the unified series/companion controls and any overwritten workspace loader or parser from that same working copy. Keep current observations, historical-only identities, exact source identity and Risk-filter handling.
+6. The previous `cached_property` change to `HistoryCatalogEntry.key` is not required here. A working hash-identical property may remain; restore it from your backup only if deliberately undoing that unrelated change. This repair does not depend on it or on the old Python `underlying_options` function.
 
-This is a limit on **visible choices**, not on the positions, dates, portfolios, or history you can read. Type a name to find any other identity, including an archived instrument absent from today's Quick Risk catalog. The selected identity is retained within the 100-option total. History requests, exact identity validation, history budgets, and playback remain unchanged.
+Do not erase unrelated customizations or roll back the whole repository. If a required unified helper was overwritten and you have no working copy, its actual source needs recovering/comparing before this patch can be completed; inventing a replacement from the older three-selector files would be unsafe for data correctness.
 
-The cold archive scan may still take seconds. This change removes the unnecessary whole-catalog transfer, repeated reconstruction, and unbounded option rendering; it does not claim to make cold storage access instant. The page shell and navigation must remain usable while the existing status says “Preparing archive choices…”.
+### B3. Replace the complete browser-editor asset
 
-### B3. Calculate each immutable identity key once
+Open `assets/data_workspace_editor.js` in the actual app's top-level assets directory. Replace its complete existing editor implementation with the code below. Keep other asset files and exports; the namespace assignment preserves unrelated functions. If your local editor contains extra deliberate behavior, retain that behavior when merging this complete reference rather than silently dropping it.
 
-Open `cube/history/s01_models.py`. Add this import alongside its standard-library imports if it is not already present:
+The changes are small in scope:
 
-```python
-from functools import cached_property
-```
+- Build the key/identity/search index once for the current catalogue object and timestamp; reuse it on later selection/search edits. This is browser-local identity metadata, not a server-global selection or a financial-frame cache.
+- Pass both dropdowns' `search_value` into the existing editor.
+- Return at most 100 options per dropdown, including its retained normal or Quick selection. Searching never changes the selected value or loads history by itself.
+- Keep the complete catalogue available for exact lookup and companion pairing. The cap is on rendered options, not on data, dates, portfolios or available identities.
 
-Inside `class HistoryCatalogEntry`, replace the complete `key` property, including its current `@property` decorator, with this block. Do not replace the class, its fields, or its validation methods.
 
-```python
-    @cached_property
-    def key(self) -> str:
-        payload = {
-            "kind": self.kind,
-            "identity": self.identity.to_mapping(),
+```javascript
+/* Data selection only. The existing Python loader validates and reads history.
+ * workspaceEditor: 13 Inputs followed by 4 States; exactly 13 Outputs.
+ * New search Inputs follow end_date and precede previous/consumed/loaded/catalog.
+ */
+(function () {
+    "use strict";
+    const MODES = ["risk", "market", "both"];
+    const PERIODS = ["wtd", "mtd", "ytd", "1y", "5y", "all", "custom"];
+    const QUICK = "__quick_handoff__";
+    const copy = value => value == null ? null : JSON.parse(JSON.stringify(value));
+    const opposite = kind => kind === "risk" ? "market" : "risk";
+    const selectedKey = kind => "__data_selected_" + kind + "__";
+    const identityKey = identity => JSON.stringify([
+        identity.source_types, identity.risk_type, identity.risk_greek,
+        identity.underlying, identity.identity_mode
+    ]);
+    const sameIdentity = (a, b) => Boolean(a && b && a.kind === b.kind &&
+        identityKey(a.identity) === identityKey(b.identity));
+    const integer = value => Number.isInteger(value) && value >= 0;
+    const validDate = value => typeof value === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+        !Number.isNaN(Date.parse(value)) &&
+        new Date(value).toISOString().slice(0, 10) === value;
+
+    function checkedHandoff(value) {
+        const h = copy(value), i = h && h.identity;
+        if (!h || h.schema_version !== 1 || !["risk", "market"].includes(h.kind) ||
+            !integer(h.source_revision) || !integer(h.reset_generation) ||
+            !validDate(h.snapshot_date) || !i ||
+            !Array.isArray(i.source_types) || !i.source_types.length ||
+            !i.source_types.every(v => typeof v === "string" && v.trim()) ||
+            ![i.risk_type, i.risk_greek, i.underlying].every(v => typeof v === "string" && v.trim()) ||
+            !["reported", "underlying"].includes(i.identity_mode)) {
+            throw Error("The selected series has an invalid identity; reopen it or choose another.");
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
-```
-
-The key's value is unchanged. `HistoryCatalogEntry` is frozen, so caching its key avoids repeating the same JSON serialization and SHA calculation on every search. It is one string per existing catalog entry, not another cache of financial frames.
-
-### B4. Install the complete selection helpers
-
-Open `cube/pages/data/s01_selection.py`. The block below is the complete final content of the small selection module in the audited baseline. To preserve local additions, update its import block and replace each existing function with the complete same-named definition below; add a function only if missing. Keep unrelated local helpers or imports, and include their existing names if you maintain additional `__all__` exports. Do not leave two definitions of the same function.
-
-On the unmodified audited module, these are all of its imports, functions, and exports. The behavior change is in `underlying_options`; the other complete bodies are included so there are no missing local helper definitions to guess.
-
-```python
-"""Pure direct-selection helpers owned by the V5 Data page."""
-
-from __future__ import annotations
-
-from collections import Counter
-from cube.domain.s10_search import _dropdown_search_terms, _dropdown_search_label
-from cube.pages.risk.s10_search import _combine_udl_browser_search
-from collections.abc import Sequence
-
-from cube.history import (
-    HistoryCatalogEntry,
-    HistoryHandoff,
-    HistoryIdentityCatalog,
-    HistoryValidationError,
-)
-
-
-def _catalog(value: object) -> HistoryIdentityCatalog:
-    return (
-        value
-        if isinstance(value, HistoryIdentityCatalog)
-        else HistoryIdentityCatalog.from_mapping(value)
-    )
-
-
-def effective_identity_mode(kind: object, mode: object) -> str:
-    """Market always uses raw Underlying; Risk defaults to reported identity."""
-
-    if str(kind or "risk").strip().casefold() == "market":
-        return "underlying"
-    selected = str(mode or "reported").strip().casefold()
-    return selected if selected in {"reported", "underlying"} else "reported"
-
-
-def matching_entries(
-    raw_catalog: object,
-    *,
-    kind: object,
-    identity_mode: object,
-    risk_type: object = None,
-    risk_greek: object = None,
-) -> tuple[HistoryCatalogEntry, ...]:
-    catalog = _catalog(raw_catalog)
-    selected_kind = str(kind or "risk").strip().casefold()
-    selected_mode = effective_identity_mode(selected_kind, identity_mode)
-    selected_type = str(risk_type or "").strip()
-    selected_greek = str(risk_greek or "").strip()
-    return tuple(
-        entry
-        for entry in catalog.entries
-        if entry.kind == selected_kind
-        and entry.identity.identity_mode == selected_mode
-        and (not selected_type or entry.identity.risk_type == selected_type)
-        and (not selected_greek or entry.identity.risk_greek == selected_greek)
-    )
-
-
-def risk_type_options(
-    raw_catalog: object, kind: object, identity_mode: object
-) -> list[dict[str, str]]:
-    values = sorted(
-        {
-            entry.identity.risk_type
-            for entry in matching_entries(
-                raw_catalog,
-                kind=kind,
-                identity_mode=identity_mode,
-            )
-        },
-        key=str.casefold,
-    )
-    return [{"label": value, "value": value} for value in values]
-
-
-def risk_greek_options(
-    raw_catalog: object,
-    kind: object,
-    identity_mode: object,
-    risk_type: object,
-) -> list[dict[str, str]]:
-    values = sorted(
-        {
-            entry.identity.risk_greek
-            for entry in matching_entries(
-                raw_catalog,
-                kind=kind,
-                identity_mode=identity_mode,
-                risk_type=risk_type,
-            )
-        },
-        key=str.casefold,
-    )
-    return [{"label": value, "value": value} for value in values]
-
-
-def underlying_options(
-    raw_catalog: object,
-    kind: object,
-    identity_mode: object,
-    risk_type: object,
-    risk_greek: object,
-    *,
-    search_value: str | None = None,
-    limit: int = 100,
-    include: object = None,
-) -> list[dict[str, str]]:
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-        raise ValueError("option limit must be a positive integer")
-    entries = matching_entries(
-        raw_catalog, kind=kind, identity_mode=identity_mode,
-        risk_type=risk_type, risk_greek=risk_greek,
-    )
-    terms = _dropdown_search_terms(search_value)
-    counts = Counter(entry.identity.underlying for entry in entries)
-    options = []
-    selected_option = None
-    for entry in entries:
-        if len(options) >= limit and (include is None or selected_option is not None):
-            break
-        label = entry.identity.underlying
-        if counts[label] > 1:
-            label = f"{label} · {', '.join(entry.identity.source_types)}"
-        search = _dropdown_search_label(label)
-        matches = all(term in search for term in terms)
-        selected = entry.key == include
-        if not selected and (len(options) >= limit or not matches):
-            continue
-        option = {
-            "label": label, "value": entry.key,
-            "search": _combine_udl_browser_search(label),
+        if (h.kind === "market" && (h.filter_view != null ||
+            i.identity_mode !== "underlying" || i.source_types.length !== 1)) {
+            throw Error("Market requires one raw series without Risk filters.");
         }
-        if selected:
-            selected_option = option
-        if len(options) < limit and matches:
-            options.append(option)
-    if selected_option is not None and not any(
-        option["value"] == selected_option["value"] for option in options
-    ):
-        options = options[:limit - 1] + [selected_option]
-    return options
-
-
-def selected_value(
-    options: Sequence[dict[str, str]],
-    current: object = None,
-    preferred: object = None,
-) -> str | None:
-    """Keep a valid current/preferred choice, otherwise choose the first option."""
-
-    values = [option["value"] for option in options]
-    for candidate in (preferred, current):
-        if candidate in values:
-            return str(candidate)
-    return values[0] if values else None
-
-
-def catalog_key_for_handoff(raw_catalog: object, raw_handoff: object) -> str | None:
-    try:
-        catalog = _catalog(raw_catalog)
-        handoff = HistoryHandoff.from_mapping(raw_handoff)
-    except (HistoryValidationError, TypeError, ValueError):
-        return None
-    for entry in catalog.entries:
-        if entry.kind == handoff.kind and entry.identity == handoff.identity:
-            return entry.key
-    return None
-
-
-def direct_history_handoff(
-    raw_catalog: object,
-    entry_key: object,
-    *,
-    kind: object,
-    reset_generation: object,
-) -> HistoryHandoff:
-    catalog = _catalog(raw_catalog)
-    entry = catalog.resolve(entry_key)
-    selected_kind = str(kind or "risk").strip().casefold()
-    if entry.kind != selected_kind:
-        raise HistoryValidationError("selected identity belongs to another history tab")
-    if isinstance(reset_generation, bool):
-        raise HistoryValidationError("reset generation must be an integer")
-    try:
-        reset = int(reset_generation or 0)
-    except (TypeError, ValueError) as exc:
-        raise HistoryValidationError("reset generation must be an integer") from exc
-    return entry.to_handoff(reset_generation=reset)
-
-
-__all__ = [
-    "catalog_key_for_handoff",
-    "direct_history_handoff",
-    "effective_identity_mode",
-    "matching_entries",
-    "risk_greek_options",
-    "risk_type_options",
-    "selected_value",
-    "underlying_options",
-]
-```
-
-The three imported Quick-search normalization helpers already exist in the audited code: `_dropdown_search_terms` and `_dropdown_search_label` in `cube/domain/s10_search.py`, and `_combine_udl_browser_search` in `cube/pages/risk/s10_search.py`. Keep those implementations. They preserve case/punctuation handling and Dash's browser-search aliases. If those modules are also different or absent, the baseline check in B1 has failed; do not substitute an unrelated normalizer without comparing the source.
-
-### B5. Supply complete callback imports and top-level helpers
-
-Open `cube/pages/data/s03_callbacks.py`. Keep its other functions. Ensure its top import block contains the following complete baseline imports. Keep any additional imports used by local code; do not paste a second `from __future__` below executable code.
-
-```python
-"""Page-owned lazy query and playback callbacks for V5 Data history."""
-
-from __future__ import annotations
-
-import hashlib
-import json
-from dataclasses import replace
-from datetime import date, datetime
-from typing import Mapping
-
-import numpy as np
-import pandas as pd
-from dash import ClientsideFunction, Dash, Input, Output, State, ctx, no_update
-
-from cube.history import (
-    HISTORY_CANONICAL_CELL_BUDGET,
-    HISTORY_RAW_ROW_BUDGET,
-    ArchiveHistoryRepository,
-    HistoryBundle,
-    HistoryHandoff,
-    HistoryQuery,
-    HistoryValidationError,
-)
-from .s01_selection import (
-    catalog_key_for_handoff,
-    direct_history_handoff,
-    risk_greek_options,
-    risk_type_options,
-    selected_value,
-    underlying_options,
-)
-```
-
-Keep this constant once at module level, after the imports:
-
-```python
-QUICK_HANDOFF_ENTRY_KEY = "__quick_handoff__"
-```
-
-The following helpers are called by the replacement callbacks. They belong at **module level**, outside `register_callbacks`, before it is defined. They are unchanged baseline helpers, provided in full. Keep an identical existing definition; if it is absent in an otherwise compatible three-selector implementation, add it once. If a local definition has changed intentionally, compare that change before replacing it.
-
-```python
-def _stored_history_handoff(raw_handoff: object) -> HistoryHandoff:
-    payload = (
-        raw_handoff.get("handoff")
-        if isinstance(raw_handoff, Mapping) and "handoff" in raw_handoff
-        else raw_handoff
-    )
-    return HistoryHandoff.from_mapping(payload)
-
-
-def _stored_handoff_nonce(raw_handoff: object) -> str:
-    if isinstance(raw_handoff, Mapping):
-        nonce = str(raw_handoff.get("nonce") or "").strip()
-        if nonce:
-            return nonce
-    handoff = _stored_history_handoff(raw_handoff)
-    return f"legacy-{handoff.kind}-{handoff.source_revision}"
-
-
-def _pending_history_handoff(
-    raw_handoff: object,
-    consumed_nonce: object,
-) -> HistoryHandoff:
-    nonce = _stored_handoff_nonce(raw_handoff)
-    if nonce == str(consumed_nonce or ""):
-        raise HistoryValidationError("history handoff was already consumed")
-    return _stored_history_handoff(raw_handoff)
-
-
-def _requested_history_handoff(raw_request: object) -> HistoryHandoff:
-    if not isinstance(raw_request, Mapping) or "handoff" not in raw_request:
-        raise HistoryValidationError("history request has no identity")
-    return HistoryHandoff.from_mapping(raw_request["handoff"])
-
-
-def _request_query(raw_request: object) -> HistoryQuery:
-    if not isinstance(raw_request, Mapping):
-        raise HistoryValidationError("history request must be a mapping")
-    request_error = str(raw_request.get("error") or "").strip()
-    if request_error:
-        raise HistoryValidationError(request_error)
-    handoff = HistoryHandoff.from_mapping(raw_request.get("handoff"))
-    period = str(raw_request.get("period") or "all").strip().casefold()
-    return HistoryQuery(
-        handoff=handoff,
-        period=period,
-        start_date=(raw_request.get("start_date") if period == "custom" else None),
-        end_date=(raw_request.get("end_date") if period == "custom" else None),
-    )
-
-
-def history_request_payload(
-    handoff: HistoryHandoff,
-    *,
-    period: object = "all",
-    start_date: object = None,
-    end_date: object = None,
-    request_id: object = None,
-) -> dict[str, object]:
-    """Build the one immutable request consumed by the archive callback."""
-
-    selected_metric = "risk" if handoff.kind == "risk" else "current"
-    selected_handoff = replace(handoff, metric=selected_metric)
-    selected_period = str(period or "all").strip().casefold()
-    query = HistoryQuery(
-        handoff=selected_handoff,
-        period=selected_period,
-        start_date=(start_date if selected_period == "custom" else None),
-        end_date=(end_date if selected_period == "custom" else None),
-    )
-    return {
-        "handoff": selected_handoff.to_mapping(),
-        "period": query.period,
-        "start_date": (
-            query.start_date.isoformat() if query.start_date is not None else None
-        ),
-        "end_date": query.end_date.isoformat() if query.end_date is not None else None,
-        "request_id": None if request_id is None else str(request_id),
+        if (h.filter_view != null && (typeof h.filter_view.filters !== "object" ||
+            h.filter_view.filters === null || typeof h.filter_view.exclude_selected !== "boolean" ||
+            !Object.values(h.filter_view.filters).every(values => Array.isArray(values) &&
+                values.every(v => typeof v === "string")))) {
+            throw Error("The imported Risk scope is invalid; reopen Quick Risk.");
+        }
+        h.metric = h.kind === "risk" ? "risk" : "current";
+        return h;
     }
+
+    function label(h) {
+        const i = h.identity;
+        return [h.kind === "risk" ? "Risk" : "Market", i.risk_type, i.risk_greek,
+            i.underlying, i.identity_mode === "reported" ? "Reported" : "Raw",
+            i.source_types.join(", ")].join(" · ");
+    }
+
+    function requestFor(draft, period, start, end, requestId) {
+        if (!PERIODS.includes(period)) throw Error("Choose a valid period.");
+        if (period === "custom" && (!validDate(start) || !validDate(end) || start > end)) {
+            throw Error("Choose both custom dates, with the start on or before the end.");
+        }
+        const handoffs = {};
+        const required = draft.display_mode === "both" ? ["risk", "market"] : [draft.display_mode];
+        for (const kind of required) {
+            const handoff = checkedHandoff(draft[kind]);
+            if (handoff.kind !== kind || handoff.reset_generation !== draft.reset_generation) {
+                throw Error("Choose a current " + kind + " series.");
+            }
+            handoffs[kind] = handoff;
+        }
+        return {schema_version: 1, display_mode: draft.display_mode, handoffs,
+            period, start_date: period === "custom" ? start : null,
+            end_date: period === "custom" ? end : null, request_id: requestId};
+    }
+
+    function sameSelection(a, b) {
+        if (!a || !b || a.display_mode !== b.display_mode || a.period !== b.period ||
+            a.start_date !== b.start_date || a.end_date !== b.end_date) return false;
+        return ["risk", "market"].every(kind => {
+            const x = a.handoffs[kind], y = b.handoffs && b.handoffs[kind];
+            return !x && !y || sameIdentity(x, y) &&
+                x.source_revision === y.source_revision && x.snapshot_date === y.snapshot_date &&
+                x.reset_generation === y.reset_generation &&
+                JSON.stringify(x.filter_view) === JSON.stringify(y.filter_view);
+        });
+    }
+
+    const OPTION_LIMIT = 100;
+    const EMPTY_INDEX = {
+        byKey: new Map(), byIdentity: new Map(),
+        lists: {risk: [], market: [], both: []}
+    };
+    // One replaceable index of immutable identity metadata, never user selection
+    // or financial rows. A new Store object/timestamp invalidates it.
+    let cachedCatalog = null;
+    let cachedTimestamp = null;
+    let cachedGeneration = null;
+    let cachedIndex = EMPTY_INDEX;
+    const searchParts = value => String(value == null ? "" : value)
+        .normalize("NFKC").toLowerCase().match(/[a-z0-9]+/g) || [];
+
+    function catalogIndexFor(catalog, timestamp) {
+        if (!catalog || !Array.isArray(catalog.entries)) {
+            cachedCatalog = null; cachedTimestamp = null;
+            cachedGeneration = null; cachedIndex = EMPTY_INDEX;
+            return EMPTY_INDEX;
+        }
+        if (cachedCatalog === catalog && cachedTimestamp === timestamp &&
+            cachedGeneration === catalog.generation) return cachedIndex;
+        const byKey = new Map(), byIdentity = new Map(), listed = [];
+        for (const entry of catalog.entries) {
+            const displayLabel = label(entry), parts = searchParts(displayLabel);
+            const record = Object.assign({}, entry, {
+                displayLabel, sortLabel: displayLabel.toLowerCase(),
+                searchText: parts.join(""),
+                searchAliases: parts.join(" ") + " " + parts.join("")
+            });
+            byKey.set(record.key, record);
+            const key = record.kind + ":" + identityKey(record.identity);
+            const matches = byIdentity.get(key) || [];
+            matches.push(record); byIdentity.set(key, matches);
+            listed.push(record);
+        }
+        listed.sort((a, b) => a.sortLabel.localeCompare(b.sortLabel) ||
+            a.key.localeCompare(b.key));
+        const index = {byKey, byIdentity, lists: {
+            both: listed,
+            risk: listed.filter(record => record.kind === "risk"),
+            market: listed.filter(record => record.kind === "market")
+        }};
+        cachedCatalog = catalog; cachedTimestamp = timestamp;
+        cachedGeneration = catalog.generation; cachedIndex = index;
+        return index;
+    }
+
+    function boundedOptions(index, kind, searchValue, retained) {
+        const query = String(searchValue == null ? "" : searchValue);
+        const terms = searchParts(query), result = [];
+        for (const record of index.lists[kind] || []) {
+            if (!terms.every(term => record.searchText.includes(term))) continue;
+            result.push({label: record.displayLabel, value: record.key,
+                // Keep Dash's local substring filter consistent with this
+                // already-matched, punctuation-tolerant token search.
+                search: record.searchAliases + " " + query});
+            if (result.length === OPTION_LIMIT) break;
+        }
+        if (retained && !result.some(option => option.value === retained.value)) {
+            if (result.length === OPTION_LIMIT) result.pop();
+            result.push({label: retained.label, value: retained.value,
+                search: retained.label + " " + query});
+        }
+        return result;
+    }
+
+    function workspaceEditor(rawQuick, catalogTimestamp, mode, primaryKey, companionKey,
+        clearClicks, loadClicks, reset, period, start, end, primarySearch, companionSearch,
+        previous, consumed, loaded, rawCatalog) {
+        const nu = window.dash_clientside.no_update;
+        const unchanged = () => Array(13).fill(nu);
+        // Wait for the Data controls to mount. The session handoff remains pending.
+        if (!MODES.includes(mode)) return unchanged();
+        const context = window.dash_clientside.callback_context || {};
+        const triggered = new Set((context.triggered || []).map(item => item.prop_id));
+        const changed = id => triggered.has(id);
+        const old = previous && previous.schema_version === 1 ? previous : {};
+        let d = Object.assign({schema_version: 1, initialized: false, display_mode: "risk",
+            primary_key: null, primary_kind: null, companion_key: null,
+            risk: null, market: null, risk_scope: null, quick_nonce: null,
+            rejected_quick_nonce: null, catalog_generation: null, reset_generation: reset}, copy(old));
+        let status = "", request = nu, consume = nu, event = "initial", valid = false;
+        let options = [], companions = [], companionKind = "market";
+        const catalogReady = Boolean(rawCatalog && Array.isArray(rawCatalog.entries));
+        let index = EMPTY_INDEX;
+        let byKey = index.byKey, byIdentity = index.byIdentity;
+        const rawNonce = String(rawQuick && rawQuick.nonce || "");
+        const fresh = Boolean(rawNonce && rawNonce !== String(consumed || "") &&
+            rawNonce !== String(d.quick_nonce || "") && rawNonce !== String(d.rejected_quick_nonce || ""));
+        let quick = null;
+        const keyFor = handoff => {
+            const matches = byIdentity.get(handoff.kind + ":" + identityKey(handoff.identity)) || [];
+            return matches.length === 1 ? matches[0].key : null;
+        };
+        const isImported = handoff => sameIdentity(handoff, quick) && d.quick_nonce === rawNonce;
+        const displayKey = handoff => keyFor(handoff) ||
+            (isImported(handoff) ? QUICK : selectedKey(handoff.kind));
+        const resolve = key => {
+            const entry = byKey.get(key);
+            let handoff;
+            if (entry) {
+                handoff = checkedHandoff({schema_version: 1, kind: entry.kind,
+                    identity: entry.identity, metric: entry.kind === "risk" ? "risk" : "current",
+                    source_revision: entry.source_revision, snapshot_date: entry.snapshot_date,
+                    filter_view: null, reset_generation: reset});
+            } else {
+                const existing = [d.risk, d.market].find(h => h &&
+                    (key === selectedKey(h.kind) || key === QUICK && isImported(h)));
+                if (!existing) throw Error("Choose an available exact series.");
+                handoff = checkedHandoff(existing);
+            }
+            if (handoff.kind === "risk") handoff.filter_view = copy(d.risk_scope);
+            return handoff;
+        };
+        const setPrimary = key => {
+            status = "";
+            if (key == null) {
+                d.primary_key = d.primary_kind = d.companion_key = null;
+                d.risk = d.market = null;
+                return;
+            }
+            const h = resolve(key);
+            if (d.display_mode !== "both" && h.kind !== d.display_mode) {
+                throw Error("Series does not match the selected display mode.");
+            }
+            d.primary_key = key; d.primary_kind = h.kind; d.companion_key = null;
+            d.risk = d.market = null; d[h.kind] = h;
+        };
+        const setMode = value => {
+            d.display_mode = value;
+            if (value !== "both") {
+                d.primary_kind = d[value] ? value : null;
+                d.primary_key = d[value] ? displayKey(d[value]) : null;
+                d.companion_key = null;
+            }
+        };
+        const setCompanion = key => {
+            if (d.display_mode !== "both" || !d.primary_kind) throw Error("Choose the primary series first.");
+            const other = opposite(d.primary_kind), h = key == null ? null : resolve(key);
+            if (h && h.kind !== other) throw Error("The companion must be the opposite kind.");
+            d[other] = h; d.companion_key = key;
+        };
+        try {
+            index = catalogIndexFor(rawCatalog, catalogTimestamp);
+            byKey = index.byKey; byIdentity = index.byIdentity;
+            if (!integer(reset)) throw Error("Invalid cache reset; reload the page.");
+            if (rawQuick && rawQuick.handoff) {
+                try { quick = checkedHandoff(rawQuick.handoff); }
+                catch (error) { if (fresh) throw error; }
+            }
+            if (!fresh) for (const kind of ["risk", "market"]) {
+                if (d[kind]) {
+                    try {
+                        d[kind] = checkedHandoff(d[kind]);
+                        if (d[kind].kind !== kind) throw Error("Mismatched saved kind");
+                    } catch (error) {
+                        d[kind] = null;
+                        if (d.primary_kind === kind) d.primary_key = d.primary_kind = null;
+                        else d.companion_key = null;
+                        if (kind === "risk") d.risk_scope = null;
+                        status = "The saved selection is invalid; choose another series.";
+                    }
+                }
+            }
+            if (fresh) {
+                if (!quick || quick.reset_generation !== reset) {
+                    throw Error("Quick selection predates Clear Cache; reopen it from Risk.");
+                }
+                event = "handoff";
+                d.display_mode = quick.kind; d.primary_kind = quick.kind;
+                d.risk = d.market = null; d[quick.kind] = quick;
+                d.risk_scope = quick.kind === "risk" ? copy(quick.filter_view) : null;
+                d.quick_nonce = rawNonce; d.primary_key = displayKey(quick); d.companion_key = null;
+            } else if (!d.initialized) {
+                // Restore before interpreting the layout's initial empty picker values.
+                if (!d.risk && !d.market && loaded && MODES.includes(loaded.display_mode)) {
+                    d.display_mode = loaded.display_mode;
+                    for (const kind of ["risk", "market"]) {
+                        if (loaded.handoffs && loaded.handoffs[kind]) {
+                            d[kind] = checkedHandoff(loaded.handoffs[kind]);
+                        }
+                    }
+                    d.primary_kind = d.risk ? "risk" : d.market ? "market" : null;
+                    d.risk_scope = d.risk ? copy(d.risk.filter_view) : null;
+                    if (rawNonce === String(consumed || "")) d.quick_nonce = rawNonce;
+                }
+                if (d.primary_kind && d[d.primary_kind]) {
+                    d.primary_key = displayKey(d[d.primary_kind]);
+                    const other = opposite(d.primary_kind);
+                    d.companion_key = d.display_mode === "both" && d[other] ? displayKey(d[other]) : null;
+                }
+            } else if (changed("reset-generation-store.data") && d.reset_generation !== reset) {
+                event = "reset";
+            } else if (changed("data-load-history-button.n_clicks") && loadClicks > 0) {
+                event = "load";
+                // A click and edited values can arrive in the same browser update.
+                if (changed("data-clear-risk-scope.n_clicks") && clearClicks > 0) {
+                    d.risk_scope = null; if (d.risk) d.risk.filter_view = null;
+                }
+                if (changed("data-display-mode.value") && mode !== d.display_mode) setMode(mode);
+                if (changed("data-series-picker.value") && primaryKey !== old.primary_key) setPrimary(primaryKey);
+                if (changed("data-companion-picker.value") && companionKey !== old.companion_key) setCompanion(companionKey);
+            } else if (changed("data-clear-risk-scope.n_clicks") && clearClicks > 0) {
+                event = "clear_scope"; d.risk_scope = null;
+                if (d.risk) d.risk.filter_view = null;
+            } else if (changed("data-display-mode.value") && mode !== d.display_mode) {
+                event = "mode"; setMode(mode);
+            } else if (changed("data-series-picker.value") && primaryKey !== d.primary_key) {
+                event = "primary"; setPrimary(primaryKey);
+            } else if (changed("data-companion-picker.value") && companionKey !== d.companion_key) {
+                event = "companion"; setCompanion(companionKey);
+            } else if (changed("data-history-catalog-store.modified_timestamp")) {
+                event = "catalog";
+            } else if (changed("data-series-picker.search_value") ||
+                changed("data-companion-picker.search_value")) {
+                event = "search";
+            } else { event = "dates"; }
+
+            // Reset also covers a saved request restored after a cache clear.
+            if ([d.risk, d.market].some(h => h && h.reset_generation !== reset)) event = "reset";
+            if (event === "reset") {
+                for (const kind of ["risk", "market"]) if (d[kind]) d[kind].reset_generation = reset;
+                request = null; status = "Cache cleared — press Load to reload this selection";
+            }
+            d.reset_generation = reset;
+            if (catalogReady && ["initial", "catalog"].includes(event)) {
+                for (const kind of ["risk", "market"]) {
+                    if (d[kind] && !keyFor(d[kind]) && !isImported(d[kind])) {
+                        d[kind] = null; status = "This series is no longer available; choose another";
+                    }
+                }
+                d.primary_key = d.primary_kind && d[d.primary_kind] ? displayKey(d[d.primary_kind]) : null;
+                if (!d.primary_key) d.primary_kind = null;
+            }
+            const primary = d.primary_kind && d[d.primary_kind];
+            companionKind = opposite(d.primary_kind);
+            if (d.display_mode === "both" && primary) {
+                const mayPair = ["initial", "mode", "primary"].includes(event) ||
+                    event === "load" && (changed("data-display-mode.value") || changed("data-series-picker.value"));
+                const clearedCompanion = changed("data-companion-picker.value") && companionKey == null &&
+                    companionKey !== old.companion_key;
+                if (!d[companionKind] && mayPair && !clearedCompanion &&
+                    primary.identity.identity_mode === "underlying" && primary.identity.source_types.length === 1) {
+                    const matches = byIdentity.get(companionKind + ":" + identityKey(primary.identity)) || [];
+                    if (matches.length === 1) d[companionKind] = resolve(matches[0].key);
+                }
+                d.companion_key = d[companionKind] ? displayKey(d[companionKind]) : null;
+            } else { d.companion_key = null; }
+
+            valid = Boolean(primary && d.primary_key &&
+                (d.display_mode === "both" ? d.risk && d.market && d.companion_key : d[d.display_mode]));
+            if ((event === "handoff" || event === "load") && valid) {
+                const token = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() :
+                    Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+                request = requestFor(d, period || "all", start, end, token);
+                if (d.quick_nonce && d.quick_nonce === rawNonce && String(consumed || "") !== rawNonce) consume = rawNonce;
+            }
+            if (!status && !valid) status = d.display_mode === "both" && primary ?
+                "Choose the " + companionKind + " series to compare" : "Choose an exact series";
+            if (!status && valid) {
+                try {
+                    const candidate = requestFor(d, period || "all", start, end, "draft");
+                    status = request !== nu && request !== null || sameSelection(candidate, loaded) ?
+                        "" : "Selection changed — press Load";
+                } catch (error) { status = error.message; }
+            }
+            d.catalog_generation = catalogReady ? rawCatalog.generation : null;
+            d.initialized = true;
+        } catch (error) {
+            status = error.message || "The selection is invalid; choose another series.";
+            request = event === "reset" ? null : nu;
+            if (fresh && event !== "handoff") d.rejected_quick_nonce = rawNonce;
+            d.initialized = true;
+        }
+        // Search changes only these bounded option lists. The selected keys,
+        // handoffs, scope and loaded request are never kept in the index.
+        const retainedOption = (key, handoff, kind) => {
+            if (!key || !handoff || (kind !== "both" && handoff.kind !== kind)) return null;
+            const record = byKey.get(key);
+            if (record) return {value: key, label: record.displayLabel};
+            try {
+                return {value: key, label: label(handoff) +
+                    (isImported(handoff) ? " · from Quick " +
+                        (handoff.kind === "risk" ? "Risk" : "Market") :
+                        " · selected (catalogue loading)")};
+            } catch (_error) { return null; }
+        };
+        const selectedPrimary = d.primary_kind && d[d.primary_kind];
+        options = boundedOptions(index, d.display_mode, primarySearch,
+            retainedOption(d.primary_key, selectedPrimary, d.display_mode));
+        companions = d.display_mode === "both" && selectedPrimary ?
+            boundedOptions(index, companionKind, companionSearch,
+                retainedOption(d.companion_key, d[companionKind], companionKind)) : [];
+        const scope = d.risk_scope;
+        const scopeText = scope ? "Risk scope: " + (scope.exclude_selected ? "Exclude selected" : "Include selected") +
+            "; " + (Object.entries(scope.filters || {}).map(([key, values]) => key + "=" +
+                (Array.isArray(values) ? values.join(", ") : "invalid scope")).join("; ") || "no restrictions") :
+            "Risk scope: all archived positions for the selected identity";
+        return [d, d.display_mode, options, d.primary_key, companions, d.companion_key,
+            (companionKind === "risk" ? "Risk" : "Market") + " series to compare",
+            d.display_mode !== "both", !valid, scopeText, status, request, consume];
+    }
+    window.dash_clientside = window.dash_clientside || {};
+    window.dash_clientside.cube = window.dash_clientside.cube || {};
+    window.dash_clientside.cube.workspaceEditor = workspaceEditor;
+}());
 ```
 
-Now replace the complete top-level `load_archive_catalog` function with this one. It returns the readiness marker, never `catalog.to_mapping()`:
+Keep only one copy of this asset in the active assets directory. The index is rebuilt when its catalogue/timestamp changes, including clear/reload; it must not retain an old lookup after a new catalogue arrives. Per-user selection remains in the existing browser draft store. The current catalogue object is treated as immutable, as with the existing Dash Store contract.
+
+### B4. Replace the one clientside registration
+
+Open `cube/pages/data/s03_callbacks.py`. Keep its current imports. Ensure the following names are imported from `dash`:
 
 ```python
-def load_archive_catalog(
-    repository: ArchiveHistoryRepository,
-    cache_state: object,
-) -> tuple[dict[str, object] | None, str]:
-    """Load the tiny direct-selector catalog after the Data route is mounted."""
-
-    if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
-        return None, "Preparing archive choices…"
-    catalog = repository.catalog()
-    risk_count = sum(entry.kind == "risk" for entry in catalog.entries)
-    market_count = sum(entry.kind == "market" for entry in catalog.entries)
-    if not catalog.entries:
-        status = (
-            "No completed schema-v4 Risk or Market archive identities are available."
-        )
-    else:
-        status = (
-            f"Archive ready: {risk_count:,} Risk and {market_count:,} Market choices."
-        )
-    return {"generation": catalog.generation}, status
+from dash import ClientsideFunction, Input, Output, State
 ```
 
-### B6. Replace the five nested callback blocks
-
-All five blocks below belong inside the existing function with this header:
+Inside `register_callbacks`, replace only the existing `app.clientside_callback(...)` call that registers `cube.workspaceEditor` with this full block. Its four-space indentation is intentional. Do not add a second registration or restore the removed Python editor.
 
 ```python
-def register_callbacks(
-    app: Dash,
-    repository: ArchiveHistoryRepository,
-) -> None:
-```
-
-That header is a location marker, not an additional function to paste. Each block below already has its required four-space indentation. Use the replacement rules in B1, keep exactly one owner per Output, and retain every other callback in that registration function.
-
-#### B6.1. Catalog readiness
-
-Replace `refresh_archive_catalog` and its decorator. The current store is now checked by generation only; it no longer contains an `entries` list.
-
-```python
-    @app.callback(
-        Output("data-history-catalog-store", "data"),
-        Output("data-catalog-status", "children"),
-        Input("data-history-cache-state-store", "data"),
-        State("data-history-catalog-store", "data"),
-    )
-    def refresh_archive_catalog(cache_state, current):
-        if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
-            return None, "Preparing archive choices…"
-        if (
-            isinstance(current, Mapping)
-            and current.get("generation") == cache_state.get("generation")
-        ):
-            return no_update, no_update
-        try:
-            return load_archive_catalog(repository, cache_state)
-        except (OSError, HistoryValidationError, TypeError, ValueError) as error:
-            return None, f"Archive choices failed: {error}"
-```
-
-#### B6.2. Risk Type
-
-Replace `choose_risk_type` and its decorator. It reads the typed server catalog and retains the Quick handoff fallback while the catalog is preparing.
-
-```python
-    @app.callback(
-        Output("data-risk-type", "options"),
-        Output("data-risk-type", "value"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-history-request-store", "data"),
-        State("data-risk-type", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def choose_risk_type(
-        raw_catalog,
-        kind,
-        identity_mode,
-        raw_request,
-        current,
-        raw_handoff,
-        consumed_nonce,
-    ):
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if (
-                    handoff.kind == str(kind or "risk").casefold()
-                    and handoff.identity.identity_mode
-                    == str(identity_mode or "reported").casefold()
-                ):
-                    value = handoff.identity.risk_type
-                    return [{"label": value, "value": value}], value
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None
-        try:
-            options = risk_type_options(repository.catalog(), kind, identity_mode)
-            preferred = None
-            try:
-                handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                except (HistoryValidationError, TypeError, ValueError):
-                    handoff = None
-            if (
-                handoff is not None
-                and handoff.kind == str(kind or "risk").casefold()
-                and handoff.identity.identity_mode
-                == str(identity_mode or "reported").casefold()
-            ):
-                preferred = handoff.identity.risk_type
-            return options, selected_value(options, current, preferred)
-        except (OSError, HistoryValidationError, TypeError, ValueError):
-            return [], None
-```
-
-#### B6.3. Risk Greek
-
-Replace `choose_risk_greek` and its decorator.
-
-```python
-    @app.callback(
-        Output("data-risk-greek", "options"),
-        Output("data-risk-greek", "value"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-risk-type", "value"),
-        Input("data-history-request-store", "data"),
-        State("data-risk-greek", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def choose_risk_greek(
-        raw_catalog,
-        kind,
-        identity_mode,
-        risk_type,
-        raw_request,
-        current,
-        raw_handoff,
-        consumed_nonce,
-    ):
-        if risk_type is None:
-            return [], None
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if handoff.kind == str(
-                    kind or "risk"
-                ).casefold() and handoff.identity.risk_type == str(risk_type):
-                    value = handoff.identity.risk_greek
-                    return [{"label": value, "value": value}], value
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None
-        try:
-            options = risk_greek_options(
-                repository.catalog(),
-                kind,
-                identity_mode,
-                risk_type,
-            )
-            preferred = None
-            try:
-                handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                except (HistoryValidationError, TypeError, ValueError):
-                    handoff = None
-            if (
-                handoff is not None
-                and handoff.kind == str(kind or "risk").casefold()
-                and handoff.identity.identity_mode
-                == str(identity_mode or "reported").casefold()
-                and handoff.identity.risk_type == str(risk_type)
-            ):
-                preferred = handoff.identity.risk_greek
-            return options, selected_value(options, current, preferred)
-        except (OSError, HistoryValidationError, TypeError, ValueError):
-            return [], None
-```
-
-#### B6.4. Underlying search
-
-Replace `choose_underlying` and its decorator together. The decorator includes the new `search_value` Input; the function includes the matching argument in the same position. Do not add a second textbox or another callback just for typing.
-
-```python
-    @app.callback(
-        Output("data-underlying", "options"),
-        Output("data-underlying", "value"),
+    app.clientside_callback(
+        ClientsideFunction(namespace="cube", function_name="workspaceEditor"),
+        Output("data-workspace-draft-store", "data"),
+        Output("data-display-mode", "value"),
+        Output("data-series-picker", "options"),
+        Output("data-series-picker", "value"),
+        Output("data-companion-picker", "options"),
+        Output("data-companion-picker", "value"),
+        Output("data-companion-label", "children"),
+        Output("data-companion-control", "hidden"),
         Output("data-load-history-button", "disabled"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-risk-type", "value"),
-        Input("data-risk-greek", "value"),
-        Input("data-history-request-store", "data"),
-        Input("data-underlying", "search_value"),
-        State("data-underlying", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def choose_underlying(
-        raw_catalog, kind, identity_mode, risk_type, risk_greek,
-        raw_request, search_value, current, raw_handoff, consumed_nonce,
-    ):
-        if risk_type is None or risk_greek is None:
-            return [], None, True
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if (
-                    handoff.kind == str(kind or "risk").casefold()
-                    and handoff.identity.identity_mode == str(identity_mode or "reported").casefold()
-                    and handoff.identity.risk_type == str(risk_type)
-                    and handoff.identity.risk_greek == str(risk_greek)
-                ):
-                    return [
-                        {"label": handoff.identity.underlying, "value": QUICK_HANDOFF_ENTRY_KEY}
-                    ], QUICK_HANDOFF_ENTRY_KEY, False
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None, True
-        try:
-            catalog = repository.catalog()
-            preferred = None
-            try:
-                handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                except (HistoryValidationError, TypeError, ValueError):
-                    handoff = None
-            if (
-                handoff is not None
-                and handoff.kind == str(kind or "risk").casefold()
-                and handoff.identity.identity_mode == str(identity_mode or "reported").casefold()
-                and handoff.identity.risk_type == str(risk_type)
-                and handoff.identity.risk_greek == str(risk_greek)
-            ):
-                preferred = catalog_key_for_handoff(catalog, handoff.to_mapping())
-            use_preferred = (
-                ctx.triggered_id == "data-history-request-store"
-                or (
-                    ctx.triggered_id == "data-history-catalog-store"
-                    and current in (None, QUICK_HANDOFF_ENTRY_KEY)
-                )
-            )
-            if not use_preferred:
-                preferred = None
-            options = underlying_options(
-                catalog, kind, identity_mode, risk_type, risk_greek,
-                search_value=search_value, limit=100,
-                include=preferred or current,
-            )
-            selected = selected_value(options, current, preferred)
-            return options, selected, selected is None
-        except (OSError, HistoryValidationError, TypeError, ValueError):
-            return [], None, True
-```
-
-This callback sends at most 100 choices, keeps a selected choice outside the first 100, and does not restore the previous loaded request merely because you typed again or a catalog refresh completed. The current browser selection remains browser/session state, not a mutable module global.
-
-#### B6.5. Create a history request
-
-Replace `choose_history_request` and its decorator. The selected opaque key is resolved against `repository.catalog()`; the generation marker is never parsed as a full catalog. Keep the function name singular as shown.
-
-```python
-    @app.callback(
+        Output("data-risk-scope-caption", "children"),
+        Output("data-draft-status", "children"),
         Output("data-history-request-store", "data"),
         Output("data-history-handoff-consumed-store", "data"),
         Input("data-history-handoff-store", "data"),
+        Input("data-history-catalog-store", "modified_timestamp", allow_optional=True),
+        Input("data-display-mode", "value", allow_optional=True),
+        Input("data-series-picker", "value", allow_optional=True),
+        Input("data-companion-picker", "value", allow_optional=True),
+        Input("data-clear-risk-scope", "n_clicks", allow_optional=True),
         Input("data-load-history-button", "n_clicks", allow_optional=True),
         Input("reset-generation-store", "data"),
-        State("data-history-kind-tabs", "value", allow_optional=True),
-        State("data-history-catalog-store", "data", allow_optional=True),
-        State("data-underlying", "value", allow_optional=True),
-        State("data-period", "value", allow_optional=True),
-        State("data-custom-range", "start_date", allow_optional=True),
-        State("data-custom-range", "end_date", allow_optional=True),
-        State("data-history-request-store", "data", allow_optional=True),
+        Input("data-period", "value", allow_optional=True),
+        Input("data-custom-range", "start_date", allow_optional=True),
+        Input("data-custom-range", "end_date", allow_optional=True),
+        Input("data-series-picker", "search_value", allow_optional=True),
+        Input("data-companion-picker", "search_value", allow_optional=True),
+        State("data-workspace-draft-store", "data", allow_optional=True),
         State("data-history-handoff-consumed-store", "data"),
+        State("data-history-request-store", "data"),
+        State("data-history-catalog-store", "data", allow_optional=True),
+        prevent_initial_call=False,
     )
-    def choose_history_request(
-        raw_handoff,
-        load_clicks,
-        reset_generation,
-        kind,
-        raw_catalog,
-        entry_key,
-        period,
-        start_date,
-        end_date,
-        current_request,
-        consumed_nonce,
-    ):
-        triggered = ctx.triggered_id
-        if triggered is None and raw_handoff is None:
-            return no_update, no_update
-        if (
-            triggered == "data-load-history-button"
-            and int(load_clicks or 0) <= 0
-            and raw_handoff is None
-        ):
-            return no_update, no_update
-        if triggered == "data-history-handoff-store":
-            if raw_handoff is None:
-                return no_update, no_update
-            try:
-                handoff_nonce = _stored_handoff_nonce(raw_handoff)
-            except (HistoryValidationError, TypeError, ValueError):
-                handoff_nonce = ""
-            if handoff_nonce and handoff_nonce == str(consumed_nonce or ""):
-                return no_update, no_update
-        try:
-            reset = int(reset_generation or 0)
-        except (TypeError, ValueError):
-            reset = 0
-        try:
-            if triggered == "data-load-history-button" and int(load_clicks or 0) > 0:
-                if entry_key == QUICK_HANDOFF_ENTRY_KEY:
-                    handoff = _stored_history_handoff(raw_handoff)
-                    if handoff.kind != str(kind or "risk").strip().casefold():
-                        raise HistoryValidationError(
-                            "Quick history identity belongs to another tab"
-                        )
-                    handoff = replace(handoff, reset_generation=reset)
-                else:
-                    handoff = direct_history_handoff(
-                        repository.catalog(),
-                        entry_key,
-                        kind=kind,
-                        reset_generation=reset,
-                    )
-                return history_request_payload(
-                    handoff,
-                    period=period,
-                    start_date=start_date,
-                    end_date=end_date,
-                    request_id=f"load-{int(load_clicks or 0)}-{reset}",
-                ), no_update
-            if triggered == "reset-generation-store":
-                if current_request is None:
-                    return no_update, no_update
-                query = _request_query(current_request)
-                return history_request_payload(
-                    replace(query.handoff, reset_generation=reset),
-                    period=query.period,
-                    start_date=query.start_date,
-                    end_date=query.end_date,
-                    request_id=f"reset-{reset}",
-                ), no_update
-            handoff = _stored_history_handoff(raw_handoff)
-            nonce = _stored_handoff_nonce(raw_handoff)
-            return history_request_payload(
-                replace(handoff, reset_generation=reset),
-                period=period,
-                start_date=start_date,
-                end_date=end_date,
-                request_id=f"quick-{nonce}-{reset}",
-            ), nonce
-        except (OSError, HistoryValidationError, TypeError, ValueError) as error:
-            detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
-            return {
-                "error": detail,
-                "request_id": f"invalid-{triggered}-{int(load_clicks or 0)}-{reset}",
-            }, no_update
 ```
 
-The `raw_catalog` argument is retained to match the existing callback State signature; it is only a readiness marker now. The Quick handoff branch, nonce consumption, reset behavior, exact identity validation, and standard `HistoryQuery` construction remain intact.
+There are **13 Inputs, then 4 States**, matching the seventeen JavaScript arguments exactly:
 
-### B7. Use the complete Underlying dropdown block
-
-Open `cube/pages/data/s02_view.py`, inside `build_data_page`.
-
-Find the `html.Div` whose label is “Underlying” and whose dropdown has `id="data-underlying"`. Replace that one complete control block with the following. Keep it beside the existing Risk Type and Risk Greek controls; do not add a second dropdown with the same ID. Indent it to match its sibling control blocks.
-
-```python
-html.Div(
-    [
-        html.Label("Underlying", htmlFor="data-underlying"),
-        dcc.Dropdown(
-            id="data-underlying",
-            options=[],
-            value=None,
-            clearable=False,
-            searchable=True,
-            placeholder="Type an underlying — up to 100 matches",
-        ),
-    ],
-    className="data-control data-underlying-control",
-),
-```
-
-Keep the existing `html`, `dcc`, and other imports. Keep the catalog store as this single component; there must be no default `entries` payload:
-
-```python
-dcc.Store(id="data-history-catalog-store", storage_type="memory"),
-```
-
-Keep the existing catalog-status component beside the Load history button. Its complete replacement is:
-
-```python
-html.Span(
-    "Preparing archive choices…",
-    id="data-catalog-status",
-    className="data-history-status",
-),
-```
-
-Keep the rest of `build_data_page`: tabs, identity-mode control, other selectors, load button, periods/dates, result stores, player controls, and graph. No whole-page loading overlay is needed. If you add a spinner, place it only around the identity controls; never cover the shared navigation.
-
-### B8. Check the dependency boundary before restarting
-
-These are existing parts of the application, not new functions to create for this optimization:
-
-| Keep | Why it remains |
+| Positions | Arguments |
 |---|---|
-| `ArchiveHistoryRepository.catalog()` | Owns/caches all archive identities and generation invalidation |
-| `HistoryIdentityCatalog.resolve()` | Resolves an exact opaque identity key |
-| `configure_identity_mode`, `sync_quick_handoff`, `configure_request` | Keep tabs, raw/reported mode, and breadcrumb consistent |
-| `refresh_archive_generation` / `poll_archive_generation` | Update the archive-generation marker and clear caches correctly |
-| `load_history` / `query_history_bundle` | Execute the requested history query |
-| `serialize_history_bundle` and clientside playback callbacks | Keep current chart/play-pause behavior and history budgets |
-| Shared `data-history-handoff-store`, `data-history-request-store`, and consumed-nonce store | Carry Quick handoffs and the active history request across pages |
+| 1–5 | `rawQuick`, `catalogTimestamp`, `mode`, `primaryKey`, `companionKey` |
+| 6–11 | `clearClicks`, `loadClicks`, `reset`, `period`, `start`, `end` |
+| 12–13 — new Inputs | `primarySearch`, `companionSearch` |
+| 14–17 — existing States | `previous`, `consumed`, `loaded`, `rawCatalog` |
 
-Run from the repository root:
+The thirteen Outputs and their return order remain unchanged. In particular, the browser editor owns the Load button's disabled property and the submitted request. The Python loader may keep its existing running-state button text.
 
-```powershell
-rg -n 'data-history-catalog-store|raw_catalog|catalog.to_mapping' cube/pages/data
+Keep catalogue **modified_timestamp as Input** and complete catalogue **data as State**. Do not change it back to catalogue data as Input: the earlier Quick-prefill repair uses this arrangement so an incoming Quick selection can appear while the catalogue callback is pending. The new search Inputs must not be added to catalogue preparation or history loading.
+
+### B5. Keep the two existing dropdowns searchable
+
+In `cube/pages/data/s02_view.py`, find the existing `dcc.Dropdown` with `id="data-series-picker"`, and the one with `id="data-companion-picker"`. Do not add a second pair.
+
+The minimal complete copies are below. Keep each in its existing wrapper, keep the existing mode control, companion label/visibility wrapper, and preserve additional local `className`, `style`, `persistence` or accessibility settings when applying these properties. The picker values are still owned by the browser editor.
+
+```python
+dcc.Dropdown(
+    id="data-series-picker",
+    options=[],
+    value=None,
+    searchable=True,
+    clearable=True,
+    placeholder="Type a series — up to 100 matches",
+),
 ```
 
-Confirm that `load_archive_catalog` returns only generation/status and that all three selectors plus direct history loading resolve against the typed server catalog. Do not pass the generation-only dictionary into `HistoryIdentityCatalog.from_mapping` or `direct_history_handoff`, and do not weaken their validators to accept it.
-
-### B9. Restart once, then verify
-
-1. Open Data and immediately navigate away while the first catalog prepares. Navigation must remain usable. Test a cold start and a second visit separately.
-2. Inspect browser Network responses: the catalog response must have generation/status only; Underlying options must contain at most 100 choices including the retained selection.
-3. Search with case differences, punctuation, multiple words, an identity beyond the first 100, and duplicate labels with different Source Types. Select an instrument, load it, then select/type another: the earlier loaded instrument must not keep coming back.
-4. Test an archived-only identity absent from today's Quick search. It must still be available. The 100-choice cap must not truncate its historical rows or dates.
-5. Test direct Data entry; Quick Risk and Quick Market handoffs before and after the archive catalog is ready; Risk Reported/Raw modes; Market mode; Clear Cache; and a newly completed archive generation.
-6. Verify that typing in Underlying does not query/load a history bundle. Explicit Load history and a Quick handoff remain the request triggers.
-7. If latency remains, compare existing `history.archive.open` and `history.catalog.query` log spans with response size and browser rendering time. Cold archive validation can still take seconds. If navigation requests queue, check storage/CPU contention and that deployment matches `gunicorn.conf.py`: one `gthread` worker, four threads by default through `GUNICORN_THREADS`. Keep one worker because snapshot/progress state is process-local; adding workers is not a safe shortcut here.
-
-Do not promise an unmeasured production speedup. This patch removes the whole-catalog browser transfer/reconstruction and unbounded choice rendering; it preserves the existing archive query and financial-data contracts.
-
-### B10. Roll back as one group if needed
-
-Revert Part B's edits in `cube/history/s01_models.py`, `cube/pages/data/s01_selection.py`, `cube/pages/data/s02_view.py`, and `cube/pages/data/s03_callbacks.py` together, then restart. Do not revert only the store or only one consumer. No archives, positions, or connector outputs are rewritten by this change.
-
-## Final checks and rollback
-
-These snippets were checked against the stated source in an isolated local candidate. The chart callback registered and ran; a 300-point curve retained all points and correct Total/XVA/Hedges sums. Checks covered shared include/exclude filters, revision mismatch, invalid view reset, surface tenor order, missing cells versus zero, padded tenor labels, mixed/scalar coverage and the surface allocation check. The dedicated chart layout contains unique component IDs and no detail tables.
-
-Synthetic curve and surface previews were rendered and visually inspected in a local Chromium browser. At 1440px, 800px and 390px viewport widths they had no page overflow or JavaScript errors. This validates the chart design in a standalone preview; it is not a full end-to-end test of your deployed app, its themes, browser extensions or long production labels. At phone width a heatmap naturally has less space; check your real tenor vocabulary after implementation.
-
-The Data section's complete imported helpers and five replacement callback blocks were executed and registered. A 503-identity fixture covered the 100-choice total, a retained identity outside the first page, archived-only selection, Risk raw/reported and Market modes, punctuation search, prior-request retention rules, Quick handoff before catalog readiness, nonce consumption, and reset handling. These are correctness checks, not a measured production speedup.
-
-Run the Quick Risk and Data tests in your own checkout, adapting any tests that assert the old full browser catalog or import the removed figure function. Add the edge cases listed in A7/B9 to your existing test files. Check Python imports and Dash callback registration, then perform the browser checks. Finally run:
-
-```powershell
-git diff --check
-git diff --stat
+```python
+dcc.Dropdown(
+    id="data-companion-picker",
+    options=[],
+    value=None,
+    searchable=True,
+    clearable=True,
+    placeholder="Type a companion — up to 100 matches",
+),
 ```
 
-To undo Part A, restore your pre-change `s08_quickrisk.py`, `s14_workspacecallbacks.py` and the appended CSS block together; remove `s16_quickriskcharts.py` only after its import/callback has been restored. Keep unrelated CSS or local table customizations. To undo Part B, restore its four files together as described in B10. Restart after either rollback. No archive, JTD CSV, live connector, saved position or financial result is rewritten by implementing this guide.
+Typing changes only the bounded option list. A currently selected item is kept in that list even if it is outside the search result, so its value/label does not disappear. Both mode still uses an exact Risk plus Market pair. Display names are never parsed to reconstruct financial identities.
 
-## Source references
+### B6. Keep catalogue preparation independent and keep all identities
 
-These links are pinned to the application baseline so the instructions remain checkable after the branch moves:
+This is a wiring check; do not replace the working catalogue helper with one from the old Part B.
 
-- [Quick Risk layout and original hierarchy/figure](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s08_quickrisk.py)
-- [Workspace callback registration and shared filters](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s14_workspacecallbacks.py)
-- [Existing risk aggregation and tenor-order authority](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/ui/s02_aggregation.py)
-- [Existing tenor selector, kept separate from the new chart presentation](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s05_charts.py)
-- [Data callbacks and current request wiring](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/data/s03_callbacks.py)
-- [Data layout and dropdown IDs](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/data/s02_view.py)
+1. Keep your current helper and argument order. Existing versions use either `load_data_catalog(manager, repository, cache_state)` or `load_archive_catalog(repository, cache_state, refresh_manager)`. Both refer here to your already-implemented **current-plus-archive** logic. A matching name alone is not proof the body is correct.
+2. Keep the complete identity catalogue in `data-history-catalog-store`. It includes `generation`, `entries`, and your existing revision metadata. Each entry needs its existing `key`, `kind`, `identity`, `source_revision` and `snapshot_date`. Keep the exact identity's `source_types`, `risk_type`, `risk_greek`, `underlying` and `identity_mode` fields. Do not add positions or history values to this catalogue.
+3. Keep the existing bulk `SearchCatalog.history_identities()` and manager `data_history_identities()` path, plus the archive/current merge and cache invalidation. Current-only and archived-only series must both remain discoverable.
+4. In `refresh_archive_catalog`, retain the cache-state Input and its existing committed revision Input: either `data-revision-store.data` or `refresh-commit-revision.children`, whichever your app already uses. Keep its Outputs, State, helper call and error handling.
+5. Remove only selector, search, draft-date, request or player-tick Inputs that were accidentally attached to that catalogue callback, plus their matching positional parameters. It should not rebuild because you type, change mode, move a slider or press Load. Keep initial invocation enabled.
 
-Publishing this Markdown updates the implementation instructions only. Apply the code changes and run the deployment checks to change the running application.
+**This clientside approach still sends the full identity catalogue when it changes.** It avoids repeated server selection work and sending thousands of options into each dropdown. It does not eliminate the first archive scan, initial JSON transfer or first index build. Do not promise that a slow initial provider/archive read has been fixed by this UI change.
+
+### B7. Preserve the metadata and financial-load boundary
+
+If the earlier clientside repair is already working, keep these parts. The complete metadata callback is included so you do not have to reconstruct its old request dependency.
+
+Inside the same `register_callbacks`, `refresh_archive_generation` should be registered once as follows, using the existing `repository` and `poll_archive_generation` helper:
+
+```python
+    @app.callback(
+        Output("data-history-cache-state-store", "data"),
+        Output("data-clear-status", "children"),
+        Input("data-history-generation-interval", "n_intervals"),
+        Input("clear-cache-complete-store", "data"),
+        State("data-history-cache-state-store", "data"),
+        prevent_initial_call=False,
+    )
+    def refresh_archive_generation(
+        _intervals,
+        reset_generation,
+        previous_state,
+    ):
+        return poll_archive_generation(
+            repository,
+            None,
+            previous_state,
+            reset_generation,
+        )
+```
+
+Keep the existing metadata interval enabled at `interval=60_000`, starting with `n_intervals=0`. This metadata interval does not belong to Play/Pause. There must be no selected-request Input on the metadata callback; ignoring that argument in the body would still leave a dependency loop.
+
+Keep `load_workspace`'s submitted-request, cache-state, reset and existing committed-revision Inputs. Preserve its parser, `query_workspace_bundle`, current-observation reader, captions, errors and output order. Do not add search, picker, mode, draft-date or player-tick Inputs to it.
+
+For the existing three-output loader, keep its initial guard and the metadata guard below before the `try`/query call. If they already exist, leave them once. Keep `Mapping` imported from `collections.abc` or your existing compatible import.
+
+```python
+        if raw_request is None:
+            return None, "Choose a series and press Load", "No loaded selection"
+        if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
+            return (
+                None,
+                "Preparing history metadata…",
+                "Selection ready; waiting for history metadata",
+            )
+```
+
+The rest of the loader stays as implemented. An empty archive may still have valid metadata and a real current observation; do not require nonempty history or a selected catalogue entry before accepting a fresh Quick request. If your loader has additional intentional Outputs, its guard must preserve their existing return arity too.
+
+### B8. Check ownership and restart
+
+1. Save the JavaScript and the one registration change together. Save dropdown or dependency corrections only where needed.
+2. Search your app for `workspaceEditor`: there should be one function export and one active clientside registration. No legacy Python selector should also own its Outputs.
+3. Check that there are exactly thirteen matching return values on every editor path and that the thirteen Inputs/four States match B4. A missing/unmounted Data control must not erase the shared request.
+4. Confirm that the catalogue still contains `entries`. Confirm that `load_workspace` receives immutable submitted requests, not search strings or the editor's draft.
+5. Restart using your normal launcher, then hard-refresh the browser to load the new asset. Keep backups out of `assets/`.
+
+Optional syntax checks from the application directory:
+
+```powershell
+node --check assets/data_workspace_editor.js
+```
+
+If Node is unavailable in your deployment, use the browser console and the checks below; no new Node installation is required to run the app.
+
+```python
+from pathlib import Path
+
+for name in ("cube/pages/data/s03_callbacks.py", "cube/pages/data/s02_view.py"):
+    path = Path(name)
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    print("Python syntax OK:", name)
+```
+
+### B9. Check the actual user flows
+
+1. Open Data directly. After catalogue readiness, search a series beyond the first 100 and load it. No previous Quick search is required.
+2. Try case differences, spaces and punctuation, such as `eurusd` versus `EUR/USD`. Search both the primary and companion dropdowns. Each options result must contain at most 100 items including its current selection.
+3. Keep a selected value while typing unrelated text, clearing the search text, changing modes and receiving a catalogue update. A previously loaded request must not overwrite a newer manual choice.
+4. Open from Quick Risk while catalogue preparation is pending. The imported identity and Risk scope must appear; catalogue arrival must preserve them and not issue a second request. Repeat from Quick Market; Market must not acquire Portfolio filters.
+5. In Both mode, verify raw exact identities pair only when unambiguous. Reported Risk baskets require the appropriate explicit Market companion. Clear a companion and confirm it stays cleared until you choose again.
+6. Type, change mode, change period and move the player. Those actions must not invoke the financial loader. Load submits the current valid draft once; a fresh Quick handoff also submits once. Independent periodic metadata traffic is expected.
+7. Check a current-only series with no history and an archived-only series absent today. Both must still be selectable, with their existing reader behavior intact.
+8. Leave Data and return. An already consumed Quick nonce must not reset a manual selection; a new nonce should work. Clear Cache invalidates the old request and retains the existing reload instruction.
+9. Check invalid dates, stale Quick reset, missing companion, bad identity and a removed catalogue identity. The editor shows an error/unavailable state; Python still rejects invalid submitted requests independently. Failed loads must not relabel old figures as new results.
+10. Compare first visit with repeat typing/mode changes. If the remaining delay happens before catalogue readiness, inspect catalogue preparation/storage/network. If it happens only on Load, inspect the existing reader/rendering spans. Do not change history limits or omit data to disguise that delay.
+
+### B10. Roll back only this repair if required
+
+Restore the prior working browser-editor JavaScript and its matching registration together, then restart and hard-refresh. Revert only dropdown/dependency edits made for this repair. Keep the unified Data page, current-plus-archive catalogue, validated loader and playback. Do not roll back to the obsolete five-selector Part B. No financial data or saved archives are rewritten by these changes.
+
+## Verification and source references
+
+Part A's dedicated chart code is unchanged in this correction. Its previous isolated checks covered 300 complete curve points, Total/XVA/Hedges reconciliation, one y-axis, missing/zero surface cells, connector order, mixed/scalar shapes, filters and revision mismatch. Synthetic curve/surface previews were inspected in a browser at 1440px, 800px and 390px with no page overflow or JavaScript errors. These were preview checks, not tests of your deployed app.
+
+The corrected Part B is validated separately against the supplied browser-editor code and its complete callback registration. The validation results below are recorded after running those checks; a fixture or local benchmark is not a production latency guarantee.
+
+Node syntax and regression checks passed for 72 editor transitions, including the 100-option caps, normal/virtual selected-value retention, punctuation/case search, primary/companion behavior, resets, stale handoffs, bad metadata and reuse/invalidation of the metadata index. All seven emitted sample requests passed the existing unified-workspace Python parser against the v7 history-model contracts.
+
+The complete replacement registration was exercised in a local Dash 4.4.0 browser fixture using 2,406 invented catalogue identities. Quick prefill worked while catalogue delivery was deliberately held open; release preserved the selection without another load. Searches reached an identity beyond the first 100, retained selections through unrelated search text, and supported both primary and companion selection. The fixture recorded exactly two financial-load calls: the initial fresh Quick request and one explicit Both Load. Typing, mode changes and draft-period changes added none. No JavaScript page errors occurred. This tests the supplied editor/registration with a fixture loader, not your production providers or archive timings.
+
+Source references:
+
+- [Earlier complete browser editor and thirteen-output registration](https://github.com/streamlitdash/Rebirth-V5/blob/335bdce6453b7544d4eac436b7094f35c14864c6/DATA_INTERACTION_FIX.md)
+- [Original Quick Risk layout and hierarchy](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/pages/risk/s08_quickrisk.py)
+- [Shared risk aggregation and tenor order](https://github.com/streamlitdash/Rebirth-V5/blob/2220a3f4839318863a9131e3fef8118d0f82fb7d/cube/ui/s02_aggregation.py)
+
+The old Data source in untouched v7 does not contain `workspaceEditor`; the earlier guide above supplied it for the unified implementation. This corrected guide follows that clientside contract instead of pretending the old selector callbacks belong in your current page.
+
+Run `git diff --check` and inspect your own diff before committing application changes. Publishing this Markdown changes the guide only.
