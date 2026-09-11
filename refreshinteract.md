@@ -2,6 +2,8 @@
 
 Apply this after your implemented `Hero.md`. The hero should remain visible until its work finishes **and you should still be able to navigate, change filters, select an underlying and use Quick Risk/Quick Market while it runs**. Those views use the last committed snapshot until a new one is available.
 
+Section 5D adds the complete repair/checks for a hero panel stuck on its waiting placeholder.
+
 This guide repairs the interaction path. It does not remove the full-completion checks from `Hero.md`. It also supersedes that guide's instruction to preserve the old revision publisher if you already installed the earlier interaction fix.
 
 ## 1. What went wrong, and what is confirmed
@@ -266,6 +268,466 @@ In any newly added Hero JavaScript, remove only page-lock operations such as set
 
 Do not delete `refreshProgressState` to unlock the page. Do not bring back the 300 ms auto-hide timer. Do not make the hero transparent to conceal a still-running task.
 
+### 5D. Restore the full hero when its place contains only “Waiting for Server”
+
+This section corrects the missing display-restoration step in `Hero.md` sections 1.6 and 1.9. The pasted 1.6 code made a replacement panel visible, but restoring its contents was left to later prose. A fresh panel could therefore retain its waiting placeholder while the real refresh state survived.
+
+This is a confirmed gap in the earlier instructions, and a possible explanation for your panel. Your locally implemented application has not been inspected. The repair below handles a replaced hero panel and checks whether the full markup is present. It does not turn a failed status request into a successful refresh.
+
+Keep the rest of this document. If steps 3–5C are already installed, start here. All JavaScript edits below belong in the existing `assets/s12_refresh.js`; keep the JTD click changes in `assets/s13_risk.js`.
+
+#### 5D.1 Check whether the real hero is present
+
+While the waiting panel is showing, open Browser Developer Tools → Console and run this read-only check:
+
+```javascript
+(() => {
+  const panels = document.querySelectorAll('[id="refresh-progress"]');
+  const panel = panels[0];
+  const required = [
+    "refresh-progress-title", "refresh-progress-elapsed",
+    "refresh-progress-product", "refresh-progress-function",
+    "refresh-progress-source", "refresh-progress-count", "refresh-progress-hold",
+    "refresh-progress-bar-track", "refresh-progress-bar",
+    "refresh-stage-readiness", "refresh-stage-risk", "refresh-stage-market",
+    "refresh-stage-pl", "refresh-stage-final",
+  ];
+  const selectors = required.map(id => `[id="${id}"]`);
+  for (const stage of ["readiness", "risk", "market", "pl", "final"]) {
+    for (const part of ["icon", "function", "duration"]) {
+      selectors.push(`#refresh-stage-${stage} .refresh-stage-${part}`);
+    }
+  }
+  return {
+    panelCount: panels.length,
+    missing: selectors.filter(selector => !panel?.querySelector(selector)),
+    title: panel?.querySelector("#refresh-progress-title")?.textContent,
+    detail: panel?.querySelector("#refresh-progress-function")?.textContent,
+    hidden: panel?.hidden,
+  };
+})()
+```
+
+- `panelCount` should be **1**, with `missing: []` once the page has mounted.
+- If IDs are missing, the panel may be a small placeholder instead of the real hero. Use 5D.2 to recover its existing layout.
+- If the full structure is present, skip the optional Python replacement and use 5D.3–5D.5 to restore its current display after replacement.
+- If `panelCount` is greater than one, remove the accidentally duplicated hero from the page layout. Keep the one in `shared-refresh-shell`; two elements with the same IDs can send updates to the wrong panel.
+
+Do not replace the whole page with a loading tab or a `html.Div("Waiting for Server", id="refresh-progress")`. The IDs above are where the existing JavaScript writes the real progress.
+
+#### 5D.2 Only if the hero layout was replaced: restore its existing builder
+
+**File: `cube/ui/s04_components.py`.** Find `def _build_refresh_progress(`. Replace only that function, stopping immediately before `def build_shared_refresh_shell(`, with this complete copy of the inspected existing builder. If this full builder is already present and the check above passes, leave it alone.
+
+Keep the existing `Mapping` and Dash `html` imports and the existing `build_cube_loader()` in this module. This copy uses those existing names; it adds no package or callback.
+
+```python
+def _build_refresh_progress(
+    stage_delays: Mapping[str, float] | None,
+    *,
+    initial_loading: bool = False,
+    initial_error: bool = False,
+) -> html.Div:
+    """Build the shared progress hero without performing any source work."""
+    stage_delay_values = dict(stage_delays or {})
+    visible = initial_loading or initial_error
+    if initial_error:
+        title = "Initial data load failed"
+        product = "No financial snapshot was published"
+        function_name = "Use Retry after checking the connector error"
+        class_name = "refresh-progress is-error"
+    elif initial_loading:
+        title = "Loading Cube data"
+        product = "Preparing the first validated snapshot"
+        function_name = "Waiting for the server-started refresh"
+        class_name = "refresh-progress is-running"
+    else:
+        title = "Refresh pipeline"
+        product = "Preparing product queue"
+        function_name = "Waiting for refresh request"
+        class_name = "refresh-progress"
+
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            build_cube_loader("Refreshing Cube data", announce=False),
+                            html.Span(
+                                title,
+                                id="refresh-progress-title",
+                                className="refresh-progress-title",
+                            ),
+                        ],
+                        className="refresh-progress-title-wrap",
+                    ),
+                    html.Span(
+                        "",
+                        id="refresh-progress-elapsed",
+                        className="refresh-progress-elapsed",
+                        **{"aria-hidden": "true"},
+                    ),
+                ],
+                className="refresh-progress-header",
+            ),
+            html.Div(
+                [
+                    html.Strong(
+                        product,
+                        id="refresh-progress-product",
+                        className="refresh-product-name",
+                    ),
+                    html.Span("Active call", className="refresh-function-label"),
+                    html.Code(
+                        function_name,
+                        id="refresh-progress-function",
+                        className="refresh-function-name",
+                    ),
+                    html.Span(
+                        "",
+                        id="refresh-progress-source",
+                        className="refresh-function-source",
+                    ),
+                    html.Span(
+                        "",
+                        id="refresh-progress-count",
+                        className="refresh-function-count",
+                    ),
+                    html.Span(
+                        "",
+                        id="refresh-progress-hold",
+                        className="refresh-function-hold",
+                    ),
+                    html.Span(
+                        html.Span(
+                            id="refresh-progress-bar",
+                            className="refresh-progress-bar-fill",
+                        ),
+                        id="refresh-progress-bar-track",
+                        className="refresh-progress-bar-track",
+                    ),
+                ],
+                className="refresh-function-live refresh-product-card",
+                role="status",
+                **{"aria-live": "polite", "aria-atomic": "true"},
+            ),
+            (
+                None
+                if initial_loading or initial_error
+                else html.P(
+                    "The current committed snapshot stays usable while a staged refresh runs; refresh controls are locked until it finishes.",
+                    className="refresh-progress-note",
+                )
+            ),
+            html.Ol(
+                [
+                    html.Li(
+                        [
+                            html.Span("", className="refresh-stage-icon"),
+                            html.Span(
+                                "Load RiskChecker readiness",
+                                className="refresh-stage-function",
+                            ),
+                            html.Span(className="refresh-stage-duration"),
+                        ],
+                        id="refresh-stage-readiness",
+                        className="refresh-stage",
+                    ),
+                    html.Li(
+                        [
+                            html.Span("", className="refresh-stage-icon"),
+                            html.Span(
+                                "Risk & @risk product calls (if dates changed)",
+                                className="refresh-stage-function",
+                            ),
+                            html.Span(className="refresh-stage-duration"),
+                        ],
+                        id="refresh-stage-risk",
+                        className="refresh-stage",
+                    ),
+                    html.Li(
+                        [
+                            html.Span("", className="refresh-stage-icon"),
+                            html.Span(
+                                "Open + Current market",
+                                className="refresh-stage-function",
+                            ),
+                            html.Span(className="refresh-stage-duration"),
+                        ],
+                        id="refresh-stage-market",
+                        className="refresh-stage",
+                    ),
+                    html.Li(
+                        [
+                            html.Span("", className="refresh-stage-icon"),
+                            html.Span(
+                                "Calculate product P&L",
+                                className="refresh-stage-function",
+                            ),
+                            html.Span(className="refresh-stage-duration"),
+                        ],
+                        id="refresh-stage-pl",
+                        className="refresh-stage",
+                    ),
+                    html.Li(
+                        [
+                            html.Span("", className="refresh-stage-icon"),
+                            html.Span(
+                                "Validate + publish snapshot",
+                                className="refresh-stage-function",
+                            ),
+                            html.Span("Finalising", className="refresh-stage-duration"),
+                        ],
+                        id="refresh-stage-final",
+                        className="refresh-stage",
+                    ),
+                ],
+                className="refresh-stage-list",
+            ),
+        ],
+        id="refresh-progress",
+        className=class_name,
+        hidden=not visible,
+        **{
+            "data-risk-product-delay": str(
+                0.0
+                if initial_loading or initial_error
+                else stage_delay_values.get("risk_product", 0.0)
+            ),
+            "data-initial-load": "true" if visible else "false",
+        },
+    )
+```
+
+Inside `build_shared_refresh_shell()`, keep the existing call below. If you replaced that call with a waiting label, restore the call in its original place after `refresh-control-strip`. Do not add a second copy.
+
+```python
+            (
+                _build_refresh_progress(
+                    stage_delays,
+                    initial_loading=initial_loading,
+                    initial_error=bool(error),
+                )
+                if refresh_enabled
+                else None
+            ),
+```
+
+Keep its actual flags. Do not hardcode `initial_loading=True` to keep the hero visible: that would mislabel a warm page as initial startup. An idle hero before the first action is hidden; the existing lifecycle shows it when work starts and keeps a completed result visible according to your Hero implementation. Do not add a callback that replaces `refresh-progress.children` or the shared shell on every poll.
+
+#### 5D.3 Add the complete display-restoration helper
+
+**File: `assets/s12_refresh.js`.** Immediately after the existing line below, add the full helper. Keep that line and the following `normalizeProgressStage` function.
+
+```javascript
+    const REFRESH_STAGES = ["readiness", "risk", "market", "pl", "final"];
+```
+
+The existing `refreshProgressState.panel` still points to the old hero when Dash replaces it. The helper transfers only its known text, stage styling and progress attributes into the new layout, then updates that one pointer. It preserves the current title, error and “Updating displayed tables” wording without guessing your locally implemented classifier's phase-field names.
+
+```javascript
+    const restoreRefreshPanel = () => {
+      const state = refreshProgressState;
+      if (!state) return;
+      const replacement = document.getElementById("refresh-progress");
+      // A temporary DOM gap does not end the request or its clocks.
+      if (!replacement) return;
+      if (state.panel === replacement && replacement.isConnected) {
+        if (replacement.hidden) replacement.hidden = false;
+        return;
+      }
+
+      const previous = state.panel;
+      const textSelectors = [
+        "#refresh-progress-title", "#refresh-progress-elapsed",
+        "#refresh-progress-product", "#refresh-progress-function",
+        "#refresh-progress-source", "#refresh-progress-count",
+        "#refresh-progress-hold",
+        ...REFRESH_STAGES.flatMap((stage) => [
+          `#refresh-stage-${stage} .refresh-stage-icon`,
+          `#refresh-stage-${stage} .refresh-stage-function`,
+          `#refresh-stage-${stage} .refresh-stage-duration`,
+        ]),
+      ];
+      const statusSelectors = [
+        ...REFRESH_STAGES.map((stage) => `#refresh-stage-${stage}`),
+        "#refresh-progress-bar-track", "#refresh-progress-bar",
+      ];
+      const selectors = [...textSelectors, ...statusSelectors];
+      const hasCompletePanel = (panel) => Boolean(
+        panel && selectors.every((selector) => panel.querySelector(selector)),
+      );
+      if (!hasCompletePanel(replacement)) {
+        // Retain the old panel until Dash has mounted all of the new children.
+        if (replacement.hidden) replacement.hidden = false;
+        const title = replacement.querySelector("#refresh-progress-title");
+        if (title && title.textContent !== "Refresh panel is still mounting") {
+          title.textContent = "Refresh panel is still mounting";
+        }
+        return;
+      }
+
+      const states = ["is-running", "is-active", "is-complete", "is-skipped", "is-error"];
+      const aria = ["role", "aria-valuemin", "aria-valuenow", "aria-valuemax", "aria-label", "aria-valuetext"];
+      const copyStatus = (from, to) => {
+        states.forEach((name) => to.classList.toggle(name, from.classList.contains(name)));
+        aria.forEach((name) => {
+          if (from.hasAttribute(name)) to.setAttribute(name, from.getAttribute(name));
+          else to.removeAttribute(name);
+        });
+      };
+      if (hasCompletePanel(previous)) {
+        textSelectors.forEach((selector) => {
+          replacement.querySelector(selector).textContent = previous.querySelector(selector).textContent;
+        });
+        copyStatus(previous, replacement);
+        statusSelectors.forEach((selector) => {
+          const from = previous.querySelector(selector);
+          const to = replacement.querySelector(selector);
+          copyStatus(from, to);
+          to.hidden = from.hidden;
+          ["width", "--stage-progress"].forEach((property) => {
+            const value = from.style.getPropertyValue(property);
+            if (value) to.style.setProperty(property, value);
+            else to.style.removeProperty(property);
+          });
+        });
+        if (previous.hasAttribute("data-progress-source")) {
+          replacement.setAttribute("data-progress-source", previous.getAttribute("data-progress-source"));
+        } else replacement.removeAttribute("data-progress-source");
+      } else {
+        // Lost markup is not proof of backend success or failure.
+        states.forEach((name) => replacement.classList.remove(name));
+        replacement.classList.add(state.backendError ? "is-error" : "is-running");
+        replacement.querySelector("#refresh-progress-title").textContent = state.backendError
+          ? "Refresh error — checking status"
+          : "Refresh status not confirmed";
+        replacement.querySelector("#refresh-progress-product").textContent = state.backendError
+          || "The previous progress display could not be restored";
+        replacement.querySelector("#refresh-progress-function").textContent =
+          "Waiting for the next confirmed progress update";
+        ["source", "count", "hold"].forEach((suffix) => {
+          replacement.querySelector(`#refresh-progress-${suffix}`).textContent = "";
+        });
+        replacement.querySelector("#refresh-progress-bar-track").hidden = true;
+        REFRESH_STAGES.forEach((stage) => {
+          const row = replacement.querySelector(`#refresh-stage-${stage}`);
+          states.forEach((name) => row.classList.remove(name));
+          aria.forEach((name) => row.removeAttribute(name));
+          row.style.removeProperty("--stage-progress");
+          row.querySelector(".refresh-stage-duration").textContent = "Status not confirmed";
+        });
+        replacement.dataset.progressSource = "pending";
+      }
+      state.panel = replacement;
+      replacement.hidden = false;
+      const elapsed = replacement.querySelector("#refresh-progress-elapsed");
+      if (Number.isFinite(state.startedAt)) {
+        elapsed.textContent = `${Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000))}s elapsed`;
+      }
+    };
+```
+
+This adds one function, not a callback or a second refresh state. It does not clone HTML, retain table data, fetch progress, mark a task complete, or create a timer. It restores the **last displayed** progress; normal accepted updates continue advancing it. A temporary missing/incomplete panel keeps the old pointer so that restoration can happen when the complete new layout appears. If even the old layout has been lost, it shows an honest unconfirmed status until the existing lifecycle can paint a confirmed update.
+
+For whole-panel replacement this supersedes Hero 1.6's reattachment-only block and Hero 1.9 item 7's proposed repaint helper. It repairs an active attempt. It cannot recover a previous display that was already overwritten before you installed it, or reconstruct a completed result after its state has been cleared; keep your existing terminal-display handling. Validate it on the next normal refresh after restarting the edited asset.
+
+The status classes listed in the helper are the existing classes in the inspected app. If your custom hero uses an additional phase class, include that actual class in `states`; preserve its existing CSS and phase owner.
+
+#### 5D.4 Replace the reattachment-only function
+
+Find the later assignment starting `syncRefreshLifecycleNodes = () => {`. Replace its entire body through the matching `};` with the following. Keep its earlier declaration/export near the top of the asset and keep its callers.
+
+```javascript
+  syncRefreshLifecycleNodes = () => {
+    restoreRefreshPanel();
+    syncRefreshStatusObserver();
+    if (financialPageCanConsumeRevision()) {
+      syncCommittedDataRevision(lastBackendProgress);
+    }
+  };
+```
+
+This replaces the earlier block that only set `state.panel`, `hidden = false` and `is-running`. Do not leave that old block below this one; it would erase error/completed styling again.
+
+If your implemented `syncRefreshLifecycleNodes` also contains deliberate participant/view-acknowledgement tracking from Hero 1.10, keep that extra logic after restoration. Replace the old reattachment block and move restoration first; do not delete unrelated completion tracking just to make your function identical to the small baseline-shaped copy above.
+
+**The order matters:** restore first, then run the existing status observer. The observer can synchronously advance the phase or finish a fully confirmed task. Restoring afterwards could overwrite that newer display with the old one. Neither restoration nor publication is conditional on the hero being finished.
+
+Keep the existing warm-shell guard from Hero 1.5 (`if shell_revision > 0: raise PreventUpdate` inside the successful-startup branch). The shared hero stays above the routed page content. Keep the existing observer in `assets/s11_tables.js`; it already notices whole hero/status node replacements. No new global observer is needed.
+
+#### 5D.5 Attach before existing code paints a new result
+
+Add `restoreRefreshPanel();` at these entry points so a poll response cannot paint the new panel and then have that newer result overwritten by an old display. Keep every existing validation, classification and completion guard.
+
+1. In `renderBackendProgress(progress)`, immediately after `if (!progress || !refreshProgressState) return;` and before looking up `panel` or writing any DOM values:
+
+```javascript
+      restoreRefreshPanel();
+```
+
+2. In your implemented `finishRefreshProgress(...)`, add the same line **after** its full-completion/rejection guards pass and **before** it reads `panel`/`title` or paints the terminal result. Keep your current signature and all backend/callback/required-view checks. Do not paste the older baseline finalizer; it contained premature completion and auto-hide behavior.
+
+3. In `recoverReadyBootstrap(progress)`, add the same line after its existing early-return guards, immediately before `const state = refreshProgressState;`. Keep the stronger startup identity/success checks from Hero 1.8–1.10.
+
+4. In the existing `refreshProgressPoll` interval, immediately after its awaited progress fetch and the following active-state guard, add the line:
+
+```javascript
+      const progress = await requestBackendProgress();
+      if (!refreshProgressState) return;
+      restoreRefreshPanel();
+```
+
+Keep the subsequent classification, restart and transport handling. If your implemented guard also checks the attempt identity after the `await`, keep that check and place the new line after it.
+
+5. If you implemented a separate phase/result painter for Hero 1.9–1.10, put `restoreRefreshPanel();` at the start of that **existing** painter, after its state/identity guard and before its first DOM write. This is one insertion, not an instruction to invent a new phase function. Its normal work then paints the newest accepted phase. Any direct post-`await` hero writes in your custom code need the same ordering.
+
+Do not call `startRefreshProgress()` to restore a panel; keep the existing active-attempt guard at its start. Do not call `renderBackendProgress(lastBackendProgress)` from the restoration helper: the global sample may belong to different work, and backend rendering can overwrite a later view-completion phase.
+
+Keep the dynamic elapsed-node lookup from Hero 1.6. If your `updateElapsed` still closes over the old element, replace that inner function in `startRefreshProgress` with:
+
+```javascript
+      const updateElapsed = () => {
+        const elapsedNode = document.getElementById("refresh-progress-elapsed");
+        if (elapsedNode && refreshProgressState?.startedAt === startedAt) {
+          elapsedNode.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s elapsed`;
+        }
+      };
+```
+
+Keep its existing interval and cleanup, and remove the old now-unused captured `const elapsed = ...` from that function. Do not add another clock. Keep attempt IDs, baselines, `lastAcceptedProgress`, pending view acknowledgements and terminal display retention unchanged.
+
+#### 5D.6 Check the repaired display before changing server behavior
+
+1. Save and restart; hard-refresh so the browser loads the edited asset. Compile `cube/ui/s04_components.py` if you changed it, and run `node --check assets/s12_refresh.js` if Node is available.
+2. Repeat 5D.1. Confirm one full hero with all expected IDs.
+3. Start one refresh. Confirm the real operation title, stage list and elapsed time appear. In a development run, recreate the **whole** hero from its normal builder while the request is active. Its title/stages must survive and elapsed time must continue; no second refresh request or timer should be created.
+4. Repeat while the backend has committed but a required visible table is still rendering. The restored panel must retain “Updating displayed tables” (or your equivalent), remain visible and leave browsing usable. It must not revert to “Waiting for Server” or claim completion early.
+5. Repeat while an error/unconfirmed state is visible. Preserve that message and styling. A temporary gap with no mounted panel must preserve the active attempt. Restore the panel and check again.
+6. Let the real completion path finish. Keep its completed display visible, with no auto-hide timeout. Do not reset the task just to clear the waiting label.
+
+If it still shows a waiting panel, distinguish these cases:
+
+| Observation | Next check |
+|---|---|
+| Missing expected IDs | Restore the full builder/call in 5D.2; a small placeholder cannot display the full hero. |
+| Full panel recreated, but old text never comes back | Confirm `restoreRefreshPanel()` is called before observer/paint operations and the old `state.panel` was not overwritten first. |
+| The same panel's children keep being reset | Find and remove the conflicting callback/layout rewrite of `refresh-progress.children` or its title. This helper repairs a whole-panel replacement; it does not repeatedly fight another owner overwriting the same node. |
+| The full hero is present, but no progress has ever been confirmed | Check the progress request and classifier; there is no prior accepted display for a DOM repair to recover. |
+| JavaScript error or no poll request | Fix that asset/endpoint error before interpreting the displayed status. |
+
+For the last two cases, retain Hero 1.7's normalized fields inside `requestBackendProgress()`:
+
+```javascript
+            finished_at: progressStartedAt(payload.finished_at),
+            requested_at: now,
+```
+
+`now` is the existing timestamp captured before the request; keep it unchanged on reused responses. The backend's terminal stage names are `complete` and `error`. A classifier waiting for `done` or a field that normalization discarded will never accept completion. Keep the callback-settled and view-acknowledgement checks; an idle server response alone is not full-refresh completion.
+
+To undo only this display repair, restore `assets/s12_refresh.js` from the backup made before 5D and restart/hard-refresh. Restore the Python builder only if you changed it. Keep the earlier interaction/publisher fix, JTD changes and current data. This section adds no new persistent file to the app.
+
 ## 6. Keep completion tracking observational
 
 `Hero.md` still applies to whether a refresh is complete. Its acknowledgements observe what rendered; they must not prevent the ordinary rendering that produces those acknowledgements.
@@ -327,6 +789,10 @@ Validation for the proposed snippets passed:
 - The same browser fixture used the exact replacement publisher and held a required Risk renderer after revision 8 committed. Revision 8 still published while refresh state remained active; a separate Market view remained usable; a simple illustrative hero observer stayed pending until the held renderer returned, then retained its terminal display. There were no browser JavaScript errors.
 
 The browser fixture verifies the dependency and publication behaviour; its illustrative hero observer is not a test of your complete local `Hero.md` implementation. It does not establish why every page in your running app freezes or prove all of your financial adapters and completion acknowledgements are correct. Use step 7 against that application after applying the relevant edits.
+
+Additional validation for section 5D passed. The optional Python builder is identical to the verified v7 source; its idle, startup and error layouts were checked for the expected stage structure and unique IDs. The complete JavaScript asset with the documented attachment hooks passes Node syntax checking.
+
+Eleven Chrome checks using the actual Python hero layout and existing progress painter covered running and post-commit remounts, title/stage/meter/ARIA restoration, skipped stages, error text, an existing retained terminal display, a partial mount, a temporary DOM gap, missing old markup, unchanged active-state metadata, a no-mutation same-node path and normal page-button interaction. Restoration before the observer/painter allowed the subsequent newer paint to remain visible. There were no browser JavaScript errors. These are local display/integration checks; they do not implement or verify your complete custom completion classifier, financial adapters, or deployed progress endpoint. The earlier dependency/publisher checks above remain unchanged.
 
 To roll back only this repair, restore the files you changed from the same backup and restart/hard-refresh. If you used step 4B, restore its three files together so that the direct writer and browser callback do not both own the revision Store. Keep your other JTD, Quick Risk, Data and connector work.
 
