@@ -46,11 +46,40 @@ const curve={...bundle,key:'curve',axes:[{column:'Tenor Swap',labels:['1Y','5Y']
  {'Risk Date':'2026-09-11','Tenor Swap':'1Y',Risk:9}],dates:['2026-09-10','2026-09-11']};
 const player={key:'play',mode:'risk',bundles:{risk:curve}};
 const initial=play(player,0,0,0,{},null);
+assert.equal(initial[0].data[0].type,'bar');
+assert.equal(initial[0].layout.yaxis.rangemode,'tozero');
+assert.equal(initial[0].layout.yaxis2,undefined);
+assert.deepEqual(Array.from(initial[0].data[0].x),['1Y','5Y']);
+assert.deepEqual(Array.from(initial[0].data[0].y),[9,null]);
 const started=play(player,1,0,1,{},initial[20]);
 assert.equal(started[20].playing,true);
 const tick=play(player,1,1,1,{},started[20]);
 assert.equal(tick[16],'2026-09-10');
+assert.equal(tick[0].data[0].y[0],-7);
 assert.equal(tick[0].data[0].y[1],null);
 const hidden=play(player,1,2,0,{hidden:true},tick[20]);
 assert.equal(hidden[20].playing,false);
-console.log('Data: 50-option cap, local search, unchanged tick, archive arrival, 250,000-cell heatmap, nulls, palette, receipts and playback passed.');
+
+// The change is limited to Risk by tenor; Market curves and spot histories remain lines.
+const market={...curve,key:'market',kind:'market',date_column:'Market Date',metric_column:'Current',values:[
+ {'Market Date':'2026-09-11','Tenor Swap':'1Y',Current:3.75},
+ {'Market Date':'2026-09-11','Tenor Swap':'5Y',Current:3.9}]};
+const both=play({key:'both',mode:'both',bundles:{risk:curve,market}},0,0,0,{},null);
+assert.equal(both[0].data[0].type,'bar');
+assert.equal(both[1].data[0].type,'scatter');
+assert.equal(both[1].data[0].mode,'lines+markers');
+assert.deepEqual(Array.from(both[1].data[0].y),[3.75,3.9]);
+for (const kind of ['risk','market']) {
+ const dateColumn=kind==='risk'?'Risk Date':'Market Date';
+ const metric=kind==='risk'?'Risk':'Current';
+ const spot={...curve,key:`spot-${kind}`,kind,date_column:dateColumn,metric_column:metric,axes:[],values:[
+  {[dateColumn]:'2026-09-10',[metric]:-7},
+  {[dateColumn]:'2026-09-11',[metric]:9}]};
+ const spotResult=play({key:`spot-${kind}`,mode:kind,bundles:{[kind]:spot}},0,0,0,{},null);
+ const figure=spotResult[kind==='risk'?0:1];
+ assert.equal(figure.data[0].type,'scatter');
+ assert.equal(figure.data[0].mode,'lines+markers');
+ assert.equal(figure.layout.xaxis.title.text,'Date');
+ assert.deepEqual(Array.from(figure.data[0].x),['2026-09-10','2026-09-11']);
+}
+console.log('Data: local search, 250,000-cell heatmap, Risk tenor bars, Market curves, spot history lines, nulls, palette, receipts and playback passed.');

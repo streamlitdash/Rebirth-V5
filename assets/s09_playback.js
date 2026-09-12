@@ -54,8 +54,14 @@
       const axis = axes[0], byLabel = new Map(rows.map(row => [String(row[axis.column]), finite(row[metric])]));
       layout.xaxis = {...layout.xaxis, title: {text: axis.column}, type: "category", categoryorder: "array", categoryarray: axis.labels};
       layout.yaxis.title = {text: metric};
+      if (bundle.kind === "risk") {
+        layout.yaxis.rangemode = "tozero";
+        return {data: [{type: "bar", x: axis.labels, y: axis.labels.map(label => byLabel.get(label) ?? null),
+          marker: {color: "#4C8A4A"}, opacity: .45, name: metric,
+          hovertemplate: "%{x}<br>%{y:,.2f}<extra></extra>"}], layout};
+      }
       return {data: [{type: "scatter", mode: "lines+markers", x: axis.labels, y: axis.labels.map(label => byLabel.get(label) ?? null),
-        line: {color: bundle.kind === "risk" ? "#4C8A4A" : "#2563eb", width: 2}, marker: {size: 6}, connectgaps: false, name: metric,
+        line: {color: "#2563eb", width: 2}, marker: {size: 6}, connectgaps: false, name: metric,
         hovertemplate: "%{x}<br>%{y:,.2f}<extra></extra>"}], layout};
     }
     const swap = axes.find(axis => axis.column === "Tenor Swap") || axes[0];

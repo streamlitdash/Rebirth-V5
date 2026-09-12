@@ -11,6 +11,7 @@ from plotly.subplots import make_subplots
 from dash import dash_table, dcc, html
 
 from cube.ui.s02_aggregation import tenor_axis_order
+from cube.ui.s09_plot_axes import center_dual_y_axes
 
 from .s05_charts import (
     _compact_tenor_label,
@@ -662,6 +663,7 @@ def _market_line_chart(
         },
         uniformtext={"mode": "hide", "minsize": 10},
     )
+    center_dual_y_axes(figure)
     return dcc.Graph(figure=figure, config={"displayModeBar": False})
 
 

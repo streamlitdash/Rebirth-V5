@@ -20,6 +20,7 @@ from cube.ui.s02_aggregation import (
     tenor_axis_order,
 )
 from cube.ui.s01_constants import METRIC_BREAKDOWNS, PLOT_METRICS, ROW_KEY_COLUMNS
+from cube.ui.s09_plot_axes import center_dual_y_axes
 
 from .s01_common import (
     DETAIL_TENOR_VIEW_LABELS,
@@ -464,25 +465,27 @@ def build_line_chart(
             margin={"l": 52, "r": 58, "t": 58, "b": 70},
             height=300,
         )
-        if ambiguous_order:
-            figure.add_annotation(
-                text=(
-                    "Selected underlyings use different tenor ranks; "
-                    "labels use modal connector order."
-                ),
-                x=0,
-                xref="paper",
-                y=-0.24,
-                yref="paper",
-                showarrow=False,
-                align="left",
-                font={"size": 10, "color": "#626B75"},
-            )
-            figure.update_layout(margin={"l": 52, "r": 58, "t": 58, "b": 68})
-        return dcc.Graph(
-            figure=figure,
-            config={"displayModeBar": False},
+    if any(trace.yaxis == "y2" for trace in figure.data):
+        center_dual_y_axes(figure)
+    if ambiguous_order:
+        figure.add_annotation(
+            text=(
+                "Selected underlyings use different tenor ranks; "
+                "labels use modal connector order."
+            ),
+            x=0,
+            xref="paper",
+            y=-0.24,
+            yref="paper",
+            showarrow=False,
+            align="left",
+            font={"size": 10, "color": "#626B75"},
         )
+        figure.update_layout(margin={"l": 52, "r": 58, "t": 58, "b": 68})
+    return dcc.Graph(
+        figure=figure,
+        config={"displayModeBar": False},
+    )
 
 
 def build_tenor_heatmap(

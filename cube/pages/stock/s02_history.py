@@ -30,6 +30,7 @@ from cube.history import (
     CompletedArchiveDay,
     list_queryable_v4_archive_days,
 )
+from cube.ui.s09_plot_axes import center_dual_y_axes
 
 
 LOGGER = logging.getLogger(__name__)
@@ -509,6 +510,7 @@ def build_stock_value_history_figure(
         yaxis2={"title": "dStock", "overlaying": "y", "side": "right"},
         legend={"orientation": "h", "y": 1.08, "x": 1, "xanchor": "right"},
     )
+    center_dual_y_axes(figure)
     return figure
 
 

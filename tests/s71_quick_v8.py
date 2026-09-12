@@ -59,7 +59,7 @@ def catalog_for(rows):
                          market_date=pd.Timestamp("2026-09-11"), market_frame=market, risk_pivot_frame=rows)
 
 
-@pytest.mark.parametrize("name,kind", [("SPOT", None), ("CURVE", "scatter"), ("OPTION", "scatter"), ("SURFACE", "heatmap")])
+@pytest.mark.parametrize("name,kind", [("SPOT", None), ("CURVE", "bar"), ("OPTION", "bar"), ("SURFACE", "heatmap")])
 def test_automatic_chart_shapes_and_full_width(name, kind):
     prepared = prepare_risk_data(fixture_rows())
     result = build_quick_risk_chart(prepared.loc[prepared.underlying.eq(name)])
@@ -75,12 +75,31 @@ def test_automatic_chart_shapes_and_full_width(name, kind):
     if name == "CURVE":
         assert list(graph.figure.data[0].x) == ["10Y", "2Y"]  # connector rank, not label sorting
         assert list(graph.figure.data[0].y) == [8., 8.]
-        assert len(graph.figure.data) == 3  # total, XVA and hedge on one scale
+        assert [trace.type for trace in graph.figure.data] == ["bar", "scatter", "scatter"]
+        assert [trace.yaxis or "y" for trace in graph.figure.data] == ["y", "y2", "y2"]
+        assert graph.figure.layout.yaxis.range == (-8.8, 8.8)
+        assert graph.figure.layout.yaxis2.range == (-11., 11.)
+        assert graph.figure.layout.yaxis.fixedrange and graph.figure.layout.yaxis2.fixedrange
     if name == "SURFACE":
         matrix = np.asarray(graph.figure.data[0].z, dtype=float)
         assert matrix.shape == (2, 2)
         assert np.isnan(matrix[1, 1])  # missing tenor cell stays missing
         assert np.nansum(matrix) == 24.
+
+
+@pytest.mark.parametrize("name", ["CURVE", "OPTION"])
+def test_risk_bars_keep_negative_totals_and_secondary_hedges(name):
+    rows = fixture_rows()
+    rows = rows.loc[rows.Underlying.eq(name) & rows.Product.eq("Hedges")]
+    result = build_quick_risk_chart(prepare_risk_data(rows))
+    graph = next(item for item in walk(result) if isinstance(item, dcc.Graph))
+    total, xva, hedges = graph.figure.data
+    assert total.type == "bar" and all(value == -2. for value in total.y)
+    assert hedges.yaxis == "y2" and all(value == -2. for value in hedges.y)
+    assert xva.yaxis == "y2"
+    for axis in (graph.figure.layout.yaxis, graph.figure.layout.yaxis2):
+        assert axis.range[0] == -axis.range[1]
+        assert axis.range[0] < -2. < axis.range[1]
 
 
 def test_scoped_label_catalog_matches_existing_search_for_all_filter_modes():

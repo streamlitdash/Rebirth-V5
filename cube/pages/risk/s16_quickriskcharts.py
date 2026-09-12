@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from dash import dcc, html
 
 from cube.ui.s02_aggregation import detail_frame, tenor_axis_order
+from cube.ui.s09_plot_axes import center_dual_y_axes
 from .s01_common import _meaningful_tenor_mask
 
 RISK_SERIES = ("risk", "risk expo", "risk hedges")
@@ -21,7 +22,7 @@ def _chart_style(figure, *, surface=False):
         template="plotly_white", autosize=True,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font={"family": "Arial, sans-serif", "size": 12, "color": "#48515C"},
-        margin={"l": 75, "r": 80 if surface else 25, "t": 45, "b": 85},
+        margin={"l": 75, "r": 80, "t": 45, "b": 85},
         hoverlabel={"font": {"size": 12}},
         legend={"orientation": "h", "y": 1.12, "x": 0},
         hovermode="closest" if surface else "x unified",
@@ -49,22 +50,31 @@ def _curve_chart(detail, axis):
     curve.index = curve.index.astype(str)
     curve = curve.reindex(labels)
     figure = go.Figure()
-    for column, name, color in zip(RISK_SERIES, RISK_LABELS, RISK_COLORS):
+    figure.add_bar(
+        name=RISK_LABELS[0], x=labels, y=curve[RISK_SERIES[0]],
+        marker_color=RISK_COLORS[0], opacity=0.45,
+        hovertemplate="Total Risk: %{y:,.2f}<extra></extra>",
+    )
+    for column, name, color in zip(RISK_SERIES[1:], RISK_LABELS[1:], RISK_COLORS[1:]):
         figure.add_scatter(
             name=name, x=labels, y=curve[column], mode="lines+markers",
             line={"color": color, "width": 2.5}, marker={"size": 5},
-            connectgaps=False,
+            connectgaps=False, yaxis="y2",
             hovertemplate=name + ": %{y:,.2f}<extra></extra>",
         )
-    # All three measures share one scale; never add yaxis2 here.
     figure.update_xaxes(
         title_text=axis.title(), type="category", categoryorder="array",
         categoryarray=labels, tickangle=-30,
     )
     figure.update_yaxes(
-        title_text="Risk", tickformat=",.0f", rangemode="tozero",
+        title_text="Total Risk", tickformat=",.0f",
         zeroline=True, zerolinecolor="#89939E", gridcolor="#E6EBF0",
     )
+    figure.update_layout(yaxis2={
+        "title": {"text": "Risk XVA / Hedges"}, "overlaying": "y", "side": "right",
+        "tickformat": ",.0f", "showgrid": False,
+    })
+    center_dual_y_axes(figure)
     return html.Div([
         html.H3(axis.title(), className="quick-risk-chart-title"),
         _chart_style(figure), _order_note(ambiguous),

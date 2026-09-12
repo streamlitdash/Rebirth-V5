@@ -31,6 +31,7 @@ def test_shared_ui_has_one_ordered_v5_tree() -> None:
         "s03_filters.py",
         "s04_components.py",
         "s08_refresh_views.py",
+        "s09_plot_axes.py",
     }
 
 
