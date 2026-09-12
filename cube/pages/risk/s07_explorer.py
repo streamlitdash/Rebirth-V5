@@ -148,7 +148,7 @@ def register_explorer_callbacks(
         Output("dimension-filter-values-store", "data"),
         Output("risk-filter-exclude-applied-store", "data"),
         Input(RISK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
     )
     def sync_dimension_filters(committed_state, _revision):
         """Publish only applied filters to visible Risk consumers."""
@@ -168,7 +168,7 @@ def register_explorer_callbacks(
     @app.callback(
         Output("risk-type-tabs", "children"),
         Output("risk-type-tabs", "value"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
         State("risk-type-tabs", "value"),
     )
     def update_risk_type_tabs(_revision, selected_risk_type):
@@ -191,7 +191,7 @@ def register_explorer_callbacks(
         ],
         Output(RISK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
         Output("risk-filter-exclude-selected", "value"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
         Input(RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
         Input(CLEAR_CACHE_COMPLETE_STORE_ID, "modified_timestamp", allow_optional=True),
         *[State(component_id, "value") for component_id in dimension_filter_ids],
@@ -597,7 +597,7 @@ def register_explorer_callbacks(
         Output('refresh-view-risk-explorer', "data"),
         Input("risk-type-tabs", "value"),
         Input("ir-family-tabs", "value"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
         Input("table-dimension", "value"),
         Input("table-view-tabs", "value"),
         Input("credit-view-tabs", "value"),
@@ -674,7 +674,7 @@ def register_explorer_callbacks(
         context_inputs = {
             "risk-type-tabs.value",
             "ir-family-tabs.value",
-            "data-revision-store.data",
+            "risk-page-revision.data",
         }
         view_inputs = {
             "table-dimension.value",
@@ -989,7 +989,7 @@ def register_explorer_callbacks(
         Output("unmapped-books-grid", "children"),
         Output('refresh-view-unmapped-books', "data"),
         Input("unmapped-books-summary", "n_clicks"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
         State("unmapped-books-details", "open"),
         State("refresh-action-request", "data"),
         prevent_initial_call=True,

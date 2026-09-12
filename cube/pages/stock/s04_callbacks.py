@@ -1,660 +1,381 @@
-"""Page-owned callbacks for the single-flow V5 Stock page."""
+"""Stock callback ownership: one load, one render, one click selection."""
 
-from __future__ import annotations
-
-import json
 from collections.abc import Mapping
+from math import ceil
 from threading import Lock
-from time import perf_counter
-from typing import Any
 
 import pandas as pd
-from dash import Input, Output, State, ctx, no_update
+from dash import Input, Output, State, ctx, html, no_update
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
-from cube.app.s02_contracts import RefreshManagerProtocol
-from cube.services.s04_savedviews import SavedFilterViewRepository
 from cube.ui.s08_refresh_views import refresh_view
-from cube.ui.s03_filters import (
-    BASE_SAVED_VIEW_ID,
-    committed_filter_state_values,
-    register_saved_filter_view_callbacks,
-    saved_view_request_id,
-    saved_view_request_matches_base,
-    saved_view_request_values,
-)
-
-from .s01_data import (
-    STOCK_DISPLAY_COLUMNS,
-    STOCK_FILTER_FIELDS,
-    STOCK_FILTER_IDS,
-    STOCK_SAVED_VIEW_CONTROLS,
-    StockPageData,
-    default_stock_filter_values,
-    load_stock_page_data,
-    stock_display_rows,
-    stock_exclude_selected,
-    stock_filter_map,
-    stock_filter_options,
-    stock_history_identities,
-)
+from cube.ui.s10_table_data import filter_table_rows
+from .s01_data import load_stock_page_data
 from .s02_history import (
-    StockHistoryCatalogResult,
-    StockHistoryQueryProtocol,
     build_stock_history_empty_figure,
     build_stock_value_history_figure,
-    normalize_stock_history_frame,
     stock_history_date_range,
 )
-from .s03_view import STOCK_PERIODS, stock_pivot_columns, stock_table_records
-from .s05_pivot import (
-    build_stock_pivot,
-    stock_pivot_row_payload,
-    toggle_stock_pivot_path,
-)
+from .s03_view import stock_table_columns, stock_number_styles, stock_table_records
+from .s05_pivot import build_stock_tree
 
 
-def _stock_snapshot_key(token: object) -> tuple[int, str, str] | None:
-    if not isinstance(token, Mapping):
-        return None
+def _trigger():
     try:
-        return (
-            int(token["revision"]),
-            str(token["current_date"]),
-            str(token["prior_date"]),
+        return ctx.triggered_id
+    except MissingCallbackContextException:
+        return None
+
+
+def _changed_ids():
+    """A row click changes expansion and selection in the same Dash response."""
+    try:
+        return set(getattr(ctx, "triggered_prop_ids", {}).values()) or {_trigger()}
+    except MissingCallbackContextException:
+        return {None}
+
+
+def _stock_snapshot_key(token):
+    if not isinstance(token, Mapping) or "current_date" not in token:
+        return None
+    return int(token.get("revision", 0)), str(token["current_date"])
+
+
+def stock_raw_page(frame, page, page_size, sort_by, filter_tree, filter_query):
+    """Filter/sort server-side; serialize only the requested 25 source rows."""
+    filtered = filter_table_rows(frame, filter_tree, filter_query=filter_query)
+    ordering = [item for item in (sort_by or []) if item["column_id"] in frame.columns]
+    if ordering:
+        filtered = filtered.sort_values(
+            [item["column_id"] for item in ordering],
+            ascending=[item["direction"] == "asc" for item in ordering],
+            kind="stable",
+            na_position="last",
         )
-    except (KeyError, TypeError, ValueError):
-        return None
+    size = min(100, max(1, int(page_size or 25)))
+    count = ceil(len(filtered) / size)
+    page = min(max(0, int(page or 0)), max(0, count - 1))
+    return (
+        stock_table_records(filtered.iloc[page * size : (page + 1) * size]),
+        count,
+        len(filtered),
+        page,
+    )
 
 
-def _selected_stock_row(active_cell: object) -> tuple[str, str]:
-    if not isinstance(active_cell, Mapping):
-        raise ValueError("Click a Stock row")
-    row_id = active_cell.get("row_id")
-    if not isinstance(row_id, str):
-        raise ValueError("The selected Stock row is invalid")
-    try:
-        values = json.loads(row_id)
-    except json.JSONDecodeError as error:
-        raise ValueError("The selected Stock row is invalid") from error
-    if isinstance(values, Mapping):
-        if values.get("kind") != "history":
-            raise ValueError("Expand the branch and click a history-ready leaf")
-        crds = str(values.get("crds") or "").strip()
-        activity = str(values.get("activity") or "").strip()
-    elif isinstance(values, list) and len(values) == 2:
-        crds, activity = (str(value).strip() for value in values)
-    else:
-        raise ValueError("The selected Stock row is invalid")
-    if not crds or not activity:
-        raise ValueError("The selected Stock row is invalid")
-    return crds, activity
-
-
-def _period_from_trigger(triggered_id: object) -> str:
-    prefix = "stock-period-"
-    value = str(triggered_id or "")
-    if not value.startswith(prefix):
-        raise ValueError("Unknown Stock history period control")
-    period = value[len(prefix) :]
-    if period not in {value for _label, value in STOCK_PERIODS}:
-        raise ValueError("Unknown Stock history period control")
-    return period
+def stock_history_result(source, selection, page, period, custom_start, custom_end):
+    if not selection:
+        return no_update, "", {"display": "none"}, "Stock history"
+    column, value = selection["column"], selection["value"]
+    title = f"{column}: {value}"
+    if source is None:
+        message = "Stock history connector is not configured."
+        return build_stock_history_empty_figure(message), message, {}, title
+    # None start means all retained history; the connector returns dated Stock/dStock.
+    start = custom_start if period == "custom" else None
+    end = (custom_end or page.current_date) if period == "custom" else page.current_date
+    identity = {column: value}
+    rows = (
+        source.stock_series(identity, start, end)
+        if hasattr(source, "stock_series")
+        else source(identity, start, end)
+    )
+    history = rows.copy()
+    history["Stock Date"] = pd.to_datetime(history["Stock Date"])
+    # Current connector observation wins over history for the same date.
+    current = page.raw.loc[page.raw[column].eq(value), ["Stock", "dStock"]].sum(
+        min_count=1
+    )
+    if pd.Timestamp(end).normalize() >= page.current_date.normalize():
+        history = history.loc[
+            history["Stock Date"].dt.normalize().ne(page.current_date.normalize())
+        ]
+        history = pd.concat(
+            [
+                history,
+                pd.DataFrame(
+                    [
+                        {
+                            "Stock Date": page.current_date,
+                            "Stock": current["Stock"],
+                            "dStock": current["dStock"],
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+    if history.empty:
+        message = f"No Stock history is available for {value}."
+        return build_stock_history_empty_figure(message), message, {}, title
+    minimum = history["Stock Date"].min()
+    start, end = stock_history_date_range(
+        end, preset=period, minimum_date=minimum, start_date=custom_start
+    )
+    figure = build_stock_value_history_figure(
+        history, crds=value, activity="", start_date=start, end_date=end
+    )
+    figure.update_layout(title=None, margin={"l": 65, "r": 65, "t": 35, "b": 45})
+    dates = history.loc[
+        history["Stock Date"].between(start, end), "Stock Date"
+    ].nunique()
+    return (
+        figure,
+        f"{dates:,} available dates · {start.date()} to {end.date()}",
+        {},
+        title,
+    )
 
 
 def register_callbacks(
-    app: Any,
+    app,
     *,
-    refresh_manager: RefreshManagerProtocol | None,
-    stock_source: Any | None,
-    stock_portfolio_source: Any | None,
-    saved_view_repository: SavedFilterViewRepository,
-    stock_history_source: Any | None = None,
-) -> None:
-    """Register Stock-local filters, pivot state, and inline lazy history."""
-
-    if stock_source is None or stock_portfolio_source is None:
+    refresh_manager,
+    stock_source,
+    stock_portfolio_source=None,
+    saved_view_repository=None,
+    stock_history_source=None,
+):
+    # The two obsolete optional arguments remain accepted for existing callers.
+    # No mapping or saved-filter workflow is registered for Stock.
+    if stock_source is None:
         return
+    cache = {}
+    lock = Lock()
 
-    register_saved_filter_view_callbacks(
-        app,
-        saved_view_repository,
-        STOCK_SAVED_VIEW_CONTROLS,
+    def revision():
+        return int(refresh_manager.health.revision) if refresh_manager else 0
+
+    # Native <details> toggling alone does not update Dash's open prop.
+    app.clientside_callback(
+        "function (clicks) { return Boolean((clicks || 0) % 2); }",
+        Output("stock-raw-panel", "open"),
+        Input("stock-raw-summary", "n_clicks"),
+        prevent_initial_call=True,
     )
-
-    cache_lock = Lock()
-    cached_pages: dict[tuple[int, str, str], StockPageData] = {}
-
-    def committed_revision() -> int:
-        try:
-            return int(refresh_manager.health.revision) if refresh_manager else 0
-        except Exception:
-            return 0
-
-    def cached_page(token: object) -> StockPageData | None:
-        key = _stock_snapshot_key(token)
-        return cached_pages.get(key) if key is not None else None
 
     @app.callback(
         Output("stock-loaded-snapshot", "data"),
         Output("stock-load-status", "children"),
         Input("stock-load-trigger", "n_intervals"),
         Input("refresh-commit-revision", "children"),
-        Input("clear-cache-complete-store", "data"),
+        Input("clear-cache-complete-store", "modified_timestamp"),
         State("stock-date-store", "data"),
         prevent_initial_call=True,
     )
-    def load_current_stock(
-        _ticks,
-        _refresh_revision,
-        _cache_generation,
-        date_state,
-    ):
-        """Load only the latest two Stock leaves and one mapping authority."""
-
+    def load_current_stock(_ticks, refresh_revision, _generation, dates):
+        captured = revision()
         try:
-            trigger = ctx.triggered_id
-        except MissingCallbackContextException:
-            trigger = None
-        revision = committed_revision()
-        try:
-            requested_revision = int(_refresh_revision or revision)
-        except (TypeError, ValueError):
-            requested_revision = revision
-        started = perf_counter()
-        try:
-            if trigger == "clear-cache-complete-store":
-                with cache_lock:
-                    cached_pages.clear()
-                if isinstance(stock_history_source, StockHistoryQueryProtocol):
+            if _trigger() == "clear-cache-complete-store":
+                with lock:
+                    cache.clear()
+                if hasattr(stock_history_source, "clear"):
                     stock_history_source.clear()
-            if not isinstance(date_state, Mapping):
-                raise ValueError("Stock dates are unavailable.")
-            current_date = date_state.get("current_date")
-            prior_date = date_state.get("prior_date")
-            token = {
-                "revision": revision,
-                "current_date": str(current_date),
-                "prior_date": str(prior_date),
-            }
+            current_date = dates["current_date"]
+            if (
+                refresh_manager
+                and captured > 0
+                and hasattr(refresh_manager, "control_snapshot")
+            ):
+                current_date = refresh_manager.control_snapshot.market_date
+            token = {"revision": captured, "current_date": str(current_date)}
             key = _stock_snapshot_key(token)
-            if key is None:
-                raise ValueError("Stock dates are invalid.")
-            with cache_lock:
-                page_data = cached_pages.get(key)
-                if page_data is None:
-                    page_data = load_stock_page_data(
-                        stock_source=stock_source,
-                        portfolio_config_source=stock_portfolio_source,
-                        current_date=current_date,
-                        prior_date=prior_date,
-                        portfolio_date=current_date,
+            with lock:
+                if key not in cache:
+                    loaded = load_stock_page_data(
+                        stock_source=stock_source, current_date=current_date
                     )
-                    cached_pages[key] = page_data
-                    while len(cached_pages) > 4:
-                        cached_pages.pop(next(iter(cached_pages)))
-            elapsed_ms = (perf_counter() - started) * 1_000
-            current_rows = len(stock_display_rows(page_data.mapped_stock))
-            app.logger.info(
-                "stock.current.loaded rows=%s elapsed_ms=%.1f revision=%s",
-                current_rows, elapsed_ms, revision,
-            )
-            status = (
-                f"As of {page_data.current_date.date().isoformat()} · "
-                f"{current_rows:,} positions · {elapsed_ms:.0f} ms"
-            )
+                    cache[key] = loaded
+                    # Financial snapshots only, never expanded component trees.
+                    while len(cache) > 2:
+                        cache.pop(next(iter(cache)))
+                page = cache[key]
+            status = f"As of {page.current_date.date()} · {len(page.raw):,} rows"
+            if page.raw.attrs.get("notice"):
+                status += " · " + str(page.raw.attrs["notice"])
         except Exception as error:
-            app.logger.exception("Could not load current Stock")
-            if committed_revision() != revision:
+            app.logger.exception("Could not load Stock")
+            if revision() != captured:
                 return no_update, no_update
             message = f"Stock could not be loaded: {error}"
-            # The final renderer owns the receipt even when loading failed.
-            # A new token triggers it without replacing the last good table.
-            return {"revision": max(requested_revision, revision), "error": message}, message
-        if committed_revision() != revision:
+            return {
+                "revision": max(captured, int(refresh_revision or 0)),
+                "error": message,
+            }, message
+        if revision() != captured:
             return no_update, no_update
         return token, status
 
-    filter_outputs = [
-        output
-        for field in STOCK_FILTER_FIELDS
-        for output in (
-            Output(STOCK_FILTER_IDS[field.key], "options"),
-            Output(STOCK_FILTER_IDS[field.key], "value"),
-        )
-    ]
-
-    @app.callback(
-        *filter_outputs,
-        Output(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
-        Output(STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
-        Input("stock-loaded-snapshot", "data"),
-        Input(STOCK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
-        Input("clear-cache-complete-store", "data"),
-        *[State(STOCK_FILTER_IDS[field.key], "value") for field in STOCK_FILTER_FIELDS],
-        State(STOCK_SAVED_VIEW_CONTROLS.exclude_id, "value"),
-        State(STOCK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
-        State(STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
-        prevent_initial_call=True,
-    )
-    def update_stock_filters(
-        loaded_snapshot,
-        saved_view_request,
-        _cache_generation,
-        *state,
-    ):
-        """Own all five filter values and apply Base Review exactly once."""
-
-        if isinstance(loaded_snapshot, Mapping) and loaded_snapshot.get("error"):
-            return (no_update,) * (len(filter_outputs) + 2)
-        page_data = cached_page(loaded_snapshot)
-        selected_values = list(state[: len(STOCK_FILTER_FIELDS)])
-        exclude_value = list(state[len(STOCK_FILTER_FIELDS)] or [])
-        applied_request = state[len(STOCK_FILTER_FIELDS) + 1]
-        ready = bool(state[len(STOCK_FILTER_FIELDS) + 2])
-        if page_data is None:
-            result: list[object] = []
-            for selected in selected_values:
-                result.extend(([], list(selected or [])))
-            return (*result, exclude_value, ready)
-
-        try:
-            trigger = ctx.triggered_id
-        except MissingCallbackContextException:
-            trigger = None
-        request_id = saved_view_request_id(saved_view_request)
-        pending = bool(request_id and request_id != applied_request)
-        matches_base = False
-        if pending:
-            try:
-                matches_base = saved_view_request_matches_base(
-                    saved_view_request,
-                    STOCK_SAVED_VIEW_CONTROLS,
-                    selected_values,
-                    exclude_value,
-                )
-            except ValueError:
-                matches_base = False
-        apply_pending = pending and (
-            trigger == STOCK_SAVED_VIEW_CONTROLS.apply_request_id or matches_base
-        )
-        if apply_pending:
-            try:
-                requested = saved_view_request_values(
-                    saved_view_request,
-                    STOCK_SAVED_VIEW_CONTROLS,
-                )
-            except ValueError:
-                requested = None
-            if requested is not None:
-                requested_values, exclude_value = requested
-                selected_values = [list(values) for values in requested_values]
-
-        use_base = not ready or (
-            apply_pending
-            and isinstance(saved_view_request, Mapping)
-            and saved_view_request.get("view_id") == BASE_SAVED_VIEW_ID
-        )
-        if use_base:
-            defaults = default_stock_filter_values(page_data.mapped_stock)
-            selected_values = [defaults[field.key] for field in STOCK_FILTER_FIELDS]
-            exclude_value = []
-
-        selected_map = stock_filter_map(selected_values)
-        options, valid = stock_filter_options(page_data.mapped_stock, selected_map)
-        result = []
-        for field in STOCK_FILTER_FIELDS:
-            result.extend((options[field.key], valid[field.key]))
-        return (*result, exclude_value, True)
-
-    @app.callback(
-        Output("stock-current-table", "data"),
-        Output("stock-current-table", "columns"),
-        Output("stock-position-detail-table", "data"),
-        Output("stock-row-count", "children"),
-        Output("stock-mapped-count", "children"),
-        Output("stock-unmapped-count", "children"),
-        Output("stock-history-crds", "options"),
-        Output("stock-history-activity", "options"),
-        Output("refresh-view-stock-current", "data"),
-        Input("stock-loaded-snapshot", "data"),
-        Input(STOCK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
-        Input("stock-pivot-rows", "value"),
-        Input("stock-pivot-column", "value"),
-        Input("stock-pivot-values", "value"),
-        Input("stock-pivot-open-paths", "data"),
-        State("refresh-action-request", "data"),
-        prevent_initial_call=True,
-    )
-    @refresh_view("stock-current", revision_arg="loaded_snapshot", outputs=8,
-                  content=[0, 2, 3], stamp=[3])
-    def render_current_stock(
-        loaded_snapshot,
-        committed_filter_state,
-        pivot_rows,
-        pivot_column,
-        pivot_values,
-        open_paths,
-    ):
-        """Rebuild the pivot from applied filters, never draft controls."""
-
-        if isinstance(loaded_snapshot, Mapping) and loaded_snapshot.get("error"):
-            raise RuntimeError(str(loaded_snapshot["error"]))
-        page_data = cached_page(loaded_snapshot)
-        if page_data is None:
-            if _stock_snapshot_key(loaded_snapshot) is not None:
-                raise RuntimeError("The loaded Stock snapshot is no longer available. Refresh Stock again.")
-            empty = pd.DataFrame(columns=list(STOCK_DISPLAY_COLUMNS))
-            pivot = build_stock_pivot(
-                empty,
-                row_fields=pivot_rows,
-                column_field=pivot_column,
-                value_fields=pivot_values,
-                open_paths=open_paths,
-            )
-            return (
-                [],
-                stock_pivot_columns(pivot.columns),
-                [],
-                "Rows: 0",
-                "Mapped: 0",
-                "Unmapped: 0",
-                [],
-                [],
-            )
-        try:
-            committed_values = committed_filter_state_values(
-                committed_filter_state,
-                STOCK_SAVED_VIEW_CONTROLS,
-            )
-        except ValueError as error:
-            app.logger.warning("Ignoring invalid committed Stock filters: %s", error)
-            committed_values = None
-        if committed_values is None:
-            defaults = default_stock_filter_values(page_data.mapped_stock)
-            filter_values = [defaults[field.key] for field in STOCK_FILTER_FIELDS]
-            exclude_value: list[str] = []
-        else:
-            filter_values, exclude_value = committed_values
-        display = stock_display_rows(
-            page_data.mapped_stock,
-            dimension_filters=stock_filter_map(filter_values),
-            exclude_selected=stock_exclude_selected(exclude_value),
-        )
-        pivot = build_stock_pivot(
-            display,
-            row_fields=pivot_rows,
-            column_field=pivot_column,
-            value_fields=pivot_values,
-            open_paths=open_paths,
-        )
-        try:
-            trigger = ctx.triggered_id
-        except MissingCallbackContextException:
-            trigger = None
-        if trigger in {
-            "stock-pivot-open-paths",
-            "stock-pivot-rows",
-            "stock-pivot-column",
-            "stock-pivot-values",
-        }:
-            return (
-                pivot.records,
-                stock_pivot_columns(pivot.columns),
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-                no_update,
-            )
-        all_rows = stock_display_rows(page_data.mapped_stock)
-        crds_values = sorted(
-            all_rows["CRDS"].astype(str).unique().tolist(), key=str.casefold
-        )
-        activity_values = sorted(
-            all_rows["Activity"].astype(str).unique().tolist(), key=str.casefold
-        )
-        mapped = int(display["Portfolio Mapped"].eq(True).sum())
-        return (
-            pivot.records,
-            stock_pivot_columns(pivot.columns),
-            stock_table_records(display),
-            f"Rows: {len(display):,} of {len(all_rows):,}",
-            f"Mapped: {mapped:,}",
-            f"Unmapped: {len(display) - mapped:,}",
-            [{"label": value, "value": value} for value in crds_values],
-            [{"label": value, "value": value} for value in activity_values],
-        )
-
-    @app.callback(
+    # Decode clicks in the browser: the complete hierarchy never travels back
+    # to Python merely to identify one clicked row.
+    app.clientside_callback(
+        """function (active, records, paths) {
+            const no = window.dash_clientside.no_update;
+            if (!active || active.column_id !== 'Hierarchy') return [no, no, no];
+            const rows = records || [];
+            const row = rows.find(item => item.id === active.row_id);
+            if (!row) return [no, no, null];
+            const selected = JSON.parse(row.id);
+            const opened = new Set(paths || []);
+            if (paths === null || paths === undefined) {
+                for (const item of rows) {
+                    if (!item.id.includes('"open":true')) continue;
+                    const value = JSON.parse(item.id);
+                    if (value.open) opened.add(value.path);
+                }
+            }
+            if (selected.branch) {
+                if (selected.open) opened.delete(selected.path);
+                else opened.add(selected.path);
+            }
+            return [Array.from(opened).sort(), selected.selection || no, null];
+        }""",
         Output("stock-pivot-open-paths", "data"),
+        Output("stock-history-selection", "data"),
         Output("stock-current-table", "active_cell"),
         Input("stock-current-table", "active_cell"),
+        State("stock-current-table", "data"),
         State("stock-pivot-open-paths", "data"),
         prevent_initial_call=True,
     )
-    def toggle_stock_branch(active_cell, open_paths):
-        if not isinstance(active_cell, Mapping):
-            raise PreventUpdate
-        if active_cell.get("column_id") != "Hierarchy":
-            raise PreventUpdate
-        try:
-            payload = stock_pivot_row_payload(active_cell.get("row_id"))
-        except ValueError as error:
-            raise PreventUpdate from error
-        if payload.get("kind") != "branch":
-            raise PreventUpdate
-        return toggle_stock_pivot_path(open_paths, payload["path"]), None
 
     @app.callback(
-        Output("stock-history-crds", "value"),
-        Output("stock-history-activity", "value"),
-        Output("stock-history-autoload", "data"),
-        Input("stock-current-table", "active_cell"),
-        State("stock-loaded-snapshot", "data"),
-        prevent_initial_call=True,
-    )
-    def select_stock_row(active_cell, loaded_snapshot):
-        """Prefill the inline controls and request history for one clicked row."""
-
-        try:
-            crds, activity = _selected_stock_row(active_cell)
-        except ValueError as error:
-            raise PreventUpdate from error
-        page_data = cached_page(loaded_snapshot)
-        if page_data is None or not stock_history_identities(
-            page_data.mapped_stock,
-            crds=crds,
-            activity=activity,
-        ):
-            raise PreventUpdate
-        return crds, activity, {"crds": crds, "activity": activity}
-
-    period_outputs = [
-        Output(f"stock-period-{value}", "className") for _label, value in STOCK_PERIODS
-    ]
-
-    @app.callback(
-        Output("stock-history-period", "data"),
-        *period_outputs,
-        *[
-            Input(f"stock-period-{value}", "n_clicks")
-            for _label, value in STOCK_PERIODS
-        ],
-        prevent_initial_call=True,
-    )
-    def select_stock_period(*_clicks):
-        """Keep period buttons as one ordinary, editable segmented control."""
-
-        try:
-            period = _period_from_trigger(ctx.triggered_id)
-        except (MissingCallbackContextException, ValueError):
-            raise PreventUpdate
-        classes = [
-            (
-                "refresh-button stock-period-button stock-period-selected"
-                if value == period
-                else "refresh-button stock-period-button"
-            )
-            for _label, value in STOCK_PERIODS
-        ]
-        return period, *classes
-
-    app.clientside_callback(
-        """
-        function (period) {
-            return String(period || "").toLowerCase() === "custom"
-                ? {}
-                : {display: "none"};
-        }
-        """,
         Output("stock-history-custom-range-control", "style"),
-        Input("stock-history-period", "data"),
+        Input("stock-history-period", "value"),
     )
-
-    if stock_history_source is None:
-        return
-
-    query_source = (
-        stock_history_source
-        if isinstance(stock_history_source, StockHistoryQueryProtocol)
-        else None
-    )
+    def show_custom_dates(period):
+        return {} if period == "custom" else {"display": "none"}
 
     @app.callback(
+        Output("stock-current-table", "data"),
+        Output("stock-row-count", "children"),
+        Output("stock-raw-table", "data"),
+        Output("stock-raw-table", "columns"),
+        Output("stock-raw-table", "style_data_conditional"),
+        Output("stock-raw-table", "page_count"),
+        Output("stock-raw-status", "children"),
         Output("stock-history-chart", "figure"),
         Output("stock-history-status", "children"),
-        Input("stock-history-autoload", "data"),
-        Input("stock-history-load-button", "n_clicks"),
-        Input("clear-cache-complete-store", "data"),
-        Input("stock-history-period", "data"),
+        Output("stock-history-panel", "style"),
+        Output("stock-history-title", "children"),
+        Output("stock-raw-table", "page_current"),
+        Output("refresh-view-stock-current", "data"),
+        Input("stock-loaded-snapshot", "data"),
+        Input("stock-pivot-open-paths", "data"),
+        Input("stock-raw-panel", "open"),
+        Input("stock-raw-table", "page_current"),
+        Input("stock-raw-table", "sort_by"),
+        Input("stock-raw-table", "derived_filter_query_structure"),
+        Input("stock-raw-table", "filter_query"),
+        Input("stock-history-selection", "data"),
+        Input("stock-history-period", "value"),
         Input("stock-history-date-range", "start_date"),
         Input("stock-history-date-range", "end_date"),
-        State("stock-history-crds", "value"),
-        State("stock-history-activity", "value"),
-        State("stock-loaded-snapshot", "data"),
+        State("stock-raw-table", "page_size"),
+        State("refresh-action-request", "data"),
         prevent_initial_call=True,
-        running=[(Output("stock-history-load-button", "disabled"), True, False)],
     )
-    def load_stock_history(
-        autoload,
-        load_clicks,
-        _cache_generation,
+    @refresh_view(
+        "stock-current",
+        revision_arg="loaded_snapshot",
+        outputs=12,
+        content=[0, 2, 7, 8],
+        stamp=[1],
+        ready={0: "stock-current-table", 2: "stock-raw-table", 7: "stock-history-chart"},
+    )
+    def render_current_stock(
+        loaded_snapshot,
+        opened,
+        raw_open,
+        raw_page,
+        sort_by,
+        filter_tree,
+        filter_query,
+        selection,
         period,
         custom_start,
         custom_end,
-        crds,
-        activity,
-        loaded_snapshot,
+        page_size,
     ):
-        """Read archive rows only after a row click or explicit Load."""
-
-        try:
-            trigger = ctx.triggered_id
-        except MissingCallbackContextException:
-            trigger = None
-        if trigger == "clear-cache-complete-store":
-            message = "Stock history cache cleared. Select or load a position."
-            return build_stock_history_empty_figure(message), message
-        if trigger == "stock-history-autoload":
-            if not isinstance(autoload, Mapping):
-                raise PreventUpdate
-            crds = autoload.get("crds")
-            activity = autoload.get("activity")
-        elif trigger == "stock-history-load-button" and int(load_clicks or 0) <= 0:
+        if not loaded_snapshot:
             raise PreventUpdate
-        elif trigger in {
+        if int(loaded_snapshot.get("revision", 0)) != revision():
+            raise PreventUpdate
+        if loaded_snapshot.get("error"):
+            raise RuntimeError(loaded_snapshot["error"])
+        page = cache.get(_stock_snapshot_key(loaded_snapshot))
+        if page is None:
+            raise RuntimeError("Stock snapshot expired. Refresh Stock to reload it.")
+        changed = _changed_ids()
+        new_snapshot = bool(changed & {None, "stock-loaded-snapshot"})
+        tree = (
+            build_stock_tree(page.raw, opened)
+            if new_snapshot or "stock-pivot-open-paths" in changed
+            else no_update
+        )
+        count = f"{len(page.raw):,} connector rows"
+        raw = (no_update,) * 5
+        corrected_page = no_update
+        if raw_open and (
+            new_snapshot or changed & {"stock-raw-panel", "stock-raw-table"}
+        ):
+            try:
+                # Changing a filter or sort starts its result at page 1.
+                changed_props = (
+                    getattr(ctx, "triggered_prop_ids", {})
+                    if None not in changed
+                    else {}
+                )
+                reset = any(
+                    key.endswith(
+                        (".sort_by", ".filter_query", ".derived_filter_query_structure")
+                    )
+                    for key in changed_props
+                )
+                records, pages, rows, selected_page = stock_raw_page(
+                    page.raw,
+                    0 if reset else raw_page,
+                    page_size,
+                    sort_by,
+                    filter_tree,
+                    filter_query,
+                )
+                columns = stock_table_columns(page.raw)
+                raw = (
+                    records,
+                    columns,
+                    stock_number_styles(columns),
+                    pages,
+                    f"{rows:,} of {len(page.raw):,} rows",
+                )
+                if selected_page != int(raw_page or 0):
+                    corrected_page = selected_page
+            except ValueError as error:
+                raw = no_update, no_update, no_update, no_update, str(error)
+        history = (no_update,) * 4
+        if new_snapshot or changed & {
+            "stock-history-selection",
             "stock-history-period",
             "stock-history-date-range",
         }:
-            if not crds or not activity:
-                raise PreventUpdate
-            if trigger == "stock-history-date-range" and str(period) != "custom":
-                raise PreventUpdate
-
-        if not str(crds or "").strip() or not str(activity or "").strip():
-            message = "Select a Stock row or choose both CRDS and Activity."
-            return build_stock_history_empty_figure(message), message
-
-        page_data = cached_page(loaded_snapshot)
-        if page_data is None:
-            message = "Load current Stock before requesting history."
-            return build_stock_history_empty_figure(message), message
-        try:
-            identities = stock_history_identities(
-                page_data.mapped_stock,
-                crds=crds,
-                activity=activity,
-            )
-            if not identities:
-                raise ValueError("No current Stock row matches that CRDS and Activity")
-
-            minimum = None
-            maximum = page_data.current_date.date().isoformat()
-            if query_source is not None:
-                catalog = query_source.catalog(crds, limit=1)
-                if not isinstance(catalog, StockHistoryCatalogResult):
-                    raise TypeError("Stock history source returned an invalid catalog")
-                minimum = catalog.minimum_date
-                maximum = catalog.maximum_date or maximum
-            selected_period = str(period or "1y")
-            requested_end = custom_end if selected_period == "custom" else maximum
-            start_date, end_date = stock_history_date_range(
-                requested_end,
-                preset=selected_period,
-                minimum_date=minimum,
-                start_date=custom_start,
-            )
-            query_start = start_date - pd.offsets.BDay(1)
-            if minimum is not None:
-                query_start = max(query_start, pd.Timestamp(minimum))
-
-            frames: list[pd.DataFrame] = []
-            for identity in identities:
-                raw = (
-                    query_source.rows(identity, query_start, end_date)
-                    if query_source is not None
-                    else stock_history_source(identity, query_start, end_date)
+            try:
+                history = stock_history_result(
+                    stock_history_source,
+                    selection,
+                    page,
+                    period or "all",
+                    custom_start,
+                    custom_end,
                 )
-                frames.append(
-                    normalize_stock_history_frame(
-                        raw,
-                        identity=identity,
-                        start_date=query_start,
-                        end_date=end_date,
-                    )
+            except Exception as error:
+                app.logger.exception("Could not load Stock history")
+                message = f"Stock history could not be loaded: {error}"
+                history = (
+                    no_update,
+                    html.Span(message, role="alert"),
+                    {},
+                    "Stock history",
                 )
-            history = pd.concat(frames, ignore_index=True)
-            if history.empty:
-                message = f"No Stock history is available for {crds} · {activity} in this period."
-                return build_stock_history_empty_figure(message), message
-            figure = build_stock_value_history_figure(
-                history,
-                crds=crds,
-                activity=activity,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            observations = history.loc[
-                history["Stock Date"].between(start_date, end_date), "Stock Date"
-            ].nunique()
-            return (
-                figure,
-                (
-                    f"Loaded {observations:,} available dates from "
-                    f"{start_date.date().isoformat()} through {end_date.date().isoformat()}."
-                ),
-            )
-        except Exception as error:
-            app.logger.exception("Could not load Stock history")
-            message = f"Stock history could not be loaded: {error}"
-            return build_stock_history_empty_figure(message), message
-
-
-__all__ = [
-    "_period_from_trigger",
-    "_selected_stock_row",
-    "_stock_snapshot_key",
-    "register_callbacks",
-]
+        if int(loaded_snapshot.get("revision", 0)) != revision():
+            raise PreventUpdate
+        return tree, count, *raw, *history, corrected_page

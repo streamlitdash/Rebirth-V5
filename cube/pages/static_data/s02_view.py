@@ -22,7 +22,7 @@ def _table_style() -> dict[str, object]:
         "sort_mode": "multi",
         "page_action": "native",
         "page_size": 50,
-        "style_table": {"overflowX": "auto", "maxHeight": "68vh"},
+        "style_table": {"width": "100%", "overflowX": "auto", "maxHeight": "68vh"},
         "style_header": {
             "backgroundColor": "var(--surface-muted)",
             "color": "var(--text)",
@@ -151,15 +151,15 @@ def build_static_data_page() -> html.Div:
             ),
             html.Section(
                 [
+                    dcc.Dropdown(
+                        id="static-data-write-selector",
+                        options=STATIC_WRITE_OPTIONS,
+                        value=write_value,
+                        clearable=False,
+                        className="static-data-selector",
+                    ),
                     html.Div(
                         [
-                            dcc.Dropdown(
-                                id="static-data-write-selector",
-                                options=STATIC_WRITE_OPTIONS,
-                                value=write_value,
-                                clearable=False,
-                                className="static-data-selector",
-                            ),
                             html.Button(
                                 "Add row",
                                 id="static-data-add-row",

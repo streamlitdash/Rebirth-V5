@@ -13,8 +13,10 @@ from dash import (
     Dash,
     Input,
     Output,
+    State,
     dcc,
     html,
+    no_update,
     page_container,
 )
 from flask import jsonify, request
@@ -101,10 +103,6 @@ def build_app(
         )
     if pl_send_config is not None and refresh_manager is None:
         raise ValueError("PL send configuration requires a refresh manager")
-    if (stock_source is None) != (stock_portfolio_source is None):
-        raise ValueError(
-            "Stock requires both stock_source and stock_portfolio_source, or neither"
-        )
     if stock_history_source is not None and stock_source is None:
         raise ValueError("Stock history requires the Stock page sources")
     if (reduced_tenor_catalog is None) != (reduced_tenor_matrix_provider is None):
@@ -153,8 +151,8 @@ def build_app(
     )
 
     dash_options = dict(dash_kwargs or {})
-    # Only the active URL's page body is mounted. Page-specific callback
-    # targets therefore enter and leave the layout as navigation occurs.
+    # Native Pages owns navigation. Risk alone keeps one lazily mounted body
+    # in the shared shell so returning to it preserves the current hierarchy.
     dash_options["suppress_callback_exceptions"] = True
     dash_options["use_pages"] = True
     dash_options["pages_folder"] = ""
@@ -456,7 +454,7 @@ def build_app(
 
     def stock_page_body():
         """Paint Stock immediately; its page-local callback owns source I/O."""
-        if stock_source is None or stock_portfolio_source is None:
+        if stock_source is None:
             return build_stock_page_route(None, available=False)
 
         snapshot = current_shared_snapshot()
@@ -482,7 +480,6 @@ def build_app(
 
     app.server.config[PAGE_SERVICES_CONFIG_KEY] = {
         "cube_href": cube_href,
-        "risk_page_builder": cube_page_body,
         "data_page_builder": data_page_body,
         "pnl_page_builder": pnl_page_body,
         "stock_page_builder": stock_page_body,
@@ -550,7 +547,7 @@ def build_app(
                                         dcc.Link(
                                             "Statics",
                                             href=static_data_href,
-                                            refresh=True,
+                                            refresh=False,
                                             id="static-data-nav-link",
                                             className="app-nav-link cube-nav-link",
                                         ),
@@ -596,12 +593,44 @@ def build_app(
                 # The handoff callback is registered globally, so its request
                 # output must exist before the Data page is mounted.
                 dcc.Store(id="data-history-request-store", storage_type="memory"),
+                dcc.Store(id="risk-page-mounted", data=False),
+                dcc.Store(id="risk-page-revision", data=None),
+                html.Div(id="risk-page-host", style={"display": "none"}),
                 page_container,
             ],
             className="app-router-shell",
         )
 
     app.layout = serve_layout
+
+    @app.callback(
+        Output("risk-page-host", "children"),
+        Output("risk-page-host", "style"),
+        Output("risk-page-mounted", "data"),
+        Input("_pages_location", "pathname"),
+        State("risk-page-mounted", "data"),
+    )
+    def retain_risk_page(pathname, mounted):
+        """Build Risk once per browser; navigation changes only its visibility."""
+        if app.strip_relative_path(pathname) != "":
+            return no_update, {"display": "none"}, no_update
+        if mounted:
+            return no_update, {}, no_update
+        return cube_page_body(), {}, True
+
+    app.clientside_callback(
+        """
+        function(committed, style, current) {
+            if (!style || style.display === "none" || committed == null
+                || committed === current) return window.dash_clientside.no_update;
+            return committed;
+        }
+        """,
+        Output("risk-page-revision", "data"),
+        Input("data-revision-store", "data"),
+        Input("risk-page-host", "style"),
+        State("risk-page-revision", "data"),
+    )
 
     @app.callback(
         Output("cube-nav-link", "className"),

@@ -25,7 +25,7 @@ def build_stock_page_route(
             [
                 html.H1("Stock", className="page-title"),
                 html.P(
-                    "GetStock and its Portfolio mapping are not configured.",
+                    "The Stock connector is not configured.",
                     id="stock-unavailable",
                     className="static-data-empty",
                 ),

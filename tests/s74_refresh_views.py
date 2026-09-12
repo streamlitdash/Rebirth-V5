@@ -17,6 +17,18 @@ def test_normal_output_receipt_and_mount_match():
     assert panel.children.children == "Result"
 
 
+def test_ready_ids_wait_only_for_updated_table_data_and_figures():
+    @refresh_view(
+        "stock-current", revision_arg="revision", outputs=3, content=[0, 1, 2],
+        ready={0: "table", 1: "raw", 2: "history"},
+    )
+    def callback(revision):
+        return [{"Stock": 10}], no_update, no_update
+
+    *_, receipt = callback(9, {"id": "request-9"})
+    assert receipt["ready_ids"] == ["table"]
+
+
 @pytest.mark.parametrize("result", [(no_update, no_update), (1, no_update)])
 def test_no_update_is_not_completion(result):
     @refresh_view("test", revision_arg="revision", outputs=2, content=[1])

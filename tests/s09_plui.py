@@ -175,6 +175,9 @@ def _native_page(app: Dash, pathname: str = "/"):
     route = _callback(app, "_pages_content.children")
     with app.server.test_request_context(layout_path):
         page, _metadata = route(app.get_relative_path(pathname), "")
+        if app.strip_relative_path(app.get_relative_path(pathname)) == "":
+            mount = _callback(app, "risk-page-host.children")
+            page, _style, _mounted = mount(app.get_relative_path(pathname), False)
     return page
 
 

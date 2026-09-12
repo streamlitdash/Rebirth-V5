@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import operator
+import os
 from pathlib import Path
 from typing import Sequence
 
 import pandas as pd
+
+from cube.app.s01_settings import resolve_data_path
+from cube.ui.s10_table_data import filter_table_rows
 
 JTD_REFERENCE_PATH = Path(__file__).resolve().parents[2] / "data" / "s13_jtd.csv"
 JTD_NUMERIC_COLUMNS = ("Risk JTD", "EAD")  # Add every other measure here.
@@ -56,73 +59,41 @@ def _read_jtd_reference(path_text: str, modified_ns: int, size: int) -> pd.DataF
 
 
 def jtd_reference_rows(
-    underlying: str | Sequence[str], *, path: str | Path = JTD_REFERENCE_PATH
+    underlying: str | Sequence[str], *, path: str | Path | None = None
 ) -> pd.DataFrame:
     """Match raw identities exactly, retaining each CSV row once and all columns."""
     selected = [underlying] if isinstance(underlying, str) else list(underlying)
-    source = Path(path)
+    source = resolve_data_path(
+        str(path) if path is not None else os.getenv("CUBE_JTD_REFERENCE_PATH"),
+        JTD_REFERENCE_PATH, root=JTD_REFERENCE_PATH.parent.parent,
+    )
     try:
         stat = source.stat()
     except OSError as error:
         raise JTDReferenceError(f"JTD reference file is missing: {source}") from error
     frame = _read_jtd_reference(str(source.resolve()), stat.st_mtime_ns, stat.st_size)
-    return frame.loc[frame["Underlying"].isin(selected)].reset_index(drop=True).copy()
-
-
-def _filter_mask(frame: pd.DataFrame, node: dict, depth: int = 0) -> pd.Series:
-    """Evaluate Dash's parsed column-filter tree, never Python or query text."""
-    if not isinstance(node, dict) or depth > 24:
-        raise JTDReferenceError("The table filter is too complex; simplify it.")
-    kind, operation = node.get("type"), node.get("subType")
-    if kind == "open-block":
-        return _filter_mask(frame, node.get("block"), depth + 1)
-    if kind == "logical-operator" and operation in {"&&", "||"}:
-        left = _filter_mask(frame, node.get("left"), depth + 1)
-        right = _filter_mask(frame, node.get("right"), depth + 1)
-        return left & right if operation == "&&" else left | right
-
-    field = node.get("left") or node.get("block") or {}
-    name = field.get("value")
-    if field.get("subType") != "field" or name not in frame:
-        raise JTDReferenceError("Filter a column shown in this table.")
-    values = frame[name]
-    if kind == "unary-operator" and operation in {"is nil", "is blank"}:
-        return values.isna() | values.astype("string").eq("").fillna(False)
-    right = node.get("right") or {}
-    if kind != "relational-operator" or right.get("subType") != "value":
-        raise JTDReferenceError("Use text, =, !=, <, <=, > or >= in the column filter.")
-    value = right.get("value")
-    # The normal Aa filter control is encoded in Dash's operator token.
-    token = str(node.get("value", operation))
-    case_sensitive = token.startswith("s") or ("value" in node and not token.startswith("i"))
-    operation = str(operation).removeprefix("i").removeprefix("s")
-    if operation in {"contains", "datestartswith"}:
-        text, needle = values.astype("string"), str(value)
-        if not case_sensitive:
-            text, needle = text.str.casefold(), needle.casefold()
-        return (text.str.contains(needle, regex=False, na=False)
-                if operation == "contains" else text.str.startswith(needle, na=False))
-    comparisons = {"=": operator.eq, "!=": operator.ne, "<": operator.lt,
-                   "<=": operator.le, ">": operator.gt, ">=": operator.ge}
-    if operation not in comparisons:
-        raise JTDReferenceError("Use text, =, !=, <, <=, > or >= in the column filter.")
-    if pd.api.types.is_numeric_dtype(values):
-        try:
-            value = float(str(value).replace(",", ""))
-        except (TypeError, ValueError) as error:
-            raise JTDReferenceError(f"Enter a number in the {name} filter.") from error
-    else:
-        values, value = values.astype("string"), str(value)
-        if not case_sensitive:
-            values, value = values.str.casefold(), value.casefold()
-    return comparisons[operation](values, value).fillna(False)
+    result = frame.loc[frame["Underlying"].isin(selected)].reset_index(drop=True).copy()
+    if frame.empty:
+        # Keep the ordinary table/filter row visible for an unpopulated template.
+        # This adds column headings only, never exposure or identifier values.
+        existing = {column.casefold() for column in result}
+        for column in ("CRDS", *JTD_NUMERIC_COLUMNS):
+            if column.casefold() not in existing:
+                dtype = "float64" if column in JTD_NUMERIC_COLUMNS else "string"
+                result[column] = pd.Series(dtype=dtype)
+        result.attrs["jtd_empty_source"] = (
+            f"No JTD records loaded: {source.name} contains only column headers. "
+            "Supply the populated JTD reference file to show this selection."
+        )
+    return result
 
 
 def jtd_page(frame, page_current=0, filter_tree=None, sort_by=None, *, filter_query=""):
     """Filter/sort the full branch; return one total row and 25 detail rows."""
-    if str(filter_query or "").strip() and not filter_tree:
-        raise JTDReferenceError("The table filter is incomplete; finish or clear it.")
-    selected = frame.loc[_filter_mask(frame, filter_tree)] if filter_tree else frame
+    try:
+        selected = filter_table_rows(frame, filter_tree, filter_query=filter_query)
+    except ValueError as error:
+        raise JTDReferenceError(str(error)) from error
     numeric = [column for column in frame if pd.api.types.is_numeric_dtype(frame[column])]
     totals = {column: None for column in frame}
     label_column = next((column for column in frame if column not in numeric), None)
@@ -156,7 +127,7 @@ def jtd_page(frame, page_current=0, filter_tree=None, sort_by=None, *, filter_qu
     note = (
         f"{start + 1:,}–{start + len(page):,} of {count:,} matching rows{ordering}. "
         "Total includes every matching row, across all pages."
-        if count else "No matching JTD reference rows."
+        if count else frame.attrs.get("jtd_empty_source", "No matching JTD reference rows.")
     )
     return records, page_count, page_current, note
 

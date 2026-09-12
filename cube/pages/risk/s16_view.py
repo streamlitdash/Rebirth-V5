@@ -644,6 +644,12 @@ def build_layout(
                 else None
             ),
             dcc.Store(
+                id="risk-page-revision",
+                data=int(initial_snapshot.revision) if initial_snapshot is not None else 0,
+            )
+            if include_shared_refresh_shell
+            else None,
+            dcc.Store(
                 id="open-rows-store",
                 data=initial_open_rows,
             ),

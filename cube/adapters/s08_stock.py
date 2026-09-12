@@ -1,4 +1,4 @@
-"""Validated Stock connector boundary with a replaceable temp implementation."""
+"""Trusted current Stock feed and the separate legacy archive adapter."""
 
 from __future__ import annotations
 
@@ -12,10 +12,14 @@ import numpy as np
 import pandas as pd
 
 from cube.domain.s09_stock import (
+    CURRENT_MARKET_VALUE_COLUMN,
+    MARKET_VALUE_CHANGE_COLUMN,
     STOCK_COLUMNS,
     STOCK_IDENTITY_COLUMNS,
     STOCK_NUMERIC_COLUMNS,
     STOCK_TEXT_COLUMNS,
+    map_stock_comparison_portfolios,
+    map_stock_portfolios,
     validate_stock_frame,
 )
 from cube.history import (
@@ -228,13 +232,86 @@ _TEMP_STOCK_ADAPTER = build_stock_adapter(stock=_temp_stock_source)
 
 
 def get_stock(stock_date: object) -> pd.DataFrame:
-    """Return validated temp Stock data for the selected date.
+    """Return a validated legacy fixture for an exact archive date.
 
-    Replace ``_temp_stock_source`` with the site's real implementation at the
-    composition boundary; callers keep the same exact schema.
+    Retained for archive consumers. The current page uses the separate trusted
+    ``get_current_stock`` connector below, which is the production replacement.
     """
 
     return _TEMP_STOCK_ADAPTER.get_stock(stock_date)
+
+
+def _temp_current_stock_source(stock_date: object) -> pd.DataFrame:
+    """Adapt the bundled historical fixtures to the simple current-page feed.
+
+    Only this temporary implementation compares archive snapshots and maps
+    portfolios. The production connector supplies its own dimensions, Stock
+    and dStock directly. A stale fixture is labelled with its actual date.
+    """
+
+    from cube.services.s05_sources import get_portfolio_config
+
+    requested = normalize_stock_date(stock_date)
+    dates = []
+    for leaf in STOCK_ARCHIVE_ROOT.iterdir():
+        if not (leaf / STOCK_SUCCESS_FILE_NAME).is_file():
+            continue
+        try:
+            date = pd.Timestamp(leaf.name)
+        except ValueError:
+            continue
+        if date <= requested and (leaf / STOCK_FILE_NAME).is_file():
+            dates.append(date)
+    dates.sort()
+    if not dates:
+        raise ValueError(
+            f"No completed Stock archive exists on or before {requested.date()}"
+        )
+
+    actual_date = dates[-1]
+    current = get_stock(actual_date)
+    config = get_portfolio_config(actual_date)
+    if len(dates) > 1:
+        mapped = map_stock_comparison_portfolios(
+            current, get_stock(dates[-2]), config,
+        )
+        # An identity absent from a completed current snapshot has closed.
+        mapped["Stock"] = mapped[CURRENT_MARKET_VALUE_COLUMN].fillna(0.0)
+        mapped["dStock"] = mapped[MARKET_VALUE_CHANGE_COLUMN]
+    else:
+        mapped = map_stock_portfolios(current, config)
+        mapped["Stock"] = mapped["Market Value"]
+        mapped["dStock"] = np.nan  # No earlier observation exists.
+
+    mapped = mapped.rename(columns={
+        "SignoffGroup": "Sign-off group",
+        "Category": "Group",  # The demo uses its existing Category mapping.
+        "CPTY": "Counterparty name",
+    })
+    dimensions = [
+        "Sign-off group", "Group", "Counterparty name", "CRDS",
+        "Portfolio", "Instrument", "Currency", "Product", "Activity",
+    ]
+    if "Sub Category" in mapped:
+        dimensions.append("Sub Category")
+    result = mapped[[*dimensions, "Stock", "dStock"]].copy()
+    result.attrs["stock_date"] = actual_date.date().isoformat()
+    result.attrs["notice"] = f"{TEMP_NOTICE} archive snapshot"
+    if len(dates) > 1:
+        result.attrs["previous_stock_date"] = dates[-2].date().isoformat()
+    return result
+
+
+def get_current_stock(stock_date: object) -> pd.DataFrame:
+    """Return the connector's DataFrame unchanged for the Stock page.
+
+    Replace the single return below with ``return your_connector(stock_date)``.
+    Supply numeric ``Stock`` and ``dStock`` plus your index columns, including
+    the identifier used for history. This boundary does not validate, rename,
+    map, copy, compare or discard anything returned by your real connector.
+    """
+
+    return _temp_current_stock_source(stock_date)
 
 
 # Retain the business-facing name from the requested external connector.
@@ -257,6 +334,7 @@ __all__ = [
     "StockConnectorAdapter",
     "StockSource",
     "build_stock_adapter",
+    "get_current_stock",
     "get_stock",
     "load_stock_archive_leaf",
     "load_stock_history",

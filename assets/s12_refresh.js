@@ -60,7 +60,8 @@
   app.pendingCommittedDataRevision = Number(app.pendingCommittedDataRevision || 0);
   app.observedPublishedDataRevision = Number(app.observedPublishedDataRevision || 0);
   app.canPublishDataRevision = () => Boolean(
-    (node("cube-page-container") && node("risk-type-tabs")) || node("pnl-page-container")
+    (node("cube-page-container") && node("risk-type-tabs")
+      && node("risk-page-host")?.style.display !== "none") || node("pnl-page-container")
     || node("data-page") || node("stock-page") || node("static-data-page")
   );
   const knownRevision = () => Math.max(0,

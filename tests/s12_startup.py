@@ -75,7 +75,7 @@ def _native_page(
     *,
     browser_path: str | None = None,
 ):
-    """Materialize one native page using this app's Flask service context."""
+    """Materialize the active route, including Risk's separate retained host."""
     routes_prefix = app.config.routes_pathname_prefix
     layout_path = f"{routes_prefix}_dash-layout"
     response = app.server.test_client().get(layout_path)
@@ -86,7 +86,11 @@ def _native_page(
         app.get_relative_path(page_path) if browser_path is None else browser_path
     )
     with app.server.test_request_context(layout_path):
-        return route(pathname, "")
+        page, metadata = route(pathname, "")
+        if app.strip_relative_path(pathname) == "":
+            mount = _callback_for_output(app, "risk-page-host", "children")
+            page, _style, _mounted = mount(pathname, False)
+        return page, metadata
 
 
 def _wait_for_phase(
@@ -526,7 +530,7 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     original_read_text = Path.read_text
     original_read_csv = pd.read_csv
     original_read_parquet = pd.read_parquet
-    original_get_stock = app_module.get_stock
+    original_get_stock = app_module.get_current_stock
     original_stock_history_repository = app_module.SQLStockHistoryRepository
     stock_history_repositories: list[object] = []
 
@@ -570,7 +574,7 @@ def test_composed_cold_shell_does_not_catalog_or_read_annual_history(
     monkeypatch.setattr(Path, "read_text", tracked_read_text)
     monkeypatch.setattr(pd, "read_csv", tracked_read_csv)
     monkeypatch.setattr(pd, "read_parquet", tracked_read_parquet)
-    monkeypatch.setattr(app_module, "get_stock", tracked_get_stock)
+    monkeypatch.setattr(app_module, "get_current_stock", tracked_get_stock)
     monkeypatch.setattr(
         app_module,
         "SQLStockHistoryRepository",
@@ -691,7 +695,7 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
         "P&L",
         "Statics",
     ]
-    assert primary_navigation.children[-1].refresh is True
+    assert primary_navigation.children[-1].refresh is False
     assert header_actions.children[1] is primary_navigation
     assert [item.id for item in header_utilities.children] == [
         "theme-toggle",

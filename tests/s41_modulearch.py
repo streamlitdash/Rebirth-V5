@@ -49,8 +49,8 @@ def test_stock_projection_history_view_and_callbacks_have_page_owners() -> None:
         "s01_data.py": (
             "class StockPageData",
             "def load_stock_page_data",
-            "def stock_display_rows",
-            "def stock_history_identities",
+            "def stock_index_columns",
+            "def stock_identifier",
         ),
         "s02_history.py": (
             "class SQLStockHistoryRepository",
@@ -58,18 +58,17 @@ def test_stock_projection_history_view_and_callbacks_have_page_owners() -> None:
         ),
         "s03_view.py": (
             "def build_stock_page_shell",
-            "def build_stock_page_from_data",
-            "def build_stock_table",
+            "def stock_table_columns",
+            "def stock_number_styles",
         ),
         "s04_callbacks.py": (
             "def register_callbacks",
             "def load_current_stock",
             "def render_current_stock",
-            "def load_stock_history",
+            "def stock_history_result",
         ),
         "s05_pivot.py": (
-            "class StockPivotResult",
-            "def build_stock_pivot",
+            "def build_stock_tree",
         ),
     }
     for filename, symbols in expected_symbols.items():

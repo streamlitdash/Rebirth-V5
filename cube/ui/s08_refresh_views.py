@@ -23,9 +23,11 @@ def _error_message(value):
     return _error_message(props.get("children"))
 
 
-def refresh_view(owner, *, revision_arg, outputs, content, stamp=()):
+def refresh_view(owner, *, revision_arg, outputs, content, stamp=(), ready=None):
     """Append one receipt; the final callback State is the browser request.
 
+    ``ready`` maps non-children outputs (table data/graph figures) to their DOM
+    IDs. Only updated outputs are awaited; closed or unchanged views add no work.
     This observes existing work. It neither starts work nor stores financial rows.
     Keep this decorator directly below @app.callback, which owns the extra Output.
     """
@@ -68,6 +70,11 @@ def refresh_view(owner, *, revision_arg, outputs, content, stamp=()):
                 receipt.update(status="failed", message=message)
             result = list(result)
             receipt["mounts"] = []
+            if ready:
+                receipt["ready_ids"] = [
+                    component_id for index, component_id in ready.items()
+                    if result[index] is not no_update
+                ]
             for index in stamp:
                 if result[index] is no_update:
                     continue

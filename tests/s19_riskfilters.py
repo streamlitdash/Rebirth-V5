@@ -1325,7 +1325,7 @@ def test_only_the_committed_risk_filter_state_reaches_applied_stores() -> None:
     assert applied_exclude == ["exclude"]
     assert inputs == {
         (RISK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
-        ("data-revision-store", "data"),
+        ("risk-page-revision", "data"),
     }
 
 

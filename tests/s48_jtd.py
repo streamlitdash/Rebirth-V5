@@ -12,6 +12,7 @@ from dash import Dash, dash_table
 from cube.pages.risk.s07_explorer import register_explorer_callbacks
 from cube.pages.risk.s13_workspacetables import build_jtd_reference_table
 from cube.services.s08_jtd import JTDReferenceError, JTD_PAGE_SIZE, jtd_page, jtd_reference_rows
+from cube.ui.s10_table_data import filter_table_rows
 
 
 def walk(node):
@@ -60,6 +61,59 @@ def test_bad_reference_has_useful_error(tmp_path, content, match):
     path.write_text(content)
     with pytest.raises(JTDReferenceError, match=match):
         jtd_reference_rows("therm", path=path)
+
+
+def test_header_only_deployed_shape_keeps_the_table_and_explains_missing_data(tmp_path):
+    # The published demo source contained just this header, without any records.
+    path = tmp_path / "s13_jtd.csv"
+    path.write_text("Underlying\n", encoding="utf-8")
+    result = jtd_reference_rows(["therm"], path=path)
+    assert result.empty
+    component = build_jtd_reference_table(result, ["therm"])
+    table = next(node for node in walk(component) if isinstance(node, dash_table.DataTable))
+    note = next(node.children for node in walk(component) if getattr(node, "id", None) == "jtd-page-note")
+    assert [column["id"] for column in table.columns] == ["Underlying", "CRDS", "Risk JTD", "EAD"]
+    assert table.filter_action == "custom" and table.page_action == "custom"
+    assert "only column headers" in note and "s13_jtd.csv" in note
+    assert len(table.data) == 1 and table.data[0]["Risk JTD"] is None
+    # The page callback must preserve the useful source status after mounting.
+    assert jtd_page(result)[3] == note
+
+
+def test_unmatched_branch_keeps_column_filters_without_claiming_source_is_empty(tmp_path):
+    path = tmp_path / "jtd.csv"
+    path.write_text("Underlying,CRDS,Risk JTD,EAD\nother,000001,-1000,2000\n")
+    result = jtd_reference_rows(["therm"], path=path)
+    component = build_jtd_reference_table(result, ["therm"])
+    table = next(node for node in walk(component) if isinstance(node, dash_table.DataTable))
+    assert table.data[0]["Risk JTD"] is None
+    assert jtd_page(result)[3] == "No matching JTD reference rows."
+
+
+def test_configured_jtd_file_is_resolved_from_app_root_not_working_directory(tmp_path, monkeypatch):
+    from cube.services import s08_jtd as service
+
+    app_root = tmp_path / "app"
+    source = app_root / "feeds" / "real.csv"
+    source.parent.mkdir(parents=True)
+    source.write_text("Underlying,CRDS,Risk JTD,EAD\ntherm,000001,-1000,2000\n")
+    monkeypatch.setattr(service, "JTD_REFERENCE_PATH", app_root / "data" / "s13_jtd.csv")
+    monkeypatch.setenv("CUBE_JTD_REFERENCE_PATH", "feeds/real.csv")
+    monkeypatch.chdir(tmp_path)
+    result = service.jtd_reference_rows("therm")
+    assert result["CRDS"].tolist() == ["000001"]
+    assert result["Risk JTD"].tolist() == [-1000]
+
+
+def test_shared_filter_is_literal_and_does_not_mutate_the_connector_frame(frame):
+    before = frame.copy(deep=True)
+    assert filter_table_rows(frame) is frame
+    filtered = filter_table_rows(frame, query("CRDS", "contains", "000059"))
+    assert filtered["CRDS"].tolist() == ["000059"]
+    assert filter_table_rows(frame, query("Underlying", "contains", "__import__('os')")).empty
+    with pytest.raises(ValueError, match="incomplete"):
+        filter_table_rows(frame, filter_query="{EAD} >")
+    pd.testing.assert_frame_equal(frame, before)
 
 
 def test_full_total_stays_first_on_every_page_and_never_changes_source(frame):

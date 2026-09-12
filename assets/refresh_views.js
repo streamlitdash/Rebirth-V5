@@ -5,9 +5,13 @@
     let mountedPage = null;
     const node = (id) => document.getElementById(id);
     const open = (id) => Boolean(node(id)?.open);
+    const riskVisible = () => Boolean(node("risk-type-tabs"))
+        && node("risk-page-host")?.style.display !== "none";
     const editorOpen = (section) => Boolean(node(`pl-${section}-summary`)?.closest("details")?.open);
+    const pageTail = () => window.location.pathname.replace(/\/+$/, "").split("/").pop();
     const visibleOwners = (workspace) => {
-        if (node("risk-type-tabs")) {
+        const tail = pageTail();
+        if (!["pnl", "data", "stock", "static-data"].includes(tail) && riskVisible()) {
             const owners = ["risk-explorer"];
             if (open("ag-pl-details")) {
                 if (workspace === "aggregate-pl") owners.push("aggregate-pl");
@@ -18,21 +22,21 @@
             if (open("unmapped-books-details")) owners.push("unmapped-books");
             return owners;
         }
-        if (node("pnl-page-container")) {
+        if (tail === "pnl" && node("pnl-page-container")) {
             const owners = ["pnl-summary"];
             for (const section of ["sog", "portfolio"]) if (editorOpen(section)) owners.push(`pnl-editor-${section}`);
             return owners;
         }
-        if (node("data-page")) return ["data-history"];
-        if (node("stock-current-table")) return ["stock-current"];
+        if (tail === "data" && node("data-page")) return ["data-history"];
+        if (tail === "stock" && node("stock-current-table")) return ["stock-current"];
         return [];
     };
     const pageMounted = () => {
         // During routing, the old page can still exist after pathname changes.
         // Wait for the requested root; a temporary DOM gap retires nothing.
-        const tail = window.location.pathname.replace(/\/+$/, "").split("/").pop();
+        const tail = pageTail();
         const expected = {pnl: "pnl-page-container", data: "data-page", stock: "stock-page", "static-data": "static-data-page"}[tail];
-        return expected ? Boolean(node(expected)) : Boolean(node("risk-type-tabs"));
+        return expected ? Boolean(node(expected)) : riskVisible();
     };
     const graphReady = (root) => {
         if (root.matches?.(".dash-graph--pending") || root.querySelector(".dash-graph--pending")) return false;
@@ -51,7 +55,10 @@
         // Two frames let React mount the callback outputs and start Plotly.react.
         const check = () => {
             if (pending.cancelled || mountedPage !== pageKey) return;
-            const roots = (ack.mounts || []).map(id => document.querySelector(`[data-refresh-render="${id}"]`));
+            const roots = [
+                ...(ack.mounts || []).map(id => document.querySelector(`[data-refresh-render="${id}"]`)),
+                ...(ack.ready_ids || []).map(node),
+            ];
             if (roots.some(root => !root || !graphReady(root))) {
                 setTimeout(check, 100);
                 return;

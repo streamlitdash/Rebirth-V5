@@ -601,12 +601,13 @@ def build_jtd_reference_table(
     *,
     error: str | None = None,
 ) -> html.Div:
+    """Keep the column filters visible even when a valid source has no rows."""
     keys = [underlying] if isinstance(underlying, str) else list(underlying or [])
     label = keys[0] if len(keys) == 1 else f"{len(keys):,} underlyings"
     title = f"JTD reference — {label}" if keys else "JTD reference"
     if error:
         content = html.Div(error, className="empty-state", role="status")
-    elif frame is None or frame.empty:
+    elif frame is None:
         content = html.Div(
             "No JTD reference rows for this selection." if keys
             else "Select an Underlying row to show its JTD reference.",
@@ -632,10 +633,12 @@ def build_jtd_reference_table(
                 sort_action="custom", sort_mode="multi", sort_by=[],
                 filter_action="custom", filter_query="",
                 filter_options={"case": "insensitive", "placeholder_text": "Filter…"},
-                style_table={"overflowX": "auto"},
+                style_table={"overflowX": "auto", "width": "100%"},
                 style_cell={"padding": "7px 10px", "fontSize": 13, "textAlign": "left",
-                            "fontFamily": "inherit", "backgroundColor": "white", "color": "#111111"},
+                            "minWidth": "110px", "fontFamily": "inherit",
+                            "backgroundColor": "white", "color": "#111111"},
                 style_header={"fontWeight": "600", "backgroundColor": "#f3f4f6"},
+                style_filter={"backgroundColor": "white", "textAlign": "left"},
                 style_cell_conditional=[
                     {"if": {"column_id": c}, "textAlign": "right"} for c in numeric
                 ],

@@ -20,7 +20,6 @@ from cube.services.s04_savedviews import (
 )
 from cube.services.s05_sources import build_production_refresh_manager
 from cube.pages.pnl.s01_common import PL_SAVED_VIEW_CONTROLS
-from cube.pages.stock.s01_data import STOCK_SAVED_VIEW_CONTROLS
 from cube.pages.risk.s01_common import RISK_SAVED_VIEW_CONTROLS
 from cube.pages.risk.s03_defaults import DEFAULT_RISK_FILTER_LABEL
 from cube.app import s07_factory as factory_module
@@ -45,6 +44,14 @@ from cube.ui.s03_filters import (
     selected_saved_view_label,
 )
 
+
+# Legacy files may still exist on disk; this is only a repository test fixture.
+from cube.ui.s03_filters import SavedFilterViewControls
+LEGACY_STOCK_CONTROLS = SavedFilterViewControls(
+    scope="stock", prefix="stock", fields=FILTER_DIMENSION_FIELDS,
+    filter_ids={field.key: f"stock-{field.dash_filter_id}" for field in FILTER_DIMENSION_FIELDS},
+    exclude_id="stock-filter-exclude-selected",
+)
 
 FILTER_KEYS = tuple(field.key for field in FILTER_DIMENSION_FIELDS)
 RISK_FILTER_KEYS = tuple(field.key for field in RISK_FILTER_DIMENSION_FIELDS)
@@ -103,12 +110,12 @@ def test_risk_stock_and_pnl_share_all_portfolio_filter_fields() -> None:
         "Category",
         "Sub Category",
     )
-    assert tuple(field.key for field in STOCK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
+    assert tuple(field.key for field in LEGACY_STOCK_CONTROLS.fields) == FILTER_KEYS
     assert tuple(field.key for field in RISK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
     assert tuple(field.key for field in PL_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
     assert {
         RISK_SAVED_VIEW_CONTROLS.selector_id,
-        STOCK_SAVED_VIEW_CONTROLS.selector_id,
+        LEGACY_STOCK_CONTROLS.selector_id,
         PL_SAVED_VIEW_CONTROLS.selector_id,
     } == {
         "risk-saved-view-selector",
@@ -479,42 +486,42 @@ def test_request_store_is_validated_and_detects_later_manual_edits(
         base_exclude_selected=False,
     )
 
-    values, exclude = saved_view_request_values(request, STOCK_SAVED_VIEW_CONTROLS)
+    values, exclude = saved_view_request_values(request, LEGACY_STOCK_CONTROLS)
     assert values[0] == ["Macro"]
     assert exclude == ["exclude"]
     assert saved_view_request_matches_base(
         request,
-        STOCK_SAVED_VIEW_CONTROLS,
+        LEGACY_STOCK_CONTROLS,
         tuple([] for _key in FILTER_KEYS),
         [],
     )
     manually_edited = [[], [], ["BOOK-B"], [], []]
     assert not saved_view_request_matches_base(
         request,
-        STOCK_SAVED_VIEW_CONTROLS,
+        LEGACY_STOCK_CONTROLS,
         manually_edited,
         [],
     )
 
     request["scope"] = "risk"
     with pytest.raises(ValueError, match="another page"):
-        saved_view_request_values(request, STOCK_SAVED_VIEW_CONTROLS)
+        saved_view_request_values(request, LEGACY_STOCK_CONTROLS)
 
     current = _filters("Manual")
     base_request = saved_view_apply_request(
-        base_saved_filter_view(STOCK_SAVED_VIEW_CONTROLS),
+        base_saved_filter_view(LEGACY_STOCK_CONTROLS),
         base_filters=current,
         base_exclude_selected=True,
     )
     base_values, base_exclude = saved_view_request_values(
         base_request,
-        STOCK_SAVED_VIEW_CONTROLS,
+        LEGACY_STOCK_CONTROLS,
     )
     assert base_values == ([], [], [], [], [])
     assert base_exclude == []
     assert saved_view_request_matches_base(
         base_request,
-        STOCK_SAVED_VIEW_CONTROLS,
+        LEGACY_STOCK_CONTROLS,
         tuple(current[key] for key in FILTER_KEYS),
         ["exclude"],
     )
@@ -755,7 +762,7 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     )
     assert risk_exclude == ["exclude"]
     with pytest.raises(ValueError, match="another page"):
-        saved_view_request_values(risk_request, STOCK_SAVED_VIEW_CONTROLS)
+        saved_view_request_values(risk_request, LEGACY_STOCK_CONTROLS)
 
     pnl_apply = _callback_for_output(
         app,

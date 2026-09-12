@@ -614,6 +614,10 @@ def register_refresh_callbacks(
             reset_generation_state,
         ):
             """Execute one browser request and return an explicit callback receipt."""
+            # Replacing the cold shared shell can hydrate this Store with None.
+            # That is a mount notification, not a rejected user action.
+            if request_data is None:
+                raise PreventUpdate
             request = request_data if isinstance(request_data, Mapping) else {}
             request_id = request.get("id")
             trigger = request.get("trigger")

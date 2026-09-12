@@ -72,7 +72,7 @@ def register_promotion_callbacks(
         Output(PROMOTION_RECALCULATE_ID, "aria-busy"),
         Input(PROMOTION_RECALCULATE_ID, "n_clicks"),
         Input(PROMOTION_RESET_ID, "n_clicks"),
-        Input("data-revision-store", "data"),
+        Input("risk-page-revision", "data"),
         Input("dimension-filter-values-store", "data"),
         Input("risk-filter-exclude-applied-store", "data"),
         Input("risk-explorer-options", "value"),
@@ -124,7 +124,7 @@ def register_promotion_callbacks(
             current = baseline
 
         triggered = ctx.triggered_id
-        if triggered in {None, "data-revision-store", PROMOTION_RESET_ID} or (
+        if triggered in {None, "risk-page-revision", PROMOTION_RESET_ID} or (
             current.revision != revision
         ):
             return (

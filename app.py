@@ -7,7 +7,7 @@ import logging
 import os
 from pathlib import Path
 
-from cube.adapters.s08_stock import get_stock
+from cube.adapters.s08_stock import get_current_stock
 from cube.app.s07_factory import build_app
 from cube.app.s03_logging import configure_runtime_logging, perf_span
 from cube.app.s01_settings import RuntimeSettings, resolve_data_path
@@ -17,7 +17,6 @@ from cube.pages.stock.s02_history import SQLStockHistoryRepository
 from cube.services.s03_adjustments import LocalCsvAdjustmentRepository
 from cube.services.s05_sources import (
     build_production_refresh_manager,
-    get_portfolio_config,
     send_portfolio_pl,
     send_sog_pl,
 )
@@ -80,8 +79,7 @@ def create_app(settings: RuntimeSettings | None = None):
         return build_app(
             refresh_manager=manager,
             pl_send_config=pl_send_config,
-            stock_source=get_stock,
-            stock_portfolio_source=get_portfolio_config,
+            stock_source=get_current_stock,
             stock_history_source=SQLStockHistoryRepository(history_path),
             saved_view_root=saved_view_path,
             pl_history_root=history_path,

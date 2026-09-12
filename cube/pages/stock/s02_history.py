@@ -391,6 +391,36 @@ class SQLStockHistoryRepository:
             end_date=end,
         )
 
+    def stock_series(self, identity, start_date, end_date):
+        """Read all retained CRDS history, including books no longer held today.
+
+        This is the adapter for the bundled legacy archive. A real history
+        connector can instead return Stock Date, Stock and dStock directly.
+        """
+        identifier, value = next(iter(identity.items()))
+        if identifier != "CRDS":
+            raise ValueError("The bundled archive uses CRDS; configure your CIDS history connector.")
+        # Only immutable demo labels changed spelling between archived releases.
+        value = str(value).replace("TEMP_REPLACE_ME", "FAKE_REPLACE_ME")
+        end = normalize_stock_date(end_date)
+        with self._lock:
+            frame = self._current_connection().execute(
+                '''SELECT "Stock Date", sum("Market Value") AS "Stock"
+                   FROM stock_history WHERE "CRDS" = ? AND "Stock Date" <= ?
+                   GROUP BY "Stock Date" ORDER BY "Stock Date"''',
+                [value, end.date().isoformat()],
+            ).df()
+        # The archive supplies levels only. Compute changes here, never in the page.
+        if frame.empty:
+            return pd.DataFrame(columns=["Stock Date", "Stock", "dStock"])
+        values = frame.set_index("Stock Date")["Stock"].reindex(
+            pd.bdate_range(frame["Stock Date"].min(), end))
+        result = pd.DataFrame({"Stock Date": values.index, "Stock": values.values,
+                               "dStock": values.diff().values})
+        if start_date is not None:
+            result = result.loc[result["Stock Date"].ge(pd.Timestamp(start_date))]
+        return result.dropna(subset=["Stock"], how="all").reset_index(drop=True)
+
 
 def build_stock_history_empty_figure(message: str) -> go.Figure:
     figure = go.Figure()
@@ -427,7 +457,8 @@ def stock_value_history_frame(
 
     if not isinstance(history, pd.DataFrame):
         raise TypeError("Stock history must be a pandas DataFrame")
-    required = {STOCK_DATE_COLUMN, "Market Value"}
+    measure = "Stock" if "Stock" in history else "Market Value"
+    required = {STOCK_DATE_COLUMN, measure}
     missing = sorted(required - set(history.columns))
     if missing:
         raise ValueError(f"Stock history is missing required columns: {missing}")
@@ -438,11 +469,10 @@ def stock_value_history_frame(
 
     display_dates = pd.bdate_range(start, end)
     calculation_dates = pd.bdate_range(start - pd.offsets.BDay(1), end)
-    source = history.loc[:, [STOCK_DATE_COLUMN, "Market Value"]].copy()
+    source = history.loc[:, [STOCK_DATE_COLUMN, measure, *(["dStock"] if "dStock" in history else [])]].copy()
     if not source.empty:
         source[STOCK_DATE_COLUMN] = source[STOCK_DATE_COLUMN].map(normalize_stock_date)
-        source["Market Value"] = pd.to_numeric(source["Market Value"], errors="coerce")
-        stock = source.groupby(STOCK_DATE_COLUMN, sort=True)["Market Value"].sum(
+        stock = source.groupby(STOCK_DATE_COLUMN, sort=True)[measure].sum(
             min_count=1
         )
     else:
@@ -452,7 +482,8 @@ def stock_value_history_frame(
         {
             STOCK_DATE_COLUMN: display_dates,
             "Stock": stock.reindex(display_dates).to_numpy(),
-            "dStock": stock.diff().reindex(display_dates).to_numpy(),
+            "dStock": (source.groupby(STOCK_DATE_COLUMN)["dStock"].sum(min_count=1)
+                       if "dStock" in source else stock.diff()).reindex(display_dates).to_numpy(),
         }
     )
     return result
@@ -470,8 +501,8 @@ def build_stock_value_history_figure(
 
     crds_value = str(crds or "").strip()
     activity_value = str(activity or "").strip()
-    if not crds_value or not activity_value:
-        raise ValueError("Select both CRDS and Activity")
+    if not crds_value:
+        raise ValueError("Select CRDS or CIDS")
     values = stock_value_history_frame(
         history,
         start_date=start_date,
@@ -502,7 +533,7 @@ def build_stock_value_history_figure(
         template="plotly_white",
         height=380,
         margin={"l": 65, "r": 65, "t": 55, "b": 45},
-        title=f"{crds_value} · {activity_value}",
+        title=f"{crds_value} · {activity_value}" if activity_value else crds_value,
         hovermode="x unified",
         barmode="overlay",
         xaxis_title=STOCK_DATE_COLUMN,

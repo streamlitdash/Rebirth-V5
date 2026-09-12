@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from dash import no_update
+from dash.exceptions import PreventUpdate
 
 baseline = importlib.import_module("cube.pages.risk.s15_refresh")
 
@@ -172,7 +173,14 @@ def test_response_preparation_failure_is_not_lost_after_manager_finishes():
     assert result[-1]["revision"] == 8
 
 
-@pytest.mark.parametrize("bad_request", [None, {}, {"id": "x", "trigger": "bad", "count": 1},
+def test_empty_request_store_on_mount_does_not_replace_the_refresh_status():
+    fn, manager, _cache, _scope = fixture()
+    with pytest.raises(PreventUpdate):
+        fn(None, {}, True, 5, 2)
+    assert not manager.calls
+
+
+@pytest.mark.parametrize("bad_request", [{}, {"id": "x", "trigger": "bad", "count": 1},
                                       {"id": "x", "trigger": "refresh-pl-button", "count": 0},
                                       {"id": "x", "trigger": "refresh-pl-button", "count": True}])
 def test_invalid_request_never_calls_sources(bad_request):

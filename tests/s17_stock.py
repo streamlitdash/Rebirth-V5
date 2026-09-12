@@ -1,13 +1,14 @@
-"""Contracts for dated Stock comparison, local filters, and lazy callbacks."""
+"""Legacy archive/domain contracts retained after the simple Stock page rewrite.
+
+Current page interaction and refresh contracts are tested in s81_stock_simple.py.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from dash import no_update
 from flask import Flask
 
 from cube.adapters import s08_stock as stock_adapter
@@ -46,21 +47,9 @@ from cube.domain.s09_stock import (
     prepare_stock_hierarchy,
     summarize_stock_hierarchy,
 )
-from cube.services.s05_sources import build_production_refresh_manager
 from cube.pages import PAGE_SERVICES_CONFIG_KEY
-from cube.pages.stock import s04_callbacks as stock_callbacks
+from cube.pages.stock.s01_data import default_stock_dates
 from cube.pages.stock import layout as stock_page_layout
-from cube.pages.stock.s01_data import (
-    STOCK_DISPLAY_COLUMNS,
-    STOCK_FILTER_FIELDS,
-    STOCK_FILTER_IDS,
-    STOCK_SAVED_VIEW_CONTROLS,
-    default_stock_activities,
-    default_stock_dates,
-    normalize_stock_date_pair,
-    stock_display_rows,
-    stock_history_identities,
-)
 from cube.pages.stock.s02_history import (
     SQLStockHistoryRepository,
     build_stock_value_history_figure,
@@ -68,17 +57,6 @@ from cube.pages.stock.s02_history import (
     stock_history_identity_from_token,
     stock_value_history_frame,
 )
-from cube.pages.stock.s03_view import (
-    build_stock_page_shell,
-)
-from cube.pages.stock.s05_pivot import (
-    STOCK_PIVOT_DEFAULT_ROWS,
-    build_stock_pivot,
-    stock_pivot_row_payload,
-    toggle_stock_pivot_path,
-)
-from cube.app.s07_factory import build_app
-from cube.ui.s03_filters import committed_filter_state
 from tools.s01_fixtures import (
     HISTORICAL_MARKET_DATES,
     _materialize_history_leaf,
@@ -681,15 +659,6 @@ def test_stock_history_custom_period_uses_the_selected_start() -> None:
     assert end.date().isoformat() == "2026-08-21"
 
 
-@pytest.mark.parametrize(
-    ("current", "prior"),
-    [("2026-08-14", "2026-08-14"), ("2026-08-14", "2026-08-15")],
-)
-def test_stock_date_pair_requires_prior_before_current(
-    current: str, prior: str
-) -> None:
-    with pytest.raises(ValueError, match="must be earlier"):
-        normalize_stock_date_pair(current, prior)
 
 
 def test_native_stock_page_resolves_the_active_flask_service() -> None:
@@ -716,75 +685,10 @@ def _v5_config() -> pd.DataFrame:
     )
 
 
-def test_v5_latest_projection_is_row_level_and_preserves_unmapped() -> None:
-    current = _stock(
-        [
-            ["CRDS-1", "CPTY-A", "BOOK_A", "EURUSD", "USD", 110.0, 30.0],
-            ["CRDS-2", "CPTY-B", "BOOK_A", "CDX", "USD", 50.0, 12.0],
-            ["CRDS-3", "CPTY-C", "BOOK_UNKNOWN", "GILT", "GBP", 20.0, 8.0],
-        ]
-    )
-    prior = current.copy()
-    prior["Market Value"] = [25.0, 11.0, 10.0]
-    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
-
-    display = stock_display_rows(mapped)
-
-    assert tuple(display.columns) == STOCK_DISPLAY_COLUMNS
-    assert display["CRDS"].tolist() == ["CRDS-1", "CRDS-2", "CRDS-3"]
-    assert display["Stock"].tolist() == [30.0, 12.0, 8.0]
-    assert display["dStock"].tolist() == [5.0, 1.0, -2.0]
-    assert display["Portfolio Mapped"].tolist() == [True, True, False]
-    assert display.loc[2, "Activity"] == UNMAPPED_VALUE
-    assert display.loc[0, "SubCategory"] == "Rates"
 
 
-def test_v5_default_activities_resolve_exact_fixture_aliases() -> None:
-    frame = pd.DataFrame(
-        {
-            "Activity": [
-                "TEMP_REPLACE_ME - Activity 3",
-                "Something Else",
-                "TEMP_REPLACE_ME - Activity 1",
-                "TEMP_REPLACE_ME - Activity 2",
-            ]
-        }
-    )
-
-    assert default_stock_activities(frame) == [
-        "TEMP_REPLACE_ME - Activity 1",
-        "TEMP_REPLACE_ME - Activity 2",
-        "TEMP_REPLACE_ME - Activity 3",
-    ]
 
 
-def test_v5_history_selection_resolves_exact_source_identities() -> None:
-    current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
-
-    identities = stock_history_identities(
-        mapped,
-        crds="CRDS-1",
-        activity="Activity 1",
-    )
-
-    assert identities == [
-        {
-            "CRDS": "CRDS-1",
-            "CPTY": "CPTY-A",
-            "Portfolio": "BOOK_A",
-            "Instrument": "EURUSD",
-            "Currency": "USD",
-        }
-    ]
-    assert (
-        stock_history_identities(
-            mapped,
-            crds="CRDS-4",
-            activity=UNMAPPED_VALUE,
-        )
-        == []
-    )  # prior-only rows are not part of latest Stock
 
 
 def test_v5_stock_and_dstock_history_retain_business_day_gaps() -> None:
@@ -819,580 +723,33 @@ def test_v5_stock_and_dstock_history_retain_business_day_gaps() -> None:
     assert figure.data[0].connectgaps is False
 
 
-def test_v5_shell_is_one_page_with_editable_inline_history() -> None:
-    shell = build_stock_page_shell(
-        current_date="2026-08-14",
-        prior_date="2026-08-13",
-        history_available=True,
-    )
-    components = list(_walk(shell))
-    ids = {getattr(component, "id", None) for component in components}
-
-    assert {
-        "stock-current-table",
-        "stock-position-detail-table",
-        "stock-pivot-rows",
-        "stock-pivot-column",
-        "stock-pivot-values",
-        "stock-history-crds",
-        "stock-history-activity",
-        "stock-history-date-range",
-        "stock-history-custom-range-control",
-        "stock-history-load-button",
-        "stock-history-chart",
-        *(
-            f"stock-period-{period}"
-            for _label, period in (
-                ("WTD", "wtd"),
-                ("MTD", "mtd"),
-                ("YTD", "ytd"),
-                ("1Y", "1y"),
-                ("All", "all"),
-                ("Custom", "custom"),
-            )
-        ),
-        *(STOCK_FILTER_IDS[field.key] for field in STOCK_FILTER_FIELDS),
-    } <= ids
-    assert {
-        "stock-workspace-tabs",
-        "stock-current-date",
-        "stock-prior-date",
-        "stock-compare-button",
-        "stock-history-table",
-        "stock-source-rows-button",
-        "stock-promotion-threshold",
-    }.isdisjoint(ids)
-    load = next(
-        component
-        for component in components
-        if getattr(component, "id", None) == "stock-history-load-button"
-    )
-    assert load.disabled is False
-    custom_range = next(
-        component
-        for component in components
-        if getattr(component, "id", None) == "stock-history-custom-range-control"
-    )
-    assert custom_range.style == {"display": "none"}
 
 
-def test_v5_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, pd.Timestamp]] = []
-    current, prior = _comparison_legs()
-
-    def stock_source(stock_date: pd.Timestamp) -> pd.DataFrame:
-        calls.append(("stock", stock_date))
-        return current if stock_date == pd.Timestamp("2026-08-14") else prior
-
-    def config_source(stock_date: pd.Timestamp) -> pd.DataFrame:
-        calls.append(("config", stock_date))
-        return _v5_config()
-
-    app = build_app(
-        refresh_manager=build_production_refresh_manager(),
-        stock_source=stock_source,
-        stock_portfolio_source=config_source,
-    )
-    assert calls == []
-    load = _callback_for_input(app, "stock-load-trigger")
-
-    loaded = load(
-        1,
-        "0",
-        0,
-        {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-    )
-    cached = load(
-        1,
-        "0",
-        0,
-        {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-    )
-    filters = _callback_for_output(
-        app,
-        STOCK_SAVED_VIEW_CONTROLS.initialized_id,
-        "data",
-    )
-    filter_state = filters(
-        loaded[0],
-        None,
-        0,
-        *([] for _field in STOCK_FILTER_FIELDS),
-        [],
-        None,
-        False,
-    )
-
-    assert calls == [
-        ("stock", pd.Timestamp("2026-08-14")),
-        ("stock", pd.Timestamp("2026-08-13")),
-        ("config", pd.Timestamp("2026-08-14")),
-    ]
-    assert filter_state[1] == ["Activity 1", "Activity 2", "Activity 3"]
-    assert filter_state[-1] is True
-    selected = [
-        ["Activity 2"],
-        ["SOG-B"],
-        ["BOOK_B"],
-        ["Core"],
-        ["Credit"],
-    ]
-    monkeypatch.setattr(
-        stock_callbacks,
-        "ctx",
-        SimpleNamespace(triggered_id="clear-cache-complete-store"),
-    )
-    preserved = filters(loaded[0], None, 1, *selected, ["exclude"], None, True)
-    assert preserved[1::2][:5] == tuple(selected)
-    assert preserved[-2] == ["exclude"]
-    assert preserved[-1] is True
-    render = _callback_for_output(app, "stock-current-table", "data")
-    rendered = render(
-        loaded[0],
-        None,
-        list(STOCK_PIVOT_DEFAULT_ROWS),
-        "",
-        ["Stock", "dStock"],
-        [],
-        None,
-    )
-    assert rendered[0]
-    assert rendered[3] == "Rows: 3 of 3"
-    assert cached[0] == loaded[0]
 
 
-def test_v5_filter_and_row_click_use_cache_then_prefill_history(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current, prior = _comparison_legs()
-    calls = 0
-
-    def source(stock_date: pd.Timestamp) -> pd.DataFrame:
-        nonlocal calls
-        calls += 1
-        return current if stock_date == pd.Timestamp("2026-08-14") else prior
-
-    app = build_app(
-        refresh_manager=build_production_refresh_manager(),
-        stock_source=source,
-        stock_portfolio_source=lambda _date: _v5_config(),
-    )
-    load = _callback_for_input(app, "stock-load-trigger")
-    token, *_rest = load(
-        1,
-        "0",
-        0,
-        {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-    )
-    render = _callback_for_output(app, "stock-current-table", "data")
-    open_paths: list[str] = []
-    for path in (
-        '["Activity 1"]',
-        '["Activity 1","Core"]',
-        '["Activity 1","Core","CRDS-1"]',
-    ):
-        open_paths = toggle_stock_pivot_path(open_paths, path)
-    committed = committed_filter_state(
-        STOCK_SAVED_VIEW_CONTROLS,
-        "__base__",
-        [["Activity 1"], [], [], [], []],
-        [],
-    )
-    (
-        rows,
-        _columns,
-        detail,
-        row_count,
-        mapped,
-        unmapped,
-        crds_options,
-        _activity_options,
-        _refresh_receipt,
-    ) = render(
-        token,
-        committed,
-        list(STOCK_PIVOT_DEFAULT_ROWS),
-        "",
-        ["Stock", "dStock"],
-        open_paths,
-        None,
-    )
-    selected_row = next(
-        row for row in rows if stock_pivot_row_payload(row["id"])["kind"] == "history"
-    )
-    select = _callback_for_output(app, "stock-history-crds", "value")
-    crds, activity, autoload = select(
-        {
-            "row_id": selected_row["id"],
-            "row": rows.index(selected_row),
-            "column": 0,
-            "column_id": "Hierarchy",
-        },
-        token,
-    )
-
-    assert calls == 2
-    assert row_count == "Rows: 1 of 3"
-    assert mapped == "Mapped: 1"
-    assert unmapped == "Unmapped: 0"
-    assert len(detail) == 1
-    assert len(crds_options) == 3  # manual history remains independent of table filter
-    assert (crds, activity) == ("CRDS-1", "Activity 1")
-    assert autoload == {"crds": "CRDS-1", "activity": "Activity 1"}
-
-    monkeypatch.setattr(
-        stock_callbacks,
-        "ctx",
-        SimpleNamespace(triggered_id="stock-pivot-open-paths"),
-    )
-    pivot_only = render(
-        token,
-        committed,
-        list(STOCK_PIVOT_DEFAULT_ROWS),
-        "",
-        ["Stock", "dStock"],
-        open_paths[:-1],
-        None,
-    )
-    assert pivot_only[0]
-    assert pivot_only[1]
-    assert all(value is no_update for value in pivot_only[2:])
 
 
-def test_stock_pivot_defaults_to_activity_bucket_crds_cpty_and_toggles() -> None:
-    current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
-    display = stock_display_rows(mapped)
-
-    closed = build_stock_pivot(display)
-    assert closed.columns[0]["name"] == "Activity / Bucket / CRDS / CPTY"
-    assert [row["Hierarchy"] for row in closed.records] == [
-        "▸ Activity 1",
-        "▸ Activity 2",
-        "▸ Activity 3",
-    ]
-
-    opened = toggle_stock_pivot_path([], '["Activity 1"]')
-    activity_open = build_stock_pivot(display, open_paths=opened)
-    assert any(
-        row["Hierarchy"] == "\u00a0\u00a0▸ Core" for row in activity_open.records
-    )
-    assert sum(row["Stock"] for row in closed.records) == pytest.approx(
-        display["Stock"].sum()
-    )
 
 
-def test_stock_pivot_column_split_and_values_are_bounded() -> None:
-    current, prior = _comparison_legs()
-    mapped = map_stock_comparison_portfolios(current, prior, _v5_config())
-    display = stock_display_rows(mapped)
-
-    pivot = build_stock_pivot(
-        display,
-        row_fields=["Activity", "CRDS"],
-        column_field="Currency",
-        value_fields=["Stock"],
-    )
-
-    assert [column["name"] for column in pivot.columns[2:]] == [
-        ["GBP", "Stock"],
-        ["USD", "Stock"],
-    ]
-    assert all("dStock" not in column["id"] for column in pivot.columns)
 
 
-def test_stock_saved_view_contract_is_base_review_with_five_filters() -> None:
-    assert STOCK_SAVED_VIEW_CONTROLS.base_label == "Base Review"
-    assert tuple(STOCK_FILTER_IDS) == (
-        "activity",
-        "signoffgroup",
-        "portfolio",
-        "category",
-        "subcategory",
-    )
-    page = build_stock_page_shell(
-        current_date="2026-08-14",
-        prior_date="2026-08-13",
-    )
-    saved_views = next(
-        item
-        for item in _walk(page)
-        if getattr(item, "id", None) == "stock-saved-view-bar"
-    )
-    saved_ids = {getattr(item, "id", None) for item in _walk(saved_views)}
-    assert set(STOCK_FILTER_IDS.values()) <= saved_ids
-    assert STOCK_SAVED_VIEW_CONTROLS.exclude_id in saved_ids
-    assert {
-        STOCK_SAVED_VIEW_CONTROLS.apply_id,
-        STOCK_SAVED_VIEW_CONTROLS.cancel_id,
-        STOCK_SAVED_VIEW_CONTROLS.committed_state_id,
-    } <= saved_ids
 
 
-def test_v5_history_is_read_only_after_click_or_load(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current, prior = _comparison_legs()
-    history_calls: list[tuple[dict[str, str], pd.Timestamp, pd.Timestamp]] = []
-
-    def history_source(identity, start_date, end_date):
-        history_calls.append((dict(identity), start_date, end_date))
-        rows = []
-        for offset, stock_date in enumerate(pd.bdate_range(start_date, end_date)):
-            rows.append(
-                [
-                    stock_date,
-                    *(identity[column] for column in STOCK_IDENTITY_COLUMNS),
-                    100.0 + offset,
-                    1_000.0 + (10.0 * offset),
-                ]
-            )
-        return pd.DataFrame(rows, columns=list(STOCK_HISTORY_COLUMNS))
-
-    app = build_app(
-        refresh_manager=build_production_refresh_manager(),
-        stock_source=lambda stock_date: (
-            current if stock_date == pd.Timestamp("2026-08-14") else prior
-        ),
-        stock_portfolio_source=lambda _date: _v5_config(),
-        stock_history_source=history_source,
-    )
-    load = _callback_for_input(app, "stock-load-trigger")
-    token, *_rest = load(
-        1,
-        "0",
-        0,
-        {"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-    )
-    assert history_calls == []
-
-    history_callback = _callback_for_output(app, "stock-history-chart", "figure")
-    monkeypatch.setattr(
-        stock_callbacks,
-        "ctx",
-        SimpleNamespace(triggered_id="stock-history-load-button"),
-    )
-    empty_figure, empty_status = history_callback(
-        None,
-        1,
-        0,
-        "1y",
-        "2025-08-15",
-        "2026-08-14",
-        None,
-        None,
-        token,
-    )
-    assert history_calls == []
-    assert "choose both CRDS and Activity" in empty_status
-    assert empty_figure.layout.annotations[0].text == empty_status
-
-    monkeypatch.setattr(
-        stock_callbacks,
-        "ctx",
-        SimpleNamespace(triggered_id="stock-history-autoload"),
-    )
-    figure, status = history_callback(
-        {"crds": "CRDS-1", "activity": "Activity 1"},
-        0,
-        0,
-        "1y",
-        "2025-08-15",
-        "2026-08-14",
-        "CRDS-1",
-        "Activity 1",
-        token,
-    )
-
-    assert len(history_calls) == 1
-    assert [trace.name for trace in figure.data] == ["Stock", "dStock"]
-    assert "Loaded" in status
-
-    monkeypatch.setattr(
-        stock_callbacks,
-        "ctx",
-        SimpleNamespace(triggered_id="stock-history-period"),
-    )
-    refreshed, refreshed_status = history_callback(
-        {"crds": "CRDS-1", "activity": "Activity 1"},
-        0,
-        0,
-        "mtd",
-        "2025-08-15",
-        "2026-08-14",
-        "CRDS-1",
-        "Activity 1",
-        token,
-    )
-
-    assert len(history_calls) == 2
-    assert [trace.name for trace in refreshed.data] == ["Stock", "dStock"]
-    assert "2026-08-01" in refreshed_status
 
 
-def test_v5_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> None:
-    app = build_app(
-        refresh_manager=build_production_refresh_manager(),
-        stock_source=lambda _date: _stock(),
-        stock_portfolio_source=lambda _date: _v5_config(),
-        stock_history_source=lambda _identity, _start, _end: pd.DataFrame(
-            columns=list(STOCK_HISTORY_COLUMNS)
-        ),
-    )
-    with app.server.test_request_context("/stock"):
-        shell = stock_page_layout()
-    shell_ids = {
-        str(component_id)
-        for component in _walk(shell)
-        if isinstance((component_id := getattr(component, "id", None)), str)
-    }
-    owners: dict[tuple[str, str], int] = {}
-    for metadata in app.callback_map.values():
-        for output in _callback_outputs(metadata):
-            component_id = str(output.component_id)
-            if component_id.startswith("stock-") and component_id != "stock-nav-link":
-                key = (component_id, output.component_property)
-                owners[key] = owners.get(key, 0) + 1
-                assert component_id in shell_ids
-
-    assert owners
-    assert set(owners.values()) == {1}
-    assert ("stock-current-table", "data") in owners
-    assert ("stock-history-chart", "figure") in owners
-    pivot_metadata = next(
-        metadata
-        for metadata in app.callback_map.values()
-        if any(
-            output.component_id == "stock-current-table"
-            and output.component_property == "data"
-            for output in _callback_outputs(metadata)
-        )
-    )
-    pivot_inputs = {(item["id"], item["property"]) for item in pivot_metadata["inputs"]}
-    assert (STOCK_SAVED_VIEW_CONTROLS.committed_state_id, "data") in pivot_inputs
-    assert not any(
-        (component_id, "value") in pivot_inputs
-        for component_id in STOCK_FILTER_IDS.values()
-    )
 
 
-@pytest.fixture
-def stock_refresh_callbacks(tmp_path):
-    """Real Stock callbacks with local dated rows and no startup worker."""
-    from dash import Dash
-    from cube.services.s04_savedviews import SavedFilterViewRepository
-
-    current, prior = _comparison_legs()
-    control = SimpleNamespace(error=None, empty=False, calls=0)
-    manager = SimpleNamespace(health=SimpleNamespace(revision=7))
-
-    def source(stock_date):
-        control.calls += 1
-        if control.error:
-            raise RuntimeError(control.error)
-        frame = current if stock_date == pd.Timestamp("2026-08-14") else prior
-        return frame.iloc[:0].copy() if control.empty else frame
-
-    app = Dash(__name__, suppress_callback_exceptions=True)
-    stock_callbacks.register_callbacks(
-        app, refresh_manager=manager, stock_source=source,
-        stock_portfolio_source=lambda _date: _v5_config(),
-        saved_view_repository=SavedFilterViewRepository(tmp_path, [field.key for field in STOCK_FILTER_FIELDS]),
-    )
-    return SimpleNamespace(
-        app=app, manager=manager, control=control,
-        load=_callback_for_output(app, "stock-loaded-snapshot", "data"),
-        render=_callback_for_output(app, "stock-current-table", "data"),
-        filters=_callback_for_output(app, STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
-        dates={"current_date": "2026-08-14", "prior_date": "2026-08-13"},
-    )
 
 
-def _render_stock_refresh(callbacks, token, request_id="stock-request-7"):
-    return callbacks.render(token, None, list(STOCK_PIVOT_DEFAULT_ROWS), "",
-                            ["Stock", "dStock"], [], {"id": request_id})
 
 
-def test_stock_refresh_ack_follows_final_table_and_stamps_its_count(stock_refresh_callbacks):
-    callbacks = stock_refresh_callbacks
-    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
-    rendered = _render_stock_refresh(callbacks, token)
-    receipt = rendered[-1]
-    assert receipt["owner"] == "stock-current"
-    assert receipt["revision"] == 7 and receipt["request_id"] == "stock-request-7"
-    assert receipt["status"] == "rendered" and rendered[0] and rendered[2]
-    assert rendered[3].children == "Rows: 3 of 3"
-    assert rendered[3].to_plotly_json()["props"]["data-refresh-render"] == receipt["mounts"][0]
-    cached, _ = callbacks.load(2, "7", 0, callbacks.dates)
-    assert cached == token and callbacks.control.calls == 2
-    assert _render_stock_refresh(callbacks, cached)[-1]["status"] == "rendered"
 
 
-@pytest.mark.parametrize("failure", ["connector", "dates", "post-load"])
-def test_stock_load_failure_finishes_with_error_and_keeps_last_good_rows(stock_refresh_callbacks, monkeypatch, failure):
-    callbacks = stock_refresh_callbacks
-    previous, _ = callbacks.load(1, "7", 0, callbacks.dates)
-    assert _render_stock_refresh(callbacks, previous)[0]
-    callbacks.manager.health.revision = 8
-    dates = callbacks.dates
-    if failure == "connector":
-        callbacks.control.error = "Stock feed unavailable"
-    elif failure == "dates":
-        dates = None
-    else:
-        monkeypatch.setattr(stock_callbacks, "stock_display_rows", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("status failed")))
-    failed, status = callbacks.load(2, "8", 0, dates)
-    assert failed["revision"] == 8 and failed["error"] in status
-    filters = callbacks.filters(failed, None, 0, *([[]] * len(STOCK_FILTER_FIELDS)), [], None, True)
-    assert all(value is no_update for value in filters)
-    output = _render_stock_refresh(callbacks, failed, "stock-request-8")
-    assert all(value is no_update for value in output[:-1])
-    assert output[-1]["status"] == "failed"
-    assert output[-1]["revision"] == 8 and output[-1]["request_id"] == "stock-request-8"
-    assert output[-1]["message"] == failed["error"]
 
 
-def test_empty_stock_is_a_completed_zero_row_result(stock_refresh_callbacks):
-    callbacks = stock_refresh_callbacks
-    callbacks.control.empty = True
-    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
-    output = _render_stock_refresh(callbacks, token)
-    assert output[-1]["status"] == "rendered"
-    assert output[3].children == "Rows: 0 of 0"
-    assert output[2] == []
 
 
-def test_old_stock_snapshot_never_acknowledges_a_newer_revision(stock_refresh_callbacks):
-    callbacks = stock_refresh_callbacks
-    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
-    callbacks.manager.health.revision = 8
-    receipt = _render_stock_refresh(callbacks, token, "request-8")[-1]
-    assert receipt["revision"] == 7  # Publisher rejects this for target revision 8.
 
 
-def test_stock_pivot_failure_reports_failed_receipt_without_clearing_table(stock_refresh_callbacks, monkeypatch):
-    callbacks = stock_refresh_callbacks
-    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
-    monkeypatch.setattr(stock_callbacks, "build_stock_pivot", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pivot failed")))
-    output = _render_stock_refresh(callbacks, token)
-    assert all(value is no_update for value in output[:-1])
-    assert output[-1]["status"] == "failed" and output[-1]["message"] == "pivot failed"
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_stock_loader_cannot_publish_after_a_newer_revision_commits(stock_refresh_callbacks, monkeypatch, fail):
-    callbacks = stock_refresh_callbacks
-    load = stock_callbacks.load_stock_page_data
-
-    def superseded_load(**kwargs):
-        result = load(**kwargs)
-        callbacks.manager.health.revision = 8
-        if fail:
-            raise RuntimeError("obsolete request failed")
-        return result
-
-    monkeypatch.setattr(stock_callbacks, "load_stock_page_data", superseded_load)
-    result = callbacks.load(1, "7", 0, callbacks.dates)
-    assert result == (no_update, no_update)
