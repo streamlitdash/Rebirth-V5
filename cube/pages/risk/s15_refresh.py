@@ -187,6 +187,34 @@ def register_refresh_callbacks(
         return layout
 
     if refresh_manager is not None:
+        app.clientside_callback(
+            """
+            function(...args) {
+                return window.dash_clientside.cubeRefresh.publish(...args);
+            }
+            """,
+            Output("data-revision-store", "data"),
+            Input("committed-revision-poll", "n_intervals"),
+            State("refresh-commit-revision", "children"),
+            State("data-revision-store", "data"),
+            State("risk-workspace-tabs", "value", allow_optional=True),
+            State("refresh-view-risk-explorer", "data"),
+            State("refresh-view-unmapped-books", "data"),
+            State("refresh-view-aggregate-pl", "data"),
+            State("refresh-view-top-promotions", "data"),
+            State("refresh-view-quick-risk-options", "data"),
+            State("refresh-view-quick-risk-table", "data"),
+            State("refresh-view-quick-risk-chart", "data"),
+            State("refresh-view-quick-market-options", "data"),
+            State("refresh-view-quick-market", "data"),
+            State("refresh-view-pnl-summary", "data"),
+            State("refresh-view-pnl-editor-sog", "data"),
+            State("refresh-view-pnl-editor-portfolio", "data"),
+            State("refresh-view-data-history", "data"),
+            State("refresh-view-stock-current", "data"),
+            prevent_initial_call=False,
+        )
+
         coordinator = startup_coordinator or StartupCoordinator(
             refresh_manager,
             logger=app.logger,
@@ -320,10 +348,7 @@ def register_refresh_callbacks(
                     shell_revision = int(displayed_revision or 0)
                 except (TypeError, ValueError):
                     shell_revision = 0
-                if (
-                    shell_revision >= refresh_manager.health.revision
-                    and "is-refreshing" not in str(status_class or "").split()
-                ):
+                if shell_revision > 0:
                     raise PreventUpdate
                 return build_shared_refresh_shell(
                     refresh_manager.control_snapshot,
@@ -487,11 +512,69 @@ def register_refresh_callbacks(
             dates = "RiskChecker" if risk_checker_enabled(checker_value) else "Today"
             return f"Committed · Commodity quotes {commodity} · Risk dates {dates}"
 
+        app.clientside_callback(
+            """
+            function(autoTick, portfolios, pl, reload, apply, clear, commo, checker, autoEnabled) {
+                const noUpdate = window.dash_clientside.no_update;
+                const context = window.dash_clientside.callback_context;
+                const changed = new Set((context.triggered || []).map(item => item.prop_id.split('.')[0]));
+                const choices = [
+                    ['force-risk-apply-button', apply, 'dates'],
+                    ['clear-cache-button', clear, 'reset'],
+                    ['refresh-portfolios-button', portfolios, 'portfolios'],
+                    ['reload-risk-button', reload, 'reload'],
+                    ['refresh-pl-button', pl, 'pl'],
+                    ['commo-market-toggle', commo, 'commo'],
+                    ['risk-checker-toggle', checker, 'checker'],
+                    ['auto-refresh-interval', autoTick, 'automatic'],
+                ];
+                const selected = choices.find(([id, value]) => changed.has(id) && Number.isSafeInteger(value) && value > 0);
+                if (!selected) return noUpdate;
+                const [trigger, count, mode] = selected;
+                if (mode === 'automatic' && autoEnabled === false) return noUpdate;
+                const assets = window.__cubeV5Assets;
+                if (typeof assets?.beginRefreshRequest !== 'function') {
+                    throw new Error('The refresh lifecycle asset is not ready. Reload the page before refreshing.');
+                }
+                const request = {
+                    id: window.crypto?.randomUUID?.() || `refresh-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    trigger, count, mode, requested_at: Date.now(),
+                };
+                if (assets.beginRefreshRequest(request) === false) return noUpdate;
+                return request;
+            }
+            """,
+            Output("refresh-action-request", "data"),
+            Input("auto-refresh-interval", "n_intervals"),
+            Input("refresh-portfolios-button", "n_clicks"),
+            Input("refresh-pl-button", "n_clicks"),
+            Input("reload-risk-button", "n_clicks"),
+            Input("force-risk-apply-button", "n_clicks", allow_optional=True),
+            Input("clear-cache-button", "n_clicks"),
+            Input("commo-market-toggle", "n_clicks"),
+            Input("risk-checker-toggle", "n_clicks"),
+            State(AUTO_REFRESH_STORE_ID, "data"),
+            prevent_initial_call=True,
+        )
+
+        app.clientside_callback(
+            """
+            function(receipt) {
+                if (!receipt) return window.dash_clientside.no_update;
+                const assets = window.__cubeV5Assets;
+                if (typeof assets?.receiveRefreshResult !== 'function') {
+                    throw new Error('The refresh lifecycle result handler is unavailable.');
+                }
+                assets.receiveRefreshResult(receipt);
+                return receipt.request_id || '';
+            }
+            """,
+            Output("refresh-action-result-ack", "children"),
+            Input("refresh-action-result", "data"),
+            prevent_initial_call=True,
+        )
+
         @app.callback(
-            # Keep the long financial request outside the live-data callback
-            # graph. Browser progress publishes the committed revision only
-            # after the manager's atomic transaction finishes, so readers can
-            # continue interacting with the previous immutable snapshot.
             Output("refresh-commit-revision", "children"),
             Output(REFRESH_RESULT_STORE_ID, "data"),
             Output("refresh-status", "children"),
@@ -501,14 +584,8 @@ def register_refresh_callbacks(
             Output(VIEW_DATE_STORE_ID, "data"),
             Output(RESET_GENERATION_STORE_ID, "data"),
             Output(CLEAR_CACHE_COMPLETE_STORE_ID, "data"),
-            Input("auto-refresh-interval", "n_intervals"),
-            Input("refresh-portfolios-button", "n_clicks"),
-            Input("refresh-pl-button", "n_clicks"),
-            Input("reload-risk-button", "n_clicks"),
-            Input("force-risk-apply-button", "n_clicks", allow_optional=True),
-            Input("clear-cache-button", "n_clicks"),
-            Input("commo-market-toggle", "n_clicks"),
-            Input("risk-checker-toggle", "n_clicks"),
+            Output("refresh-action-result", "data"),
+            Input("refresh-action-request", "data"),
             State(FORCE_DRAFT_STORE_ID, "data"),
             State(AUTO_REFRESH_STORE_ID, "data"),
             State(REFRESH_RESULT_STORE_ID, "data"),
@@ -530,314 +607,396 @@ def register_refresh_callbacks(
             prevent_initial_call=True,
         )
         def refresh_pipeline(
-            _auto_intervals,
-            _portfolio_clicks,
-            _pl_clicks,
-            _risk_clicks,
-            _apply_clicks,
-            _clear_clicks,
-            _commodity_clicks,
-            _checker_clicks,
+            request_data,
             draft_state,
             auto_refresh_state,
             refresh_result_counter,
             reset_generation_state,
         ):
-            triggered_ids = {
-                value
-                for value in ctx.triggered_prop_ids.values()
-                if isinstance(value, str)
-            }
-            triggered = ctx.triggered_id
-            if isinstance(triggered, str):
-                triggered_ids.add(triggered)
-            click_counts = {
-                "refresh-portfolios-button": _portfolio_clicks,
-                "refresh-pl-button": _pl_clicks,
-                "reload-risk-button": _risk_clicks,
-                "force-risk-apply-button": _apply_clicks,
-                "clear-cache-button": _clear_clicks,
-                "commo-market-toggle": _commodity_clicks,
-                "risk-checker-toggle": _checker_clicks,
-            }
-            triggered_ids = {
-                component_id
-                for component_id in triggered_ids
-                if component_id not in click_counts
-                or int(click_counts[component_id] or 0) > 0
+            """Execute one browser request and return an explicit callback receipt."""
+            request = request_data if isinstance(request_data, Mapping) else {}
+            request_id = request.get("id")
+            trigger = request.get("trigger")
+            modes = {
+                "refresh-portfolios-button": "portfolios",
+                "refresh-pl-button": "pl",
+                "reload-risk-button": "reload",
+                "force-risk-apply-button": "dates",
+                "clear-cache-button": "reset",
+                "commo-market-toggle": "commo",
+                "risk-checker-toggle": "checker",
+                "auto-refresh-interval": "automatic",
             }
 
-            current_snapshot = refresh_manager.control_snapshot
-            current_applied = snapshot_forced_dates(current_snapshot)
-            current_view_date = snapshot_forced_view_date(current_snapshot)
-            current_revision = current_snapshot.revision
-            committed_commodity = bool(current_snapshot.commodity_market_enabled)
-            committed_checker = bool(current_snapshot.risk_checker_enabled)
-            commodity_enabled = (
-                not committed_commodity
-                if "commo-market-toggle" in triggered_ids
-                else committed_commodity
-            )
-            checker_enabled = (
-                not committed_checker
-                if "risk-checker-toggle" in triggered_ids
-                else committed_checker
-            )
-            applying = "force-risk-apply-button" in triggered_ids
-            clearing = "clear-cache-button" in triggered_ids
-            browser_reset_generation = int(reset_generation_state or 0)
-            apply_result: ForceApplyResult | None = None
-            completed_reset_generation: int | None = None
+            def _finish(outcome, values):
+                values = tuple(values)
+                if len(values) != 9:
+                    raise RuntimeError(
+                        "Refresh callback result must contain nine existing outputs"
+                    )
+                try:
+                    revision = (
+                        int(values[0])
+                        if values[0] is not no_update
+                        else int(refresh_manager.health.revision)
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    revision = 0
+                message = (
+                    values[2]
+                    if isinstance(values[2], str)
+                    else {
+                        "complete": "Refresh completed.",
+                        "failed": "Refresh failed; the last successful data remains available.",
+                        "rejected": "This refresh request was not applied.",
+                        "busy": "Another refresh is running; this action was not started.",
+                        "no_work": "No refresh was needed for this request.",
+                    }[outcome]
+                )
+                error = values[3] if isinstance(values[3], str) else ""
+                receipt = {
+                    "request_id": request_id if isinstance(request_id, str) else "",
+                    "trigger": trigger if isinstance(trigger, str) else "",
+                    "mode": modes.get(trigger, "unknown")
+                    if isinstance(trigger, str)
+                    else "unknown",
+                    "outcome": outcome,
+                    "revision": max(0, revision),
+                    "server_boot_id": coordinator.status().server_boot_id,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "message": message,
+                    "error": error,
+                }
+                return (*values, receipt)
 
-            try:
-                if applying:
-                    requested = draft_forced_dates(
-                        draft_state, fallback=current_applied
-                    )
-                    base = draft_base_dates(draft_state, fallback=current_applied)
-                    requested_view = draft_view_date(
-                        draft_state, fallback=current_view_date
-                    )
-                    base_view = draft_base_view_date(
-                        draft_state, fallback=current_view_date
-                    )
-                    if (base != current_applied or base_view != current_view_date) and (
-                        requested != current_applied
-                        or requested_view != current_view_date
+            count = request.get("count")
+            if (
+                not isinstance(request_id, str)
+                or not request_id
+                or len(request_id) > 128
+                or not isinstance(trigger, str)
+                or trigger not in modes
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+            ):
+                return _finish(
+                    "rejected",
+                    (
+                        no_update,
+                        no_update,
+                        "Invalid refresh request; no work was started.",
+                        "",
+                        "error-log",
+                        no_update,
+                        no_update,
+                        no_update,
+                        no_update,
+                    ),
+                )
+            triggered_ids = {trigger}
+            _auto_intervals = count if trigger == "auto-refresh-interval" else 0
+
+            def _execute():
+                current_snapshot = refresh_manager.control_snapshot
+                current_applied = snapshot_forced_dates(current_snapshot)
+                current_view_date = snapshot_forced_view_date(current_snapshot)
+                current_revision = current_snapshot.revision
+                committed_commodity = bool(current_snapshot.commodity_market_enabled)
+                committed_checker = bool(current_snapshot.risk_checker_enabled)
+                commodity_enabled = (
+                    not committed_commodity
+                    if "commo-market-toggle" in triggered_ids
+                    else committed_commodity
+                )
+                checker_enabled = (
+                    not committed_checker
+                    if "risk-checker-toggle" in triggered_ids
+                    else committed_checker
+                )
+                applying = "force-risk-apply-button" in triggered_ids
+                clearing = "clear-cache-button" in triggered_ids
+                browser_reset_generation = int(reset_generation_state or 0)
+                apply_result: ForceApplyResult | None = None
+                completed_reset_generation: int | None = None
+                try:
+                    if applying:
+                        requested = draft_forced_dates(draft_state, fallback=current_applied)
+                        base = draft_base_dates(draft_state, fallback=current_applied)
+                        requested_view = draft_view_date(
+                            draft_state, fallback=current_view_date
+                        )
+                        base_view = draft_base_view_date(
+                            draft_state, fallback=current_view_date
+                        )
+                        if (base != current_applied or base_view != current_view_date) and (
+                            requested != current_applied or requested_view != current_view_date
+                        ):
+                            return _finish(
+                                "rejected",
+                                (
+                                    no_update,
+                                    no_update,
+                                    no_update,
+                                    "⚠ Applied force dates changed while you were editing. Cancel to reload them before applying.",
+                                    "error-log has-errors",
+                                    no_update,
+                                    no_update,
+                                    no_update,
+                                    no_update,
+                                ),
+                            )
+                        if requested == current_applied and requested_view == current_view_date:
+                            return _finish("no_work", (no_update,) * 9)
+                        apply_result = apply_force_dates(
+                            refresh_manager,
+                            requested,
+                            view_date=requested_view,
+                            commodity_market=commodity_enabled,
+                            risk_checker=checker_enabled,
+                            expected_revision=int(
+                                draft_state.get("base_revision", current_revision)
+                                if isinstance(draft_state, Mapping)
+                                else current_revision
+                            ),
+                            expected_reset_generation=browser_reset_generation,
+                        )
+                        snapshot = apply_result.snapshot
+                    elif clearing:
+                        completed_reset_generation, snapshot = refresh_manager.reset_refresh(
+                            expected_reset_generation=browser_reset_generation
+                        )
+                        cache.clear_reconstructable()
+                    elif "refresh-portfolios-button" in triggered_ids:
+                        snapshot = refresh_manager.refresh_portfolios(
+                            reason="portfolio mapping",
+                            expected_revision=current_revision,
+                            expected_reset_generation=browser_reset_generation,
+                        )
+                    elif "reload-risk-button" in triggered_ids:
+                        refresh_manager.refresh(
+                            force_risk=True,
+                            forced_dates=current_applied,
+                            view_date=current_view_date,
+                            commodity_market_enabled=commodity_enabled,
+                            risk_checker_enabled=checker_enabled,
+                            reason="reload all risk",
+                            expected_revision=current_revision,
+                            expected_reset_generation=browser_reset_generation,
+                            copy_result=False,
+                        )
+                        snapshot = refresh_manager.control_snapshot
+                    elif "refresh-pl-button" in triggered_ids:
+                        refresh_manager.refresh(
+                            force_pl=True,
+                            forced_dates=current_applied,
+                            view_date=current_view_date,
+                            commodity_market_enabled=commodity_enabled,
+                            risk_checker_enabled=checker_enabled,
+                            reason="manual P&L",
+                            expected_revision=current_revision,
+                            expected_reset_generation=browser_reset_generation,
+                            copy_result=False,
+                        )
+                        snapshot = refresh_manager.control_snapshot
+                    elif "auto-refresh-interval" in triggered_ids:
+                        if int(_auto_intervals or 0) <= 0 or not auto_refresh_enabled(
+                            auto_refresh_state
+                        ):
+                            return _finish("no_work", (no_update,) * 9)
+                        if not _automatic_refresh_due(current_snapshot):
+                            return _finish("no_work", (no_update,) * 9)
+                        refresh_manager.refresh(
+                            force_pl=True,
+                            forced_dates=current_applied,
+                            view_date=current_view_date,
+                            commodity_market_enabled=commodity_enabled,
+                            risk_checker_enabled=checker_enabled,
+                            reason=_AUTOMATIC_REFRESH_REASON,
+                            expected_revision=current_revision,
+                            expected_reset_generation=browser_reset_generation,
+                            copy_result=False,
+                        )
+                        snapshot = refresh_manager.control_snapshot
+                    elif (
+                        "commo-market-toggle" in triggered_ids
+                        or "risk-checker-toggle" in triggered_ids
                     ):
-                        return (
+                        apply_result = apply_force_dates(
+                            refresh_manager,
+                            current_applied,
+                            reason="dashboard settings updated",
+                            view_date=current_view_date,
+                            commodity_market=commodity_enabled,
+                            risk_checker=checker_enabled,
+                            expected_revision=current_revision,
+                            expected_reset_generation=browser_reset_generation,
+                        )
+                        snapshot = apply_result.snapshot
+                    else:
+                        return _finish("no_work", (no_update,) * 9)
+                except PreventUpdate:
+                    return _finish("no_work", (no_update,) * 9)
+                except RefreshInProgressError:
+                    return _finish(
+                        "busy",
+                        (
+                            no_update,
+                            no_update,
+                            "A refresh is already running; following its live progress.",
+                            "",
+                            "error-log",
                             no_update,
                             no_update,
                             no_update,
-                            "⚠ Applied force dates changed while you were editing. Cancel to reload them before applying.",
+                            no_update,
+                        ),
+                    )
+                except StaleResetGenerationError:
+                    return _finish(
+                        "rejected",
+                        (
+                            no_update,
+                            no_update,
+                            "Failed · This browser cache generation is stale.",
+                            "⚠ Reload the page, then Retry Clear Cache.",
                             "error-log has-errors",
                             no_update,
                             no_update,
                             no_update,
                             no_update,
-                        )
-                    if (
-                        requested == current_applied
-                        and requested_view == current_view_date
-                    ):
-                        raise PreventUpdate
-                    apply_result = apply_force_dates(
-                        refresh_manager,
-                        requested,
-                        view_date=requested_view,
-                        commodity_market=commodity_enabled,
-                        risk_checker=checker_enabled,
-                        expected_revision=int(
-                            draft_state.get("base_revision", current_revision)
-                            if isinstance(draft_state, Mapping)
-                            else current_revision
                         ),
-                        expected_reset_generation=browser_reset_generation,
                     )
-                    snapshot = apply_result.snapshot
-                elif clearing:
-                    completed_reset_generation, snapshot = (
-                        refresh_manager.reset_refresh(
-                            expected_reset_generation=browser_reset_generation
-                        )
+                except StaleRefreshError:
+                    return _finish(
+                        "rejected",
+                        (
+                            no_update,
+                            no_update,
+                            "The data changed before this action could start.",
+                            "⚠ The committed revision changed. Reload the staged controls and try again.",
+                            "error-log has-errors",
+                            no_update,
+                            no_update,
+                            no_update,
+                            no_update,
+                        ),
                     )
-                    cache.clear_reconstructable()
-                elif "refresh-portfolios-button" in triggered_ids:
-                    snapshot = refresh_manager.refresh_portfolios(
-                        reason="portfolio mapping",
-                        expected_revision=current_revision,
-                        expected_reset_generation=browser_reset_generation,
+                except (TypeError, ValueError):
+                    return _finish(
+                        "rejected",
+                        (
+                            no_update,
+                            no_update,
+                            no_update,
+                            "⚠ Saved or staged force dates are invalid and were not applied.",
+                            "error-log has-errors",
+                            no_update,
+                            no_update,
+                            no_update,
+                            no_update,
+                        ),
                     )
-                elif "reload-risk-button" in triggered_ids:
-                    refresh_manager.refresh(
-                        force_risk=True,
-                        forced_dates=current_applied,
-                        view_date=current_view_date,
-                        commodity_market_enabled=commodity_enabled,
-                        risk_checker_enabled=checker_enabled,
-                        reason="reload all risk",
-                        expected_revision=current_revision,
-                        expected_reset_generation=browser_reset_generation,
-                        copy_result=False,
+                except Exception as error:
+                    incident_id = uuid.uuid4().hex[:10]
+                    app.logger.exception(
+                        "Unexpected refresh callback failure; incident=%s type=%s",
+                        incident_id,
+                        type(error).__name__,
                     )
-                    snapshot = refresh_manager.control_snapshot
-                elif "refresh-pl-button" in triggered_ids:
-                    refresh_manager.refresh(
-                        force_pl=True,
-                        forced_dates=current_applied,
-                        view_date=current_view_date,
-                        commodity_market_enabled=commodity_enabled,
-                        risk_checker_enabled=checker_enabled,
-                        reason="manual P&L",
-                        expected_revision=current_revision,
-                        expected_reset_generation=browser_reset_generation,
-                        copy_result=False,
+                    return _finish(
+                        "failed",
+                        (
+                            no_update,
+                            no_update,
+                            "The refresh action failed; the last successful data remains visible.",
+                            f"⚠ Unexpected refresh failure (incident {incident_id}). Check the server log.",
+                            "error-log has-errors",
+                            no_update,
+                            no_update,
+                            no_update,
+                            no_update,
+                        ),
                     )
-                    snapshot = refresh_manager.control_snapshot
-                elif "auto-refresh-interval" in triggered_ids:
-                    if int(_auto_intervals or 0) <= 0 or not auto_refresh_enabled(
-                        auto_refresh_state
-                    ):
-                        raise PreventUpdate
-                    if not _automatic_refresh_due(current_snapshot):
-                        raise PreventUpdate
-                    refresh_manager.refresh(
-                        force_pl=True,
-                        forced_dates=current_applied,
-                        view_date=current_view_date,
-                        commodity_market_enabled=commodity_enabled,
-                        risk_checker_enabled=checker_enabled,
-                        reason=_AUTOMATIC_REFRESH_REASON,
-                        expected_revision=current_revision,
-                        expected_reset_generation=browser_reset_generation,
-                        copy_result=False,
-                    )
-                    snapshot = refresh_manager.control_snapshot
-                elif (
-                    "commo-market-toggle" in triggered_ids
-                    or "risk-checker-toggle" in triggered_ids
+                snapshot, _prepared = synchronize_committed_dashboard(snapshot)
+                status_text, error_text, error_class = _refresh_status(
+                    snapshot,
+                    action_committed=apply_result is None or bool(apply_result.committed),
+                )
+                if clearing and snapshot.errors:
+                    status_text = "Failed · Cache reset did not complete · Retry Clear Cache"
+                if (
+                    apply_result is not None
+                    and (not apply_result.committed)
+                    and (not snapshot.errors)
                 ):
-                    apply_result = apply_force_dates(
-                        refresh_manager,
-                        current_applied,
-                        reason="dashboard settings updated",
-                        view_date=current_view_date,
-                        commodity_market=commodity_enabled,
-                        risk_checker=checker_enabled,
-                        expected_revision=current_revision,
-                        expected_reset_generation=browser_reset_generation,
+                    error_text = (
+                        "⚠ Date settings were not committed; the last successful settings remain applied."
+                        if applying
+                        else "⚠ Dashboard settings were not committed; the last successful settings remain applied."
                     )
-                    snapshot = apply_result.snapshot
-                else:
-                    raise PreventUpdate
+                    error_class = "error-log has-errors"
+                persisted = (
+                    persisted_force_dates(apply_result)
+                    if applying and apply_result is not None
+                    else None
+                )
+                return _finish(
+                    "failed"
+                    if snapshot.errors
+                    else "rejected"
+                    if apply_result is not None and (not apply_result.committed)
+                    else "complete",
+                    (
+                        snapshot.revision,
+                        _next_counter(refresh_result_counter),
+                        status_text,
+                        error_text,
+                        error_class,
+                        {}
+                        if clearing and (not snapshot.errors)
+                        else persisted
+                        if persisted is not None
+                        else no_update,
+                        None
+                        if clearing and (not snapshot.errors)
+                        else apply_result.requested_view_date
+                        if applying and apply_result is not None and apply_result.committed
+                        else no_update,
+                        completed_reset_generation
+                        if completed_reset_generation is not None
+                        else no_update,
+                        completed_reset_generation
+                        if completed_reset_generation is not None
+                        else no_update,
+                    ),
+                )
+
+            try:
+                return _execute()
             except PreventUpdate:
-                raise
-            except RefreshInProgressError:
-                return (
-                    no_update,
-                    no_update,
-                    "A refresh is already running; following its live progress.",
-                    "",
-                    "error-log",
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
-            except StaleResetGenerationError:
-                return (
-                    no_update,
-                    no_update,
-                    "Failed · This browser cache generation is stale.",
-                    "⚠ Reload the page, then Retry Clear Cache.",
-                    "error-log has-errors",
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
-            except StaleRefreshError:
-                return (
-                    no_update,
-                    no_update,
-                    "The data changed before this action could start.",
-                    "⚠ The committed revision changed. Reload the staged controls and try again.",
-                    "error-log has-errors",
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
-            except (TypeError, ValueError):
-                return (
-                    no_update,
-                    no_update,
-                    no_update,
-                    "⚠ Saved or staged force dates are invalid and were not applied.",
-                    "error-log has-errors",
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
+                return _finish("no_work", (no_update,) * 9)
             except Exception as error:
                 incident_id = uuid.uuid4().hex[:10]
                 app.logger.exception(
-                    "Unexpected refresh callback failure; incident=%s type=%s",
+                    "Refresh callback did not finish preparing its response; incident=%s type=%s",
                     incident_id,
                     type(error).__name__,
                 )
-                return (
-                    no_update,
-                    no_update,
-                    "The refresh action failed; the last successful data remains visible.",
-                    f"⚠ Unexpected refresh failure (incident {incident_id}). Check the server log.",
-                    "error-log has-errors",
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
+                return _finish(
+                    "failed",
+                    (
+                        no_update,
+                        no_update,
+                        "The refresh response failed; the last successful data remains available.",
+                        f"Unexpected refresh response failure (incident {incident_id}). Check the server log.",
+                        "error-log has-errors",
+                        no_update,
+                        no_update,
+                        no_update,
+                        no_update,
+                    ),
                 )
-
-            snapshot, _prepared = synchronize_committed_dashboard(snapshot)
-            status_text, error_text, error_class = _refresh_status(
-                snapshot,
-                action_committed=(apply_result is None or bool(apply_result.committed)),
-            )
-            if clearing and snapshot.errors:
-                status_text = (
-                    "Failed · Cache reset did not complete · Retry Clear Cache"
-                )
-            if (
-                apply_result is not None
-                and not apply_result.committed
-                and not snapshot.errors
-            ):
-                error_text = (
-                    "⚠ Date settings were not committed; the last successful "
-                    "settings remain applied."
-                    if applying
-                    else "⚠ Dashboard settings were not committed; the last "
-                    "successful settings remain applied."
-                )
-                error_class = "error-log has-errors"
-
-            persisted = (
-                persisted_force_dates(apply_result)
-                if applying and apply_result is not None
-                else None
-            )
-            return (
-                snapshot.revision,
-                _next_counter(refresh_result_counter),
-                status_text,
-                error_text,
-                error_class,
-                (
-                    {}
-                    if clearing and not snapshot.errors
-                    else persisted
-                    if persisted is not None
-                    else no_update
-                ),
-                (
-                    None
-                    if clearing and not snapshot.errors
-                    else apply_result.requested_view_date
-                    if applying and apply_result is not None and apply_result.committed
-                    else no_update
-                ),
-                (
-                    completed_reset_generation
-                    if completed_reset_generation is not None
-                    else no_update
-                ),
-                (
-                    completed_reset_generation
-                    if completed_reset_generation is not None
-                    else no_update
-                ),
-            )
 
         @app.callback(
             Output("operating-date-banner", "children"),

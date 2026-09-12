@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from cube.ui.s08_refresh_views import refresh_view
+
 import json
 
-from dash import ALL, Dash, Input, Output, State, ctx, html, no_update
+from dash import ALL, ClientsideFunction, Dash, Input, Output, State, ctx, html, no_update
 from dash.exceptions import PreventUpdate
 
 from cube.app.s03_logging import perf_span
 from cube.ui.s02_aggregation import apply_filters
+from .s16_quickriskcharts import build_quick_risk_chart
 from cube.ui.s04_components import build_aggregate_pl_table
 from cube.ui.s01_constants import (
     RISK_TYPE_ORDER,
@@ -20,9 +23,10 @@ from .s11_promotion import PROMOTION_GENERATION_STORE_ID, apply_promotion_genera
 from .s09_quickmarket import (
     QUICK_MARKET_DEFAULT_INDEX,
     build_quick_market_result,
+    quick_market_values_page,
 )
 from .s10_search import (
-    _combine_udl_dropdown_options,
+    _quick_search_label_index,
     _render_quick_search_pivot,
 )
 from .s02_state import (
@@ -42,6 +46,7 @@ def register_workspace_callbacks(
     @app.callback(
         Output("aggregate-open-risk-types", "data"),
         Output("aggregate-pl-grid", "children"),
+        Output('refresh-view-aggregate-pl', "data"),
         Input("aggregate-pl-dimension", "value"),
         Input("data-revision-store", "data"),
         Input("risk-initial-render-ready", "data"),
@@ -50,7 +55,9 @@ def register_workspace_callbacks(
         Input("dimension-filter-values-store", "data"),
         Input("risk-filter-exclude-applied-store", "data"),
         State("aggregate-open-risk-types", "data"),
+        State("refresh-action-request", "data"),
     )
+    @refresh_view('aggregate-pl', revision_arg='_data_revision', outputs=2, content=[1], stamp=[1])
     def reduce_and_render_aggregate_pl(
         dimension,
         _data_revision,
@@ -131,6 +138,7 @@ def register_workspace_callbacks(
     @app.callback(
         Output("top-promotions-grid", "children"),
         Output("top-promotions-status", "children"),
+        Output('refresh-view-top-promotions', "data"),
         Input("risk-workspace-tabs", "value"),
         Input("data-revision-store", "data"),
         Input(PROMOTION_GENERATION_STORE_ID, "data", allow_optional=True),
@@ -138,7 +146,9 @@ def register_workspace_callbacks(
         Input("dimension-filter-values-store", "data"),
         Input("risk-filter-exclude-applied-store", "data"),
         Input("top-promotions-signal", "value"),
+        State("refresh-action-request", "data"),
     )
+    @refresh_view('top-promotions', revision_arg='data_revision', outputs=2, content=[0], stamp=[0])
     def render_top_promotions(
         active_workspace,
         data_revision,
@@ -218,63 +228,51 @@ def register_workspace_callbacks(
 
     if refresh_manager is not None:
 
+        # Only identity labels cross this boundary. Typing never calls Python.
         @app.callback(
-            Output("quick-search-combine-udl", "options"),
-            Output("quick-search-combine-udl", "value"),
+            Output("quick-risk-search-index", "data"),
+            Output("refresh-view-quick-risk-options", "data"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
-            Input("quick-search-combine-udl", "search_value"),
             Input("split-filter", "value"),
             Input("dimension-filter-values-store", "data"),
             Input("risk-filter-exclude-applied-store", "data"),
-            State("quick-search-combine-udl", "value"),
-            prevent_initial_call=False,
+            State("quick-risk-search-index", "data"),
+            State("refresh-action-request", "data"),
         )
+        @refresh_view('quick-risk-options', revision_arg='_revision', outputs=1, content=[0])
         def load_combine_udl_options(
-            active_workspace,
-            _revision,
-            search_value,
-            selected_splits,
-            dimension_values,
-            exclude_value,
-            current_value,
+            active_workspace, _revision, selected_splits, dimension_values,
+            exclude_value, previous,
         ):
             if active_workspace != "quick-risk":
-                return no_update, no_update
-            selected_mode = "reported"
+                return no_update
+            filters = quick_risk_filter_map(selected_splits, dimension_values)
+            exclude = risk_exclude_selected(exclude_value)
+            key = json.dumps([_revision, filters, exclude], sort_keys=True)
+            if isinstance(previous, dict) and previous.get("key") == key:
+                return no_update
+            labels = refresh_manager.combine_udl_options(
+                identity_mode="reported", risk_filters=filters,
+                exclude_selected=exclude,
+            )
+            if int(refresh_manager.health.revision) != int(_revision or 0):
+                return no_update
+            return {"key": key, "rows": _quick_search_label_index(labels)}
 
-            try:
-                options = _combine_udl_dropdown_options(
-                    refresh_manager.search_combine_udl_options(
-                        search_value,
-                        identity_mode=selected_mode,
-                        limit=100,
-                        include=(str(current_value) if current_value else None),
-                        risk_filters=quick_risk_filter_map(
-                            selected_splits,
-                            dimension_values,
-                        ),
-                        exclude_selected=risk_exclude_selected(exclude_value),
-                    )
-                )
-            except (
-                AttributeError,
-                LookupError,
-                TypeError,
-                ValueError,
-                RuntimeError,
-            ):
-                return no_update, no_update
-
-            values = {option["value"] for option in options}
-            selected = str(current_value or "").strip()
-            if selected in values:
-                return options, no_update
-            return options, (options[0]["value"] if options else None)
+        app.clientside_callback(
+            ClientsideFunction(namespace="quickSearch", function_name="options"),
+            Output("quick-search-combine-udl", "options"),
+            Output("quick-search-combine-udl", "value"),
+            Input("quick-risk-search-index", "data"),
+            Input("quick-search-combine-udl", "search_value"),
+            State("quick-search-combine-udl", "value"),
+        )
 
         @app.callback(
             Output("quick-search-results", "children"),
             Output("quick-search-dimensions", "value"),
+            Output('refresh-view-quick-risk-table', "data"),
             Input("quick-search-combine-udl", "value"),
             Input("quick-search-dimensions", "value"),
             Input("risk-workspace-tabs", "value"),
@@ -282,8 +280,10 @@ def register_workspace_callbacks(
             Input("split-filter", "value"),
             Input("dimension-filter-values-store", "data"),
             Input("risk-filter-exclude-applied-store", "data"),
+            State("refresh-action-request", "data"),
             prevent_initial_call=True,
         )
+        @refresh_view('quick-risk-table', revision_arg='_revision', outputs=2, content=[0], stamp=[0])
         def render_current_pivot(
             combine_udl,
             index_columns,
@@ -308,132 +308,158 @@ def register_workspace_callbacks(
             return rendered, index_update
 
         @app.callback(
-            Output("quick-market-combine-udl", "options"),
-            Output("quick-market-combine-udl", "value"),
+            Output("quick-risk-tenor-result", "children"),
+            Output('refresh-view-quick-risk-chart', "data"),
+            Input("quick-search-combine-udl", "value"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
+            Input("split-filter", "value"),
+            Input("dimension-filter-values-store", "data"),
+            Input("risk-filter-exclude-applied-store", "data"),
+            State("refresh-action-request", "data"),
+        )
+        @refresh_view('quick-risk-chart', revision_arg='revision', outputs=1, content=[0], stamp=[0])
+        def render_quick_risk_tenor(
+            combine_udl, active_workspace, revision,
+            selected_splits, dimension_values, exclude_value,
+        ):
+            if active_workspace != "quick-risk":
+                return None
+            if not combine_udl:
+                return None
+            try:
+                identity = refresh_manager.resolve_history_identity(
+                    "risk", str(combine_udl), identity_mode="reported",
+                )
+                committed = cache.current(refresh_manager)
+                if not (
+                    int(revision or 0) == identity.source_revision == cache.revision
+                ):
+                    return no_update
+                # Scope before filtering/copying. Never mutate the shared cache.
+                scope = committed.loc[
+                    committed["source type"].isin(identity.source_types)
+                    & committed["risk type"].eq(identity.risk_type)
+                    & committed["risk greek"].eq(identity.risk_greek)
+                    & committed["reported underlying"].eq(identity.underlying)
+                ]
+                scope = apply_filters(
+                    scope, [], list(selected_splits or []),
+                    reporting_filter_map(dimension_values),
+                    exclude_selected=risk_exclude_selected(exclude_value),
+                )
+                return build_quick_risk_chart(scope)
+            except (AttributeError, KeyError, LookupError, TypeError, ValueError, RuntimeError) as error:
+                app.logger.exception("Quick Risk chart failed")
+                return html.Div(
+                    f"Quick Risk chart unavailable: {error}", role="alert",
+                )
+
+        @app.callback(
+            Output("quick-market-search-index", "data"),
+            Output("refresh-view-quick-market-options", "data"),
+            Input("risk-workspace-tabs", "value"),
+            Input("data-revision-store", "data"),
+            State("quick-market-search-index", "data"),
+            State("refresh-action-request", "data"),
+        )
+        @refresh_view('quick-market-options', revision_arg='_revision', outputs=1, content=[0])
+        def load_market_udl_options(active_workspace, _revision, previous):
+            if active_workspace != "quick-market":
+                return no_update
+            if isinstance(previous, dict) and previous.get("key") == _revision:
+                return no_update
+            labels = refresh_manager.market_udl_options()
+            if int(refresh_manager.health.revision) != int(_revision or 0):
+                return no_update
+            return {"key": _revision, "rows": _quick_search_label_index(labels)}
+
+        app.clientside_callback(
+            ClientsideFunction(namespace="quickSearch", function_name="options"),
+            Output("quick-market-combine-udl", "options"),
+            Output("quick-market-combine-udl", "value"),
+            Input("quick-market-search-index", "data"),
             Input("quick-market-combine-udl", "search_value"),
             State("quick-market-combine-udl", "value"),
-            prevent_initial_call=False,
         )
-        def load_market_udl_options(
-            active_workspace, _revision, search_value, current_value
-        ):
-            if active_workspace != "quick-market":
-                return no_update, no_update
-            try:
-                options = _combine_udl_dropdown_options(
-                    refresh_manager.search_market_udl_options(
-                        search_value,
-                        limit=100,
-                        include=(str(current_value) if current_value else None),
-                    )
-                )
-            except (AttributeError, LookupError, TypeError, ValueError, RuntimeError):
-                return no_update, no_update
-
-            values = {option["value"] for option in options}
-            selected = str(current_value or "").strip()
-            if selected in values:
-                return options, no_update
-            return options, (options[0]["value"] if options else None)
 
         @app.callback(
             Output("quick-market-surface-metric-control", "hidden"),
             Input("quick-market-view", "value"),
+            Input("quick-market-view", "options"),
         )
-        def show_market_surface_metric(requested_view):
-            return str(requested_view or "auto") != "surface"
+        def show_market_surface_metric(requested_view, options):
+            surface_available = any(
+                option.get("value") == "surface" and not option.get("disabled", False)
+                for option in (options or [])
+            )
+            return not (requested_view == "surface" or (requested_view == "auto" and surface_available))
 
         @app.callback(
             Output("quick-market-results", "children"),
             Output("quick-market-view", "value"),
             Output("quick-market-view", "options"),
             Output("quick-market-surface-metric", "options"),
+            Output("quick-market-values", "data"),
+            Output("quick-market-values", "columns"),
+            Output("quick-market-values", "page_count"),
+            Output("quick-market-values", "page_current"),
+            Output('refresh-view-quick-market', "data"),
             Input("quick-market-combine-udl", "value"),
             Input("quick-market-view", "value"),
             Input("quick-market-surface-metric", "value"),
             Input("risk-workspace-tabs", "value"),
             Input("data-revision-store", "data"),
+            Input("quick-market-values", "page_current"),
+            State("refresh-action-request", "data"),
             prevent_initial_call=True,
         )
+        @refresh_view('quick-market', revision_arg='_revision', outputs=8, content=[0], stamp=[0])
         def render_market_search(
-            combine_udl,
-            requested_view,
-            surface_metric,
-            active_workspace,
-            _revision,
+            combine_udl, requested_view, surface_metric, active_workspace,
+            _revision, page_current,
         ):
             if active_workspace != "quick-market":
-                return (
-                    None,
-                    no_update,
-                    no_update,
-                    no_update,
-                )
+                return None, no_update, no_update, no_update, [], [], 0, 0
             selected = str(combine_udl or "").strip()
             if not selected:
                 return (
-                    html.Div(
-                        "Select a Market identity to build its full tenor view.",
-                        className="quick-search-hint",
-                    ),
-                    no_update,
-                    no_update,
-                    no_update,
+                    html.Div("Select a Market identity to build its full tenor view.", className="quick-search-hint"),
+                    no_update, no_update, no_update, [], [], 0, 0,
                 )
             try:
-                result = refresh_manager.pivot_market_exact(
-                    selected,
-                    index_columns=QUICK_MARKET_DEFAULT_INDEX,
+                result = refresh_manager.pivot_market_exact(selected, index_columns=QUICK_MARKET_DEFAULT_INDEX)
+                if int(result.revision) != int(_revision or 0):
+                    # The independent revision publisher will request a coherent redraw.
+                    return (no_update,) * 8
+                statuses = result.frame["Market Status"].dropna().unique() if not result.frame.empty else []
+                if not result.frame.empty and len(statuses) != 1:
+                    raise ValueError("exact MarketBook result has an ambiguous Market Status")
+                selected_status = str(statuses[0]) if len(statuses) else "Current"
+                page_only = set(ctx.triggered_prop_ids) == {"quick-market-values.page_current"}
+                requested_page = page_current if page_only else 0
+                records, columns, pages, resolved_page = quick_market_values_page(
+                    result.frame, requested_page, market_status=selected_status,
                 )
-                if result.frame.empty:
-                    selected_status = "Current"
-                else:
-                    statuses = result.frame["Market Status"].dropna().unique()
-                    if len(statuses) != 1:
-                        raise ValueError(
-                            "exact MarketBook result has an ambiguous Market Status"
-                        )
-                    selected_status = str(statuses[0])
-                rendered, resolved, options, surface_options = (
-                    build_quick_market_result(
-                        result.frame,
-                        combine_udl=selected,
-                        requested_view=str(requested_view or "auto"),
-                        surface_metric=str(surface_metric or "current"),
-                        market_status=selected_status,
-                        revision=int(result.revision),
-                    )
+                if page_only:
+                    return no_update, no_update, no_update, no_update, records, columns, pages, resolved_page
+                rendered, resolved, options, surface_options = build_quick_market_result(
+                    result.frame, combine_udl=selected,
+                    requested_view=str(requested_view or "auto"),
+                    surface_metric=str(surface_metric or "current"),
+                    market_status=selected_status, revision=int(result.revision),
+                    include_values=False,
                 )
-                return (
-                    rendered,
-                    resolved,
-                    options,
-                    surface_options,
-                )
-            except (
-                AttributeError,
-                KeyError,
-                LookupError,
-                TypeError,
-                ValueError,
-                RuntimeError,
-            ) as error:
+                # Resolving Auto is internal; changing this Input would render twice.
+                control = "auto" if requested_view == "auto" else resolved
+                control_update = no_update if control == requested_view else control
+                return rendered, control_update, options, surface_options, records, columns, pages, resolved_page
+            except (AttributeError, KeyError, LookupError, TypeError, ValueError, RuntimeError) as error:
                 app.logger.exception("Quick Market Search render failed")
-                detail = (
-                    " ".join(str(error).splitlines()).strip() or type(error).__name__
-                )
+                detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
                 return (
-                    html.Div(
-                        f"Quick Market Search failed: {type(error).__name__}: {detail[:400]}",
-                        className="quick-search-error",
-                        role="alert",
-                    ),
-                    no_update,
-                    no_update,
-                    no_update,
+                    html.Div(f"Quick Market Search failed: {type(error).__name__}: {detail[:400]}", className="quick-search-error", role="alert"),
+                    no_update, no_update, no_update, [], [], 0, 0,
                 )
-
 
 __all__ = ["register_workspace_callbacks"]

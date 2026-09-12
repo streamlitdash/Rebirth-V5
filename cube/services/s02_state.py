@@ -185,17 +185,76 @@ class _RefreshStateMixin:
             frame=frame.copy(deep=True),
         )
 
+    def data_history_identities(self) -> tuple[ResolvedHistoryIdentity, ...]:
+        """Read compact Data choices from one committed search catalog."""
+        with self._state_lock:
+            catalog = self._search_catalog
+        if catalog is None:
+            return ()
+        identities = []
+        for kind, mode in (
+            ("risk", "reported"), ("risk", "underlying"), ("market", "underlying")
+        ):
+            labels = (
+                catalog.market_udl_options()
+                if kind == "market"
+                else catalog.combine_udl_options(identity_mode=mode)
+            )
+            for label in labels:
+                identities.append(catalog.resolve_history_identity(
+                    kind, label, identity_mode=mode
+                ))
+        return tuple(identities)
+
+    def read_data_history(self, handoff) -> tuple[int, pd.DataFrame]:
+        """Copy only the selected current identity from one committed snapshot."""
+        with self._state_lock:
+            committed = self._snapshot
+        if committed is None:
+            return 0, pd.DataFrame()
+        identity = handoff.identity
+        frame = (
+            committed.dashboard_frame if handoff.kind == "risk"
+            else committed.market_frame
+        )
+        column = (
+            "Reported Underlying" if identity.identity_mode == "reported"
+            else "Underlying"
+        )
+        mask = (
+            frame["Source Type"].isin(identity.source_types)
+            & frame["Risk Type"].eq(identity.risk_type)
+            & frame["Risk Greek"].eq(identity.risk_greek)
+            & frame[column].eq(identity.underlying)
+        )
+        rows = frame.loc[mask].copy()
+        rows["Revision"] = committed.revision
+        rows["Snapshot Date"] = committed.market_date
+        if handoff.kind == "risk":
+            rows["Risk Date"] = rows["Source Type"].map(committed.risk_dates)
+            if rows["Risk Date"].isna().any():
+                raise ValueError("Current Risk has no committed source Risk Date")
+            rows["Mapping Status"] = "Mapped"
+        else:
+            rows["Market Date"] = committed.market_date
+        return committed.revision, rows
+
     def combine_udl_options(
         self,
         *,
         identity_mode: str = "reported",
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]:
         """Return exact Quick Risk identities for the selected authority."""
         with self._state_lock:
             catalog = self._search_catalog
         if catalog is None:
             raise RuntimeError("RiskRefreshManager has not been refreshed yet")
-        return catalog.combine_udl_options(identity_mode=identity_mode)
+        return catalog.combine_udl_options(
+            identity_mode=identity_mode, risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
+        )
 
     def market_udl_options(self) -> tuple[str, ...]:
         """Return identities from the complete committed MarketBook."""

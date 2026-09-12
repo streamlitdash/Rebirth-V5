@@ -651,7 +651,6 @@ class _RiskDataCache:
             OrderedDict()
         )
         self._filtered_bytes = 0
-        self._rendered: OrderedDict[str, Any] = OrderedDict()
         self._promotion_generations: OrderedDict[str, PromotionGeneration] = (
             OrderedDict()
         )
@@ -691,7 +690,6 @@ class _RiskDataCache:
                 self._revision = int(revision)
                 self._filtered.clear()
                 self._filtered_bytes = 0
-                self._rendered.clear()
                 self._promotion_generations.clear()
                 self._reduced_frames.clear()
                 self._market_quote_revision = None
@@ -704,7 +702,6 @@ class _RiskDataCache:
             with self._lock:
                 self._filtered.clear()
                 self._filtered_bytes = 0
-                self._rendered.clear()
                 self._promotion_generations.clear()
                 self._reduced_frames.clear()
                 self._market_quote_revision = None
@@ -1012,27 +1009,9 @@ class _RiskDataCache:
                     return filtered
 
     def rendered(self, key: str, build: Callable[[], Any]) -> Any:
-        """Return one exact immutable table tree from a bounded thread-safe LRU."""
-        with self._lock:
-            cached = self._rendered.get(key, _UNSET)
-            if cached is not _UNSET:
-                self._rendered.move_to_end(key)
-                return cached
-        # Large hierarchy/table builds release the GIL inside pandas. Keep
-        # them one-at-a-time so Dash request threads cannot consume two cores
-        # and allocate duplicate component trees during the initial mount.
+        """Build the visible table without retaining prior component trees."""
         with self._render_compute_lock:
-            with self._lock:
-                existing = self._rendered.get(key, _UNSET)
-                if existing is not _UNSET:
-                    self._rendered.move_to_end(key)
-                    return existing
-            component = build()
-            with self._lock:
-                self._rendered[key] = component
-                while len(self._rendered) > 24:
-                    self._rendered.popitem(last=False)
-                return component
+            return build()
 
 
 def _next_counter(value: Any) -> int:

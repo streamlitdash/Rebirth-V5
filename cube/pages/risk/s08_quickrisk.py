@@ -6,7 +6,6 @@ import json
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 from dash import dcc, html
 
 from cube.domain.s01_schema import PORTFOLIO_FIELDS
@@ -40,6 +39,7 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
 
     disclosure = html.Details(
         [
+            dcc.Store(id="quick-risk-search-index", data=None),
             html.Summary(
                 [
                     html.Span(
@@ -61,10 +61,9 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                         [
                             html.Div(
                                 [
-                                    html.H2("Risk, PL and Market"),
+                                    html.H2("Quick Risk"),
                                     html.P(
-                                        "Choose one exact Risk Type, Risk Greek and Underlying identity. "
-                                        "The bounded dropdown never refreshes connector data."
+                                        "Choose an underlying, then use the pivot to arrange the rows."
                                     ),
                                 ],
                                 className="quick-search-heading-copy",
@@ -80,13 +79,13 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                                         options=[],
                                         value=None,
                                         multi=False,
-                                        clearable=False,
+                                        clearable=True,
                                         searchable=True,
                                         placeholder="Type e.g. IR Delta EUR",
                                         className="quick-search-combine-dropdown",
                                     ),
                                     html.Span(
-                                        "Search one full Risk Type | Risk Greek | Underlying identity.",
+                                        "Search by underlying, risk type or Greek.",
                                         className="quick-search-selector-help",
                                     ),
                                 ],
@@ -115,7 +114,7 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                         className="quick-search-heading",
                     ),
                     html.P(
-                        "One current-snapshot hierarchy combines Risk, PL and quote-aware Market values.",
+                        "The chart follows the available tenors automatically.",
                         className="quick-search-pivot-description",
                     ),
                     html.Div(
@@ -142,6 +141,15 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
                         ],
                         className="quick-search-dimension-control",
                     ),
+                    html.Div(
+                        [
+                            dcc.Loading(
+                                html.Div(id="quick-risk-tenor-result"),
+                                type="dot", delay_show=160, className="quick-risk-chart-loading",
+                            ),
+                        ],
+                        className="quick-risk-chart-panel",
+                    ),
                     dcc.Loading(
                         html.Div(
                             "Open this section to build its current-snapshot hierarchy.",
@@ -164,7 +172,7 @@ def build_quick_search(*, embedded: bool = False) -> html.Details | html.Div:
     if not embedded:
         return disclosure
     return html.Div(
-        disclosure.children[1:],
+        [disclosure.children[0], *disclosure.children[2:]],
         id=disclosure.id,
         className="quick-search-shell quick-search-tab-body",
         **{"aria-label": "Quick Risk Search hierarchy"},
@@ -195,85 +203,7 @@ def _quick_search_number(value: object, *, column: str) -> tuple[str, str]:
     return format_number(numeric, column=column.casefold()), number_sign_class(numeric)
 
 
-def build_quick_risk_figure(
-    leaves: pd.DataFrame,
-    index_columns: list[str] | tuple[str, ...],
-) -> go.Figure:
-    """Plot the current exact Risk identity using its ProductSpec-shaped axes."""
 
-    axes = [
-        column
-        for column in ("Tenor Swap", "Tenor Option")
-        if column in index_columns and column in leaves
-    ]
-    figure = go.Figure()
-    if not axes:
-        values = [
-            pd.to_numeric(leaves.get(metric), errors="coerce").sum(min_count=1)
-            for metric in ("Risk", "dRisk")
-        ]
-        figure.add_trace(
-            go.Bar(
-                x=["Risk", "dRisk"],
-                y=values,
-                marker_color=["#79BE89", "#78A9D1"],
-                hovertemplate="<b>%{x}</b><br>%{y:,.6g}<extra></extra>",
-            )
-        )
-    elif len(axes) == 1:
-        axis = axes[0]
-        curve = leaves.groupby(axis, as_index=False, sort=False)[["Risk", "dRisk"]].sum(
-            min_count=1
-        )
-        for metric, color in (("Risk", "#79BE89"), ("dRisk", "#78A9D1")):
-            figure.add_trace(
-                go.Scatter(
-                    x=curve[axis],
-                    y=curve[metric],
-                    name=metric,
-                    mode="lines+markers",
-                    line={"color": color, "width": 3},
-                    connectgaps=False,
-                )
-            )
-        figure.update_xaxes(title=axis, type="category")
-    else:
-        first, second = axes
-        surface = leaves.pivot_table(
-            index=second,
-            columns=first,
-            values="Risk",
-            aggfunc="sum",
-            sort=False,
-            dropna=False,
-        )
-        figure.add_trace(
-            go.Surface(
-                x=list(surface.columns.astype(str)),
-                y=list(surface.index.astype(str)),
-                z=surface.to_numpy(dtype=float),
-                colorbar={"title": "Risk"},
-                connectgaps=False,
-            )
-        )
-        figure.update_layout(
-            scene={
-                "xaxis": {"title": first, "type": "category"},
-                "yaxis": {"title": second, "type": "category"},
-                "zaxis": {"title": "Risk"},
-            }
-        )
-    figure.update_layout(
-        template="plotly_white",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=340,
-        margin={"l": 48, "r": 24, "t": 42, "b": 48},
-        title={"text": "Current risk shape", "x": 0.01},
-        legend={"orientation": "h", "y": 1.08},
-        uirevision="quick-risk-current",
-    )
-    return figure
 
 
 def build_quick_search_pivot(
@@ -283,6 +213,7 @@ def build_quick_search_pivot(
     index_columns: list[str] | tuple[str, ...],
     total: int | None = None,
     revision: int | None = None,
+    full_totals=None,
 ) -> html.Div:
     """Render one bounded, selectable hierarchy returned by the backend catalog."""
     if not isinstance(frame, pd.DataFrame):
@@ -472,31 +403,22 @@ def build_quick_search_pivot(
             )
         )
 
-    # Compute totals and the current chart from leaf rows only.
-    leaf_rows = [
-        r
-        for r in frame.to_dict("records")
-        if r[QUICK_SEARCH_HIERARCHY_DEPTH] == len(selected_indexes)
-    ]
-    leaf_frame = pd.DataFrame(leaf_rows)
-    metric_summaries = {}
-    for metric_column, label in metric_columns:
-        values = []
-        for record in leaf_rows:
-            raw = record.get(metric_column)
-            try:
-                numeric = float(raw)
-                if np.isfinite(numeric):
-                    values.append(numeric)
-            except (TypeError, ValueError):
-                pass
-        metric_summaries[metric_column] = sum(values) if values else 0.0
+    # Quotes are not additive; financial totals cover the complete selection.
+    leaf_rows = frame.loc[depths.eq(len(selected_indexes))]
+    metric_summaries = {"Open": None, "Current": None, "Move": None}
+    for metric in ("Risk", "dRisk", "PL"):
+        if full_totals is not None:
+            metric_summaries[metric] = full_totals.get(metric)
+        else:
+            values = pd.to_numeric(leaf_rows[metric], errors="coerce")
+            value = values.where(np.isfinite(values).fillna(False)).sum(min_count=1)
+            metric_summaries[metric] = None if pd.isna(value) else float(value)
 
-    if leaf_rows:
+    if not leaf_rows.empty:
         total_cells: list[html.Th | html.Td] = [
             html.Th(
                 html.Span(
-                    "Total",
+                    "Total — full selected scope" if full_totals is not None else "Displayed groups subtotal",
                     className="total-label quick-search-total-label",
                 ),
                 scope="col",
@@ -519,7 +441,7 @@ def build_quick_search_pivot(
                     style={"fontWeight": "bold"},
                     **{
                         "data-metric": metric_column,
-                        "data-copy-value": str(metric_summaries[metric_column]),
+                        "data-copy-value": "" if metric_summaries[metric_column] is None else str(metric_summaries[metric_column]),
                     },
                 )
             )
@@ -537,6 +459,10 @@ def build_quick_search_pivot(
         f"Showing {shown_leaves:,} of {result_total:,} leaf groups "
         f"across {len(rows):,} hierarchy rows{suffix}"
     )
+    if full_totals is not None and "PL total rows" in full_totals:
+        count = int(full_totals["PL total rows"])
+        missing = int(full_totals.get("PL missing rows", 0))
+        status += f" · PL available for {count - missing:,} of {count:,} positions"
     index_header = html.Th(
         "Index",
         scope="col",
@@ -566,11 +492,6 @@ def build_quick_search_pivot(
                 className="quick-search-result-count",
                 role="status",
                 **{"aria-live": "polite", "aria-atomic": "true"},
-            ),
-            dcc.Graph(
-                figure=build_quick_risk_figure(leaf_frame, selected_indexes),
-                config={"displaylogo": False, "responsive": True},
-                className="quick-risk-current-chart",
             ),
             html.Div(
                 [
@@ -613,6 +534,5 @@ __all__ = [
     "QUICK_SEARCH_HIERARCHY_DEPTH",
     "QUICK_SEARCH_INDEX_OPTIONS",
     "build_quick_search",
-    "build_quick_risk_figure",
     "build_quick_search_pivot",
 ]

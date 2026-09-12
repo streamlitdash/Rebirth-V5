@@ -85,6 +85,9 @@
   });
   const publishRiskAction = (node) => {
     if (!node || node.disabled) return false;
+    const isRowLabel = node.classList.contains("row-detail-button");
+    const isCreditLabel = isRowLabel && !node.closest("#alt-risk-grid")
+      && Boolean(node.closest("tr")?.querySelector(".credit-measure-cell"));
     const isTopBookCell = node.classList.contains("top-book-metric-cell-button");
     const isTopBookRow = node.classList.contains("row-toggle")
       && Boolean(node.closest("#top-book-grid"));
@@ -92,7 +95,7 @@
       ? "row"
       : node.classList.contains("metric-header-button")
         ? "metric"
-        : node.classList.contains("metric-cell-button")
+        : node.classList.contains("metric-cell-button") || isRowLabel
           ? "cell"
           : null;
     const storeId = isTopBookCell
@@ -151,11 +154,16 @@
       action.source = node.dataset.riskSource
         || (isTopBookCell
           ? "top-book-risk-cell"
-          : node.classList.contains("credit-measure-cell-button")
+          : node.classList.contains("credit-measure-cell-button") || isCreditLabel
             ? "credit-risk-cell"
             : node.closest("#alt-risk-grid")
               ? "alt-risk-cell"
               : "main-risk-cell");
+    }
+    if (isRowLabel) {
+      // A branch label selects its complete scope, even when sums are blank.
+      action.metric = "risk";
+      if (isCreditLabel) action.measure = "JTD";
     }
     if (nodeRiskKey !== undefined) action.key = nodeRiskKey;
     if (node.dataset.riskMetric !== undefined) action.metric = node.dataset.riskMetric;
@@ -309,6 +317,15 @@
       return;
     }
 
+    const rowLabel = event.target.closest(
+      "#risk-grid .row-detail-button, #alt-risk-grid .row-detail-button"
+    );
+    if (rowLabel) {
+      event.preventDefault();
+      publishRiskAction(rowLabel);
+      return;
+    }
+
     // Risk Explorer tables can contain hundreds of interactive
     // controls. They deliberately have no Dash pattern IDs: one
     // delegated event publishes a compact action through a stable
@@ -355,7 +372,7 @@
       + "#commo-market-toggle, #risk-checker-toggle, #force-risk-apply-button, "
       + "#clear-cache-button, #initial-load-retry, #pnl-initial-load-retry"
     );
-    if (refreshTrigger) {
+    if (refreshTrigger && !refreshTrigger.disabled) {
       const mode = refreshTrigger.id === "reload-risk-button"
         ? "reload"
         : refreshTrigger.id === "refresh-portfolios-button" ? "portfolios"
@@ -375,7 +392,8 @@
           });
         }
       }
-      startRefreshProgress(mode);
+      // Warm actions start atomically in the refresh-action-request dispatcher.
+      if (mode === "bootstrap") startRefreshProgress(mode);
     }
     const header = event.target.closest(
       ".risk-table thead th.metric-header, .risk-table thead th.index-header, "

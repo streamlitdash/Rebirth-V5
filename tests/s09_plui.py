@@ -875,7 +875,7 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
     aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
     monkeypatch.setattr(pl_aggregate_events, "ctx", SimpleNamespace(triggered_id=None))
 
-    open_state, table = aggregate(
+    open_state, table, receipt = aggregate(
         7,
         [],
         [],
@@ -885,9 +885,12 @@ def test_pl_summary_callback_uses_history_and_governed_filters(
         ),
         None,
         [],
+        None,  # refresh-action-request
     )
 
     assert open_state is no_update
+    assert receipt["owner"] == "pnl-summary"
+    assert receipt["status"] == "rendered"
     assert "Today" in _text(table)
     assert source.calls == [
         {
@@ -945,7 +948,7 @@ def test_pl_summary_waits_for_base_and_clears_once_per_positive_generation(
 
     monkeypatch.setattr(pl_aggregate_events, "ctx", SimpleNamespace(triggered_id=None))
     with pytest.raises(pl_aggregate_events.PreventUpdate):
-        aggregate(1, [], [], None, 0, [])
+        aggregate(1, [], [], None, 0, [], None)
     assert source.summary_calls == 0
     assert source.clear_calls == 0
 
@@ -955,9 +958,9 @@ def test_pl_summary_waits_for_base_and_clears_once_per_positive_generation(
         "ctx",
         SimpleNamespace(triggered_id="clear-cache-complete-store"),
     )
-    aggregate(1, [], [], committed, 0, [])
-    aggregate(1, [], [], committed, 1, [])
-    aggregate(1, [], [], committed, 1, [])
+    aggregate(1, [], [], committed, 0, [], None)
+    aggregate(1, [], [], committed, 1, [], None)
+    aggregate(1, [], [], committed, 1, [], None)
 
     assert source.summary_calls == 3
     assert source.clear_calls == 1
@@ -1503,13 +1506,14 @@ def test_cold_native_pnl_is_safe_before_commit_without_history_source(
     assert "pnl-initial-load-trigger" in _string_ids(page)
     assert manager.health.revision == 0
     aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
-    _open_state, aggregate_view = aggregate(
+    _open_state, aggregate_view, receipt = aggregate(
         0,
         [],
         [],
         None,
         None,
         [],
+        None,  # refresh-action-request
     )
     assert "not configured" in str(aggregate_view.children)
     effective_query = _callback(app, "pl-send-effective-query-store.data")
@@ -1529,13 +1533,14 @@ def test_cold_native_pnl_is_safe_before_commit_without_history_source(
     assert result == ({}, [], None, no_update, no_update)
 
     manager.refresh(force_risk=True, force_pl=True)
-    _open_state, aggregate_view = aggregate(
+    _open_state, aggregate_view, receipt = aggregate(
         manager.health.revision,
         [],
         [],
         None,
         None,
         [],
+        None,  # refresh-action-request
     )
     assert "not configured" in str(aggregate_view.children)
     assert not any("pl-send-preview" in key for key in app.callback_map)

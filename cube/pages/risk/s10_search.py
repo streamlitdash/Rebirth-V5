@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from inspect import Parameter, signature
 from typing import Mapping, Sequence
 
@@ -13,6 +11,7 @@ from dash import html, no_update
 
 from cube.app.s02_contracts import RefreshManagerProtocol
 from cube.domain.s02_products import PRODUCT_SPECS_BY_SOURCE_TYPE
+from cube.domain.s10_search import _dropdown_search_label
 
 from .s08_quickrisk import (
     QUICK_RISK_PIVOT_LIMIT,
@@ -24,24 +23,9 @@ from .s08_quickrisk import (
 
 
 _LOGGER = logging.getLogger(__name__)
-_QUICK_SEARCH_NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
-
-
-def _combine_udl_browser_search(value: str) -> str:
-    """Return whitespace aliases that Dash's local dropdown search can index."""
-    normalized = unicodedata.normalize("NFKC", value).casefold()
-    parts = tuple(
-        part for part in _QUICK_SEARCH_NON_ALPHANUMERIC.split(normalized) if part
-    )
-    aliases = list(parts)
-    for size in range(2, min(4, len(parts)) + 1):
-        aliases.extend(
-            "".join(parts[start : start + size])
-            for start in range(len(parts) - size + 1)
-        )
-    if parts:
-        aliases.append("".join(parts))
-    return " ".join(dict.fromkeys(aliases))
+def _quick_search_label_index(labels):
+    """Compact label-only browser index, rebuilt only when its scope changes."""
+    return [[str(value), _dropdown_search_label(str(value))] for value in labels]
 
 
 def _quick_search_result_parts(
@@ -69,46 +53,6 @@ def _quick_search_result_parts(
         int(total) if total is not None else len(frame),
         int(revision) if revision is not None else None,
     )
-
-
-def _combine_udl_dropdown_options(raw_options: object) -> list[dict[str, str]]:
-    """Return stable Dash options for the snapshot's exact identity keys."""
-    if raw_options is None:
-        return []
-    if isinstance(raw_options, pd.Series):
-        candidates = raw_options.tolist()
-    elif isinstance(raw_options, Sequence) and not isinstance(
-        raw_options, (str, bytes)
-    ):
-        candidates = raw_options
-    else:
-        try:
-            candidates = list(raw_options)  # type: ignore[arg-type]
-        except TypeError:
-            return []
-
-    options: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if isinstance(candidate, Mapping):
-            value = str(candidate.get("value", "")).strip()
-            label = str(candidate.get("label", value)).strip()
-            search = str(candidate.get("search", "")).strip()
-        else:
-            value = str(candidate).strip()
-            label = value
-            search = ""
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        options.append(
-            {
-                "label": label or value,
-                "value": value,
-                "search": search or _combine_udl_browser_search(label or value),
-            }
-        )
-    return options
 
 
 def _normalise_quick_search_index(
@@ -296,6 +240,7 @@ def _render_quick_search_pivot(
                 index_columns=effective_indexes,
                 total=total,
                 revision=revision,
+                full_totals=(result.get("full_totals") if isinstance(result, Mapping) else getattr(result, "full_totals", None)),
             ),
             index_update,
         )
@@ -313,8 +258,7 @@ def _render_quick_search_pivot(
 
 
 __all__ = [
-    "_combine_udl_browser_search",
-    "_combine_udl_dropdown_options",
+    "_quick_search_label_index",
     "_normalise_quick_search_index",
     "_prune_quick_search_indexes",
     "_product_shaped_quick_search_indexes",

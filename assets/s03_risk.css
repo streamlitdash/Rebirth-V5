@@ -122,3 +122,26 @@
 :root[data-theme="dark"] .js-plotly-plot .plotly text { fill: var(--text) !important; color: var(--text) !important; }
 :root[data-theme="dark"] .modebar { background: var(--surface-raised) !important; }
 :root[data-theme="dark"] .modebar-btn path { fill: var(--text-muted) !important; }
+
+/* Quick Risk chart only: keep it outside the dropdown and detail grids. */
+.quick-risk-chart-panel {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 18px 0;
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.quick-risk-chart-loading,
+#quick-risk-tenor-result,
+.quick-risk-chart-stack,
+.quick-risk-chart-stack > div { width: 100%; min-width: 0; }
+.quick-risk-chart-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 14px; }
+.quick-risk-chart-title { margin: 0 0 4px; font-size: 14px; color: var(--text); }
+.quick-risk-chart-note { margin: 4px 8px 8px; font-size: 12px; color: var(--text-muted); }
+.quick-risk-plot { width: 100%; min-width: 0; }
+@media (max-width: 640px) {
+  .quick-risk-chart-stack { padding: 8px; }
+}

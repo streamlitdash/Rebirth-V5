@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from cube.ui.s08_refresh_views import refresh_view
+
 import json
 import unicodedata
 from collections.abc import Mapping
@@ -282,6 +284,7 @@ def register_pl_aggregate_callbacks(
     @app.callback(
         Output("pnl-summary-open-paths", "data"),
         Output("pnl-aggregate-pl-grid", "children"),
+        Output('refresh-view-pnl-summary', "data"),
         Input("data-revision-store", "data"),
         Input({"type": PL_SUMMARY_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
         Input(
@@ -291,7 +294,9 @@ def register_pl_aggregate_callbacks(
         Input(consumer_controls.committed_state_id, "data"),
         Input("clear-cache-complete-store", "data"),
         State("pnl-summary-open-paths", "data"),
+        State("refresh-action-request", "data"),
     )
+    @refresh_view('pnl-summary', revision_arg='_data_revision', outputs=2, content=[1], stamp=[1])
     def reduce_and_render_pl_summary(
         _data_revision,
         row_clicks,

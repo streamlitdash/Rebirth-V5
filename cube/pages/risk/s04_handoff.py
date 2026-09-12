@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from numbers import Integral
 from uuid import uuid4
 
@@ -10,6 +10,7 @@ from dash import Dash, Input, Output, State, ctx, no_update
 
 from cube.history import HistoryHandoff, RiskFilterView
 from cube.ui.s01_constants import RISK_FILTER_DIMENSION_FIELDS
+from cube.ui.s02_aggregation import parse_row_key
 from cube.app.s02_contracts import RefreshManagerProtocol
 
 
@@ -101,6 +102,20 @@ def _handoff_payload(handoff: HistoryHandoff, kind: str) -> dict[str, object]:
     }
 
 
+def explorer_identity(selection: object, active_risk_type: object = None) -> tuple[str, str] | None:
+    """Resolve only explicit underlying rows; group labels are not identities."""
+    if not isinstance(selection, Mapping):
+        return None
+    context = parse_row_key(selection.get("key"))
+    underlying = context.get("underlying") or context.get("reported underlying")
+    risk_type = context.get("risk type") or active_risk_type
+    greek = context.get("risk greek")
+    if not all((risk_type, greek, underlying)):
+        return None
+    mode = "underlying" if context.get("underlying") else "reported"
+    return " | ".join((str(risk_type), greek, underlying)), mode
+
+
 def register_callbacks(
     app: Dash,
     refresh_manager: RefreshManagerProtocol | None,
@@ -112,26 +127,37 @@ def register_callbacks(
     @app.callback(
         Output("quick-search-open-data", "disabled"),
         Output("quick-market-open-data", "disabled"),
+        Output("risk-explorer-open-data", "disabled"),
         Input("quick-search-combine-udl", "value"),
         Input("quick-market-combine-udl", "value"),
+        Input("selected-cell-store", "data"),
+        Input("risk-type-tabs", "value"),
     )
-    def enable_open_buttons(risk_identity, market_identity):
+    def enable_open_buttons(risk_identity, market_identity, selection, active_risk_type):
         available = refresh_manager is not None
-        return not (available and risk_identity), not (available and market_identity)
+        return (
+            not (available and risk_identity),
+            not (available and market_identity),
+            not (available and explorer_identity(selection, active_risk_type)),
+        )
 
     @app.callback(
         Output("data-history-handoff-store", "data"),
         Output("data-route-location", "href"),
         Output("quick-search-data-status", "children"),
         Output("quick-market-data-status", "children"),
+        Output("risk-explorer-data-status", "children"),
         Input("quick-search-open-data", "n_clicks"),
         Input("quick-market-open-data", "n_clicks"),
         Input("quick-search-combine-udl", "value"),
         Input("quick-market-combine-udl", "value"),
+        Input("risk-explorer-open-data", "n_clicks"),
+        Input("selected-cell-store", "data"),
         State("split-filter", "value"),
         State("dimension-filter-values-store", "data"),
         State("risk-filter-exclude-applied-store", "data"),
         State("reset-generation-store", "data"),
+        State("risk-type-tabs", "value"),
         prevent_initial_call=True,
     )
     def open_in_data(
@@ -139,24 +165,37 @@ def register_callbacks(
         _market_clicks,
         risk_identity,
         market_identity,
+        _explorer_clicks,
+        selection,
         selected_splits,
         dimension_values,
         exclude_value,
         reset_generation,
+        active_risk_type,
     ):
         if refresh_manager is None:
-            return no_update, no_update, "Data history is unavailable.", no_update
+            return no_update, no_update, "Data history is unavailable.", no_update, no_update
         if ctx.triggered_id == "quick-search-combine-udl":
-            return no_update, no_update, "", no_update
+            return no_update, no_update, "", no_update, no_update
         if ctx.triggered_id == "quick-market-combine-udl":
-            return no_update, no_update, no_update, ""
+            return no_update, no_update, no_update, "", no_update
+        if ctx.triggered_id == "selected-cell-store":
+            return no_update, no_update, no_update, no_update, ""
+        explorer = ctx.triggered_id == "risk-explorer-open-data"
         kind = "market" if ctx.triggered_id == "quick-market-open-data" else "risk"
         try:
+            selected = market_identity if kind == "market" else risk_identity
+            mode = "underlying" if kind == "market" else "reported"
+            if explorer:
+                resolved = explorer_identity(selection, active_risk_type)
+                if resolved is None:
+                    raise ValueError("Select an underlying row with a risk type and Greek first")
+                selected, mode = resolved
             handoff = build_history_handoff(
                 refresh_manager,
                 kind=kind,
-                combine_udl=(market_identity if kind == "market" else risk_identity),
-                identity_mode=("underlying" if kind == "market" else "reported"),
+                combine_udl=selected,
+                identity_mode=mode,
                 reset_generation=reset_generation,
                 selected_splits=selected_splits,
                 dimension_values=dimension_values,
@@ -170,18 +209,23 @@ def register_callbacks(
             RuntimeError,
         ) as error:
             message = f"Could not open Data: {error}"
+            if explorer:
+                return no_update, no_update, no_update, no_update, message
             if kind == "market":
-                return no_update, no_update, no_update, message
-            return no_update, no_update, message, no_update
+                return no_update, no_update, no_update, message, no_update
+            return no_update, no_update, message, no_update, no_update
         message = "Opening exact history…"
         payload = _handoff_payload(handoff, kind)
+        if explorer:
+            return payload, data_href, no_update, no_update, message
         if kind == "market":
-            return payload, data_href, no_update, message
-        return payload, data_href, message, no_update
+            return payload, data_href, no_update, message, no_update
+        return payload, data_href, message, no_update, no_update
 
 
 __all__ = [
     "build_history_handoff",
     "build_risk_filter_view",
+    "explorer_identity",
     "register_callbacks",
 ]

@@ -172,8 +172,8 @@ def _filter_risk_positions(
     if len(positions) == 0 or not selected_filters:
         return positions
 
-    candidates = frame.iloc[positions]
-    keep = np.ones(len(candidates), dtype=bool)
+    # Read only each active filter column; never copy the wide financial frame.
+    keep = np.ones(len(positions), dtype=bool)
     for column in QUICK_RISK_FILTER_COLUMNS:
         raw_selected = selected_filters.get(column)
         if isinstance(raw_selected, (str, bytes)):
@@ -182,7 +182,7 @@ def _filter_risk_positions(
             )
         selected = list(raw_selected or [])
         if selected:
-            matches = candidates[column].isin(selected).to_numpy()
+            matches = frame[column].iloc[positions].isin(selected).to_numpy()
             keep &= ~matches if exclude_selected and column != SPLIT else matches
     return positions[keep]
 
@@ -197,6 +197,7 @@ class SearchResult:
     market_date: pd.Timestamp
     query: str
     total: int
+    full_totals: Mapping[str, float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -930,11 +931,22 @@ class SearchCatalog:
         self,
         *,
         identity_mode: str = "reported",
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]:
         """Return exact Quick Risk identities for the selected authority."""
 
-        _positions, options, _search_labels = self._quick_risk_index(identity_mode)
-        return options
+        positions, options, _search_labels = self._quick_risk_index(identity_mode)
+        if not risk_filters:
+            return options
+        all_positions = np.arange(len(self._risk_pivot_frame), dtype=np.int32)
+        filtered = _filter_risk_positions(
+            self._risk_pivot_frame, all_positions, risk_filters,
+            exclude_selected=exclude_selected,
+        )
+        visible = np.zeros(len(self._risk_pivot_frame), dtype=bool)
+        visible[filtered] = True
+        return tuple(option for option in options if visible[positions[option]].any())
 
     def market_udl_options(self) -> tuple[str, ...]:
         """Return exact identities from the full MarketBook."""
@@ -1072,6 +1084,19 @@ class SearchCatalog:
         selected_limit = _validate_limit(limit)
         terms = _dropdown_search_terms(search_value)
         positions, options, search_labels = self._quick_risk_index(identity_mode)
+        # Evaluate the shared filters once for this search, not once per identity.
+        # This transient mask contains no values and is discarded after the call.
+        visible = None
+        if risk_filters:
+            all_positions = np.arange(len(self._risk_pivot_frame), dtype=np.int32)
+            filtered = _filter_risk_positions(
+                self._risk_pivot_frame,
+                all_positions,
+                risk_filters,
+                exclude_selected=exclude_selected,
+            )
+            visible = np.zeros(len(self._risk_pivot_frame), dtype=bool)
+            visible[filtered] = True
         matches: list[str] = []
         for option, search_label in zip(
             options,
@@ -1080,13 +1105,7 @@ class SearchCatalog:
         ):
             if terms and not all(term in search_label for term in terms):
                 continue
-            filtered_positions = _filter_risk_positions(
-                self._risk_pivot_frame,
-                positions[option],
-                risk_filters,
-                exclude_selected=exclude_selected,
-            )
-            if not len(filtered_positions):
+            if visible is not None and not visible[positions[option]].any():
                 continue
             matches.append(option)
             if len(matches) >= selected_limit:
@@ -1096,13 +1115,8 @@ class SearchCatalog:
             if not isinstance(include, str):
                 raise TypeError("included Combine Udl selection must be text")
             include_positions = positions.get(include)
-            include_visible = include_positions is not None and len(
-                _filter_risk_positions(
-                    self._risk_pivot_frame,
-                    include_positions,
-                    risk_filters,
-                    exclude_selected=exclude_selected,
-                )
+            include_visible = include_positions is not None and (
+                visible is None or visible[include_positions].any()
             )
             if include_visible and include not in matches:
                 # At most one current selection may sit alongside ``limit``
@@ -1337,6 +1351,18 @@ class SearchCatalog:
             risk_filters=risk_filters,
             exclude_selected=exclude_selected,
         )
+        full_totals = {}
+        for metric in RISK_PIVOT_VALUE_COLUMNS:
+            values = pd.to_numeric(selected_risk[metric], errors="coerce")
+            finite = values.notna() & np.isfinite(values).fillna(False)
+            value = values.where(finite).sum(min_count=1)
+            full_totals[metric] = None if pd.isna(value) else float(value)
+            if metric == "PL":
+                missing = int((~finite).sum())
+                full_totals["PL missing rows"] = missing
+                full_totals["PL total rows"] = len(values)
+                if missing:
+                    full_totals["PL"] = None
         levels = []
         for depth in range(1, len(selected_index) + 1):
             prefix = selected_index[:depth]
@@ -1404,6 +1430,7 @@ class SearchCatalog:
             market_date=self.market_date,
             query=combine_udl,
             total=total,
+            full_totals=MappingProxyType(full_totals),
         )
 
 

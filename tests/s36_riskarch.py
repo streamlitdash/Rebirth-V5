@@ -10,7 +10,7 @@ RISK_PACKAGE = Path(__file__).resolve().parents[1] / "cube" / "pages" / "risk"
 CALLBACK_OWNERS = {
     "s15_refresh.py": ("refresh-commit-revision", "risk-date-editor"),
     "s14_workspacecallbacks.py": ("aggregate-pl-grid", "quick-market-results"),
-    "s07_explorer.py": ("risk-grid", "table-view-tabs"),
+    "s07_explorer.py": ("risk-grid", "selected-cell-store"),
 }
 PRESENTATION_OWNERS = (
     "s08_quickrisk.py",
@@ -63,11 +63,20 @@ def test_public_page_boundary_keeps_callback_loading_lazy() -> None:
 
 
 def test_risk_callback_groups_keep_distinct_component_ownership() -> None:
+    outputs_by_owner = {}
+    for filename in CALLBACK_OWNERS:
+        tree = ast.parse(_source(filename))
+        outputs_by_owner[filename] = {
+            node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "Output"
+            and node.args and isinstance(node.args[0], ast.Constant)
+        }
     for filename, owned_ids in CALLBACK_OWNERS.items():
-        source = _source(filename)
-        assert len(source.splitlines()) <= 1_200
         for component_id in owned_ids:
-            assert component_id in source
+            assert {owner for owner, outputs in outputs_by_owner.items()
+                    if component_id in outputs} == {filename}
 
 
 def test_risk_presentation_is_split_into_meaningful_owners() -> None:

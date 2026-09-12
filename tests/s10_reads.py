@@ -18,11 +18,17 @@ def test_targeted_manager_reads_copy_only_the_requested_frames(
     committed = manager._snapshot
     assert committed is not None
 
+    from threading import get_ident
+
     original_copy = pd.DataFrame.copy
+    caller_thread = get_ident()
     copied_ids: list[int] = []
 
     def tracked_copy(frame: pd.DataFrame, deep: bool = True) -> pd.DataFrame:
-        copied_ids.append(id(frame))
+        # Other startup tests may leave a worker finishing in parallel. Measure
+        # this synchronous manager read, not unrelated work in another thread.
+        if get_ident() == caller_thread:
+            copied_ids.append(id(frame))
         return original_copy(frame, deep=deep)
 
     monkeypatch.setattr(pd.DataFrame, "copy", tracked_copy)

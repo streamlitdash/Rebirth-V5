@@ -1,6 +1,6 @@
 # Exact direct versions verified locally and used by Plotly Cloud.
 # Dash 4.4.0 is intentional: the native PL editor is lifecycle-tested against
-# this DataTable and Patch implementation. Review README.md before upgrading.
+# this DataTable and Patch implementation. Review V8.md before upgrading.
 dash==4.4.0
 duckdb==1.5.5
 numpy==2.5.1

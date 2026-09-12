@@ -377,7 +377,7 @@ def validate_stock_frame(value: object, *, label: str = "Stock") -> pd.DataFrame
     for column in STOCK_TEXT_COLUMNS:
         values = frame[column]
         valid = values.map(lambda item: isinstance(item, str) and bool(item.strip()))
-        if not valid.all():
+        if not valid.astype(bool).all():
             rows = frame.index[~valid].tolist()[:5]
             raise ValueError(
                 f"{label} column {column!r} must contain nonblank text at rows {rows}"
@@ -451,6 +451,12 @@ def compare_stock_snapshots(
     prior = validate_stock_frame(prior_stock, label="Prior Stock")
     _reject_duplicate_stock_identity(current, label="Current Stock")
     _reject_duplicate_stock_identity(prior, label="Prior Stock")
+    if current.empty and prior.empty:
+        # Empty Arrow string columns have no chunks to join in pandas 3.
+        return pd.DataFrame({
+            column: pd.Series(dtype="float64" if column in STOCK_COMPARISON_NUMERIC_COLUMNS else "object")
+            for column in STOCK_COMPARISON_COLUMNS
+        })
 
     current_leg = current.rename(
         columns={

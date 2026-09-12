@@ -312,7 +312,13 @@ class ArchiveHistoryRepository:
             max_rows=self._max_rows,
         )
 
-    def read(self, query: HistoryQuery) -> HistoryBundle:
+    def read(
+        self,
+        query: HistoryQuery,
+        *,
+        current_rows: pd.DataFrame | None = None,
+        current_revision: int = 0,
+    ) -> HistoryBundle:
         if not isinstance(query, HistoryQuery):
             raise HistoryValidationError("query must be a HistoryQuery")
         handoff = query.handoff
@@ -349,6 +355,25 @@ class ArchiveHistoryRepository:
                 if not legacy_raw.empty
                 else ()
             )
+        live = current_rows.copy() if current_rows is not None else pd.DataFrame()
+        live_keys = set()
+        if not live.empty:
+            live[date_column] = live[date_column].map(
+                lambda value: _date(value, label=date_column)
+            )
+            # Commit authority belongs to the complete selected identity, before
+            # user filters. A portfolio removed today must not reappear from the
+            # same day's archive merely because filtering now produces no rows.
+            live_keys = set(zip(live[SOURCE_TYPE], live[date_column]))
+            live_dates = tuple(sorted(set(live[date_column])))
+            # The committed Market date is the end of this current view.
+            if handoff.kind == "market":
+                available_dates = tuple(
+                    value for value in available_dates if value <= live_dates[-1]
+                )
+            available_dates = tuple(sorted(set(available_dates).union(live_dates)))
+        if handoff.kind == "risk" and not live.empty:
+            live = _apply_risk_filters(live, handoff.filter_view)
         dates = resolve_actual_period_dates(available_dates, query)
         if len(dates) > self._max_dates:
             raise HistoryValidationError(
@@ -398,6 +423,23 @@ class ArchiveHistoryRepository:
                 )
             if handoff.kind == "risk":
                 period_rows.insert(3, MAPPING_STATUS, MAPPED_HISTORY_VALUE)
+        if not live.empty:
+            live = live.loc[live[date_column].isin(dates)].copy()
+        if live_keys and not period_rows.empty:
+            archived_dates = period_rows[date_column].map(
+                lambda value: _date(value, label=date_column)
+            )
+            keep = [
+                (source, day) not in live_keys
+                for source, day in zip(period_rows[SOURCE_TYPE], archived_dates)
+            ]
+            period_rows = period_rows.loc[keep]
+        if not live.empty:
+            if len(period_rows) + len(live) > self._max_raw_rows:
+                raise HistoryValidationError(
+                    "Current plus archived data is too large; narrow the period or Risk filters."
+                )
+            period_rows = pd.concat([period_rows, live], ignore_index=True, sort=False)
         if handoff.kind == "risk":
             period_rows = _apply_risk_filters(period_rows, handoff.filter_view)
         if not period_rows.empty and date_column in period_rows:
@@ -434,6 +476,14 @@ class ArchiveHistoryRepository:
                 else ORDERED
             ),
         )
+        expected_cells = len(dates)
+        for axis in axis_orders:
+            expected_cells *= len(axis.labels)
+        if expected_cells > self._max_cells:
+            raise HistoryValidationError(
+                f"Canonical history would have {expected_cells:,} cells and exceeds "
+                f"the {self._max_cells:,}-cell browser budget. Choose a narrower period."
+            )
         values = _canonical_values(
             period_rows,
             kind=handoff.kind,
@@ -469,7 +519,7 @@ class ArchiveHistoryRepository:
             values=values,
             selected_rows=selected_rows.reset_index(drop=True),
             raw_rows=period_rows.reset_index(drop=True),
-            generation=generation,
+            generation=f"{generation}:current:{current_revision}",
         )
 
 

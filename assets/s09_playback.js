@@ -1,748 +1,124 @@
-/* Data-page ProductSpec projections and isolated history playback. */
+/* Data has one local label search and one player for the selected small bundles. */
 (() => {
   "use strict";
-
-  const CAMERA = { eye: { x: 1.55, y: 1.65, z: 1.25 } };
-  const ASPECT = { x: 1.30, y: 1.08, z: 0.78 };
-  const SUM_SLICE = "__sum__";
-  const dataProjectionOptions = (axisCount) => {
-    if (axisCount === 0) {
-      return [{ label: "Timeline", value: "zero_timeline" }];
-    }
-    if (axisCount === 1) {
-      return [
-        { label: "3D history", value: "one_surface" },
-        { label: "One tenor over time", value: "one_tenor" },
-        { label: "Compare two dates", value: "one_compare" },
-      ];
-    }
-    if (axisCount === 2) {
-      return [
-        { label: "Surface on selected date", value: "two_surface" },
-        { label: "Swap tenors over time", value: "two_swap" },
-        { label: "Option tenors over time", value: "two_option" },
-        { label: "Compare two surfaces", value: "two_compare" },
-      ];
-    }
-    return [];
-  };
-
-  const dataAxes = (bundle) => Array.isArray(bundle?.axes) ? bundle.axes : [];
-  const dataDates = (bundle) => Array.isArray(bundle?.dates)
-    ? bundle.dates.map(String)
-    : [];
-  const dataLabels = (axis) => Array.isArray(axis?.labels)
-    ? axis.labels.map(String)
-    : [];
-  const retainedValue = (values, current, fallback = null) => {
-    const selected = String(current ?? "");
-    return values.includes(selected) ? selected : fallback;
-  };
-  const dropdownOptions = (values) => values.map((value) => ({
-    label: value === SUM_SLICE ? "Sum" : value,
-    value,
-  }));
-
-  const dataProjectionBase = (bundle, currentProjection, currentA, currentB) => {
-    const dates = dataDates(bundle);
-    const options = dataProjectionOptions(dataAxes(bundle).length);
-    const values = options.map((option) => option.value);
-    const projection = retainedValue(values, currentProjection, values[0] ?? null);
-    const dateOptions = dropdownOptions(dates);
-    return [options, projection, !dates.length || !options.length, dateOptions,
-      retainedValue(dates, currentA, dates[0] ?? null), dateOptions,
-      retainedValue(dates, currentB, dates.at(-1) ?? null)];
-  };
-
-  const dataSliceDefinition = (bundle, projection) => {
-    const axes = dataAxes(bundle);
-    if (axes.length === 1 && projection === "one_tenor") {
-      return { label: axes[0]?.column || "Tenor", values: dataLabels(axes[0]) };
-    }
-    if (axes.length === 2 && projection === "two_swap") {
-      return {
-        label: `Fixed ${axes[1]?.column || "Tenor Option"}`,
-        values: [SUM_SLICE, ...dataLabels(axes[1])],
-      };
-    }
-    if (axes.length === 2 && projection === "two_option") {
-      return {
-        label: `Fixed ${axes[0]?.column || "Tenor Swap"}`,
-        values: [SUM_SLICE, ...dataLabels(axes[0])],
-      };
-    }
-    return { label: "Slice", values: [] };
-  };
-
-  const dataProjectionSlice = (bundle, projection, currentSlice) => {
-    const definition = dataSliceDefinition(bundle, String(projection || ""));
-    const compare = projection === "one_compare" || projection === "two_compare";
-    return [definition.label, dropdownOptions(definition.values),
-      retainedValue(definition.values, currentSlice, definition.values[0] ?? null),
-      !definition.values.length,
-      definition.values.length ? {} : { display: "none" },
-      compare ? {} : { display: "none" }];
-  };
-
-  const dataHistoryEmptyFigure = (message) => ({
-    data: [],
-    layout: {
-      annotations: [{
-        text: String(message),
-        x: 0.5,
-        y: 0.5,
-        xref: "paper",
-        yref: "paper",
-        showarrow: false,
-      }],
-      margin: { l: 48, r: 24, t: 48, b: 48 },
-      paper_bgcolor: "#ffffff",
-      plot_bgcolor: "#ffffff",
-      uirevision: "data-empty",
-    },
-  });
-
-  const finiteNumber = (value) => {
-    if (value === null || value === undefined || value === "") return null;
-    const selected = Number(value);
-    return Number.isFinite(selected) ? selected : null;
-  };
-
-  const dataNullSafeSum = (values) => {
-    const finite = values.map(finiteNumber).filter((value) => value !== null);
-    return finite.length
-      ? finite.reduce((total, value) => total + value, 0)
-      : null;
-  };
-
-  const dataBoundsForValues = (values) => {
-    const finite = values.map(finiteNumber).filter((value) => value !== null);
-    if (!finite.length) return null;
-    const lower = Math.min(...finite);
-    const upper = Math.max(...finite);
-    if (lower !== upper) return [lower, upper];
-    const padding = Math.max(Math.abs(lower) * 0.01, 1);
-    return [lower - padding, upper + padding];
-  };
-
-  const dataHistoryBounds = (records, metric) => dataBoundsForValues(
-    (Array.isArray(records) ? records : []).map((record) => record?.[metric]),
-  );
-
-  const dataSymmetricBounds = (values) => {
-    const bounds = dataBoundsForValues(values);
-    if (!bounds) return null;
-    const maximum = Math.max(Math.abs(bounds[0]), Math.abs(bounds[1]), 1);
-    return [-maximum, maximum];
-  };
-
-  const dataHistoryPointMap = (records, keys, metric) => {
-    const points = new Map();
-    (Array.isArray(records) ? records : []).forEach((record) => {
-      if (!record || typeof record !== "object") return;
-      points.set(
-        JSON.stringify(keys.map((key) => record[key] ?? null)),
-        record[metric] ?? null,
-      );
-    });
-    return points;
-  };
-
-  const dataHistoryPoint = (points, values) => {
-    const key = JSON.stringify(values);
-    return points.has(key) ? points.get(key) : null;
-  };
-
-  const dataDifference = (left, right) => {
-    const a = finiteNumber(left);
-    const b = finiteNumber(right);
-    return a === null || b === null ? null : b - a;
-  };
-
-  const categoricalAxis = (title, labels) => ({
-    title: { text: title },
-    type: "category",
-    categoryorder: "array",
-    categoryarray: labels,
-    automargin: true,
-  });
-
-  const dataScene = (xTitle, xLabels, yTitle, yLabels, metric, bounds) => ({
-    xaxis: categoricalAxis(xTitle, xLabels),
-    yaxis: categoricalAxis(yTitle, yLabels),
-    zaxis: {
-      title: { text: metric },
-      ...(bounds ? { range: bounds } : {}),
-    },
-    camera: CAMERA,
-    aspectmode: "manual",
-    aspectratio: ASPECT,
-  });
-
-  const dataSurface = (x, y, z, name, bounds, extra = {}) => ({
-    type: "surface",
-    x,
-    y,
-    z,
-    name,
-    connectgaps: false,
-    ...(bounds ? { cmin: bounds[0], cmax: bounds[1] } : {}),
-    ...extra,
-  });
-
-  const oneAxisFigure = (context) => {
-    const {
-      axis, bounds, dateA, dateB, dateColumn, dates, metric, points,
-      projection, selectedDate, slice,
-    } = context;
-    const column = String(axis?.column || "Tenor");
-    const labels = dataLabels(axis);
-    if (projection === "one_tenor") {
-      const selected = retainedValue(labels, slice, labels[0] ?? null);
-      const selectedValue = dataHistoryPoint(points, [selectedDate, selected]);
-      return {
-        data: [
-          {
-            type: "scatter",
-            x: dates,
-            y: dates.map((value) => dataHistoryPoint(points, [value, selected])),
-            mode: "lines+markers",
-            name: selected,
-            connectgaps: false,
-          },
-          {
-            type: "scatter",
-            x: [selectedDate],
-            y: [selectedValue],
-            mode: "markers",
-            name: `Selected · ${selectedDate}`,
-            marker: { size: 12, color: "#111111", line: { color: "#79BE89", width: 3 } },
-            hovertemplate: `<b>${selectedDate}</b><br>${metric}: %{y:,.6g}<extra></extra>`,
-          },
-        ],
-        layout: {
-          xaxis: categoricalAxis("Date", dates),
-          yaxis: { title: { text: metric }, range: bounds || undefined },
-        },
-        title: `${metric} · ${selected}`,
-      };
-    }
-    if (projection === "one_compare") {
-      const first = retainedValue(dates, dateA, dates[0]);
-      const second = retainedValue(dates, dateB, dates.at(-1));
-      const valuesA = labels.map((label) => dataHistoryPoint(points, [first, label]));
-      const valuesB = labels.map((label) => dataHistoryPoint(points, [second, label]));
-      const difference = valuesA.map((value, index) => dataDifference(
-        value,
-        valuesB[index],
-      ));
-      const range = dataBoundsForValues([...valuesA, ...valuesB, ...difference]);
-      return {
-        data: [
-          { x: labels, y: valuesA, name: `Date A · ${first}` },
-          { x: labels, y: valuesB, name: `Date B · ${second}` },
-          { x: labels, y: difference, name: "B − A" },
-        ].map((trace) => ({
-          type: "scatter",
-          mode: "lines+markers",
-          connectgaps: false,
-          ...trace,
-        })),
-        layout: {
-          xaxis: categoricalAxis(column, labels),
-          yaxis: { title: { text: metric }, range: range || undefined },
-        },
-        title: `${metric} · ${first} / ${second} / B − A`,
-      };
-    }
-    return {
-      data: [
-        dataSurface(
-          labels,
-          dates,
-          dates.map((value) => labels.map(
-            (label) => dataHistoryPoint(points, [value, label]),
-          )),
-          "History",
-          bounds,
-          { colorbar: { title: { text: metric } } },
-        ),
-        {
-          type: "scatter3d",
-          x: labels,
-          y: labels.map(() => selectedDate),
-          z: labels.map((label) => dataHistoryPoint(points, [selectedDate, label])),
-          mode: "lines+markers",
-          name: selectedDate,
-          connectgaps: false,
-          line: { color: "#101828", width: 6 },
-        },
-      ],
-      layout: { scene: dataScene(column, labels, "Date", dates, metric, bounds) },
-      title: `${metric} · ${selectedDate}`,
-    };
-  };
-
-  const twoAxisComparison = (context) => {
-    const {
-      bounds, dateA, dateB, dates, firstColumn, firstLabels, metric,
-      points, secondColumn, secondLabels,
-    } = context;
-    const first = retainedValue(dates, dateA, dates[0]);
-    const second = retainedValue(dates, dateB, dates.at(-1));
-    const grid = (selectedDate) => secondLabels.map((secondLabel) => (
-      firstLabels.map((firstLabel) => dataHistoryPoint(
-        points,
-        [selectedDate, firstLabel, secondLabel],
-      ))
-    ));
-    const gridA = grid(first);
-    const gridB = grid(second);
-    const difference = gridA.map((row, rowIndex) => row.map(
-      (value, columnIndex) => dataDifference(value, gridB[rowIndex][columnIndex]),
-    ));
-    const differenceBounds = dataSymmetricBounds(difference.flat());
-    const scene = (domain) => ({
-      ...dataScene(
-        firstColumn,
-        firstLabels,
-        secondColumn,
-        secondLabels,
-        metric,
-        bounds,
-      ),
-      domain: { x: domain, y: [0, 1] },
-    });
-    return {
-      data: [
-        dataSurface(firstLabels, secondLabels, gridA, `Date A · ${first}`, bounds, {
-          scene: "scene",
-          showscale: false,
-        }),
-        dataSurface(firstLabels, secondLabels, gridB, `Date B · ${second}`, bounds, {
-          scene: "scene2",
-          showscale: false,
-        }),
-        dataSurface(firstLabels, secondLabels, difference, "B − A", differenceBounds, {
-          scene: "scene3",
-          colorscale: "RdBu",
-          reversescale: true,
-          colorbar: { title: { text: "B − A" }, thickness: 12 },
-        }),
-      ],
-      layout: {
-        scene: scene([0, 0.31]),
-        scene2: scene([0.345, 0.655]),
-        scene3: {
-          ...scene([0.69, 1]),
-          zaxis: {
-            title: { text: "B − A" },
-            ...(differenceBounds ? { range: differenceBounds } : {}),
-          },
-        },
-        annotations: [
-          { text: `Date A · ${first}`, x: 0.155, y: 1.05 },
-          { text: `Date B · ${second}`, x: 0.50, y: 1.05 },
-          { text: "B − A", x: 0.845, y: 1.05 },
-        ].map((item) => ({
-          ...item,
-          xref: "paper",
-          yref: "paper",
-          showarrow: false,
-        })),
-      },
-      title: `${metric} · ${first} / ${second} / B − A`,
-    };
-  };
-
-  const twoAxisFigure = (context) => {
-    const {
-      axes, bounds, dateA, dateB, dateColumn, dates, metric, points,
-      projection, selectedDate, slice,
-    } = context;
-    const firstColumn = String(axes[0]?.column || "Tenor Swap");
-    const secondColumn = String(axes[1]?.column || "Tenor Option");
-    const firstLabels = dataLabels(axes[0]);
-    const secondLabels = dataLabels(axes[1]);
-    const shared = {
-      bounds, dateA, dateB, dateColumn, dates, firstColumn, firstLabels,
-      metric, points, secondColumn, secondLabels,
-    };
-    if (projection === "two_compare") return twoAxisComparison(shared);
-    if (projection === "two_swap") {
-      const choices = [SUM_SLICE, ...secondLabels];
-      const selected = retainedValue(choices, slice, SUM_SLICE);
-      const point = (date, firstLabel) => selected === SUM_SLICE
-        ? dataNullSafeSum(secondLabels.map((secondLabel) => dataHistoryPoint(
-          points,
-          [date, firstLabel, secondLabel],
-        )))
-        : dataHistoryPoint(points, [date, firstLabel, selected]);
-      const grid = dates.map((date) => firstLabels.map((label) => point(date, label)));
-      const selectedValues = firstLabels.map((label) => point(selectedDate, label));
-      const sliceBounds = dataBoundsForValues(grid.flat());
-      const sliceLabel = selected === SUM_SLICE
-        ? `Sum of ${secondColumn}`
-        : `Fixed ${secondColumn} · ${selected}`;
-      return {
-        data: [
-          dataSurface(
-            firstLabels,
-            dates,
-            grid,
-            sliceLabel,
-            sliceBounds,
-            { colorbar: { title: { text: metric } } },
-          ),
-          {
-            type: "scatter3d",
-            x: firstLabels,
-            y: firstLabels.map(() => selectedDate),
-            z: selectedValues,
-            mode: "lines+markers",
-            name: selectedDate,
-            connectgaps: false,
-            line: { color: "#101828", width: 6 },
-          },
-        ],
-        layout: {
-          scene: dataScene(
-            firstColumn,
-            firstLabels,
-            "Date",
-            dates,
-            metric,
-            sliceBounds,
-          ),
-        },
-        title: `${metric} · ${sliceLabel}`,
-      };
-    }
-    if (projection === "two_option") {
-      const choices = [SUM_SLICE, ...firstLabels];
-      const selected = retainedValue(choices, slice, SUM_SLICE);
-      const point = (date, secondLabel) => selected === SUM_SLICE
-        ? dataNullSafeSum(firstLabels.map((firstLabel) => dataHistoryPoint(
-          points,
-          [date, firstLabel, secondLabel],
-        )))
-        : dataHistoryPoint(points, [date, selected, secondLabel]);
-      const grid = dates.map((date) => secondLabels.map((label) => point(date, label)));
-      const selectedValues = secondLabels.map((label) => point(selectedDate, label));
-      const sliceBounds = dataBoundsForValues(grid.flat());
-      const sliceLabel = selected === SUM_SLICE
-        ? `Sum of ${firstColumn}`
-        : `Fixed ${firstColumn} · ${selected}`;
-      return {
-        data: [
-          dataSurface(
-            secondLabels,
-            dates,
-            grid,
-            sliceLabel,
-            sliceBounds,
-            { colorbar: { title: { text: metric } } },
-          ),
-          {
-            type: "scatter3d",
-            x: secondLabels,
-            y: secondLabels.map(() => selectedDate),
-            z: selectedValues,
-            mode: "lines+markers",
-            name: selectedDate,
-            connectgaps: false,
-            line: { color: "#101828", width: 6 },
-          },
-        ],
-        layout: {
-          scene: dataScene(
-            secondColumn,
-            secondLabels,
-            "Date",
-            dates,
-            metric,
-            sliceBounds,
-          ),
-        },
-        title: `${metric} · ${sliceLabel}`,
-      };
-    }
-    return {
-      data: [dataSurface(
-        firstLabels,
-        secondLabels,
-        secondLabels.map((secondLabel) => firstLabels.map(
-          (firstLabel) => dataHistoryPoint(
-            points,
-            [selectedDate, firstLabel, secondLabel],
-          ),
-        )),
-        selectedDate,
-        bounds,
-        { colorbar: { title: { text: metric } } },
-      )],
-      layout: {
-        scene: dataScene(
-          firstColumn,
-          firstLabels,
-          secondColumn,
-          secondLabels,
-          metric,
-          bounds,
-        ),
-      },
-      title: `${metric} · ${selectedDate}`,
-    };
-  };
-
-  const dataHistoryFigure = (
-    bundle, selectedIndex, projection, slice, dateA, dateB, playerKey,
-  ) => {
-    const dates = dataDates(bundle);
-    if (!dates.length) {
-      return dataHistoryEmptyFigure("No archived rows match this request.");
-    }
-    const axes = dataAxes(bundle);
-    const allowed = dataProjectionOptions(axes.length).map((option) => option.value);
-    const selectedProjection = retainedValue(allowed, projection, allowed[0]);
-    const index = Math.max(0, Math.min(Number(selectedIndex) || 0, dates.length - 1));
-    const selectedDate = dates[index];
-    const metric = String(bundle.metric_column || "Value");
-    const dateColumn = String(bundle.date_column || "Date");
-    const records = Array.isArray(bundle.values) ? bundle.values : [];
-    const bounds = dataHistoryBounds(records, metric);
-    const keys = [dateColumn, ...axes.map((axis) => String(axis.column))];
-    const points = dataHistoryPointMap(records, keys, metric);
-    let result;
-    if (!axes.length) {
-      const selectedValue = dataHistoryPoint(points, [selectedDate]);
-      result = {
-        data: [
-          {
-            type: "scatter",
-            x: dates,
-            y: dates.map((value) => dataHistoryPoint(points, [value])),
-            mode: "lines+markers",
-            name: metric,
-            connectgaps: false,
-          },
-          {
-            type: "scatter",
-            x: [selectedDate],
-            y: [selectedValue],
-            mode: "markers",
-            name: `Selected · ${selectedDate}`,
-            marker: { size: 12, color: "#111111", line: { color: "#79BE89", width: 3 } },
-            hovertemplate: `<b>${selectedDate}</b><br>${metric}: %{y:,.6g}<extra></extra>`,
-          },
-        ],
-        layout: {
-          xaxis: categoricalAxis("Date", dates),
-          yaxis: { title: { text: metric }, range: bounds || undefined },
-        },
-        title: `${metric} history`,
-      };
-    } else if (axes.length === 1) {
-      result = oneAxisFigure({
-        axis: axes[0], bounds, dateA, dateB, dateColumn, dates, metric, points,
-        projection: selectedProjection, selectedDate, slice,
-      });
-    } else if (axes.length === 2) {
-      result = twoAxisFigure({
-        axes, bounds, dateA, dateB, dateColumn, dates, metric, points,
-        projection: selectedProjection, selectedDate, slice,
-      });
-    } else {
-      return dataHistoryEmptyFigure("This ProductSpec has too many plot axes.");
-    }
-    return {
-      data: result.data,
-      layout: {
-        ...result.layout,
-        autosize: true,
-        hoverlabel: { align: "left", namelength: -1 },
-        legend: { orientation: "h", y: -0.14 },
-        margin: { l: 48, r: 24, t: 64, b: 64 },
-        paper_bgcolor: "#ffffff",
-        plot_bgcolor: "#ffffff",
-        title: { text: result.title, x: 0.01 },
-        uirevision: playerKey,
-      },
-    };
-  };
-
-  const dataSliderMarks = (dates) => {
-    if (!dates.length) return {};
-    const indexes = dates.length <= 8
-      ? dates.map((_value, index) => index)
-      : [...new Set([0, Math.floor(dates.length / 3),
-        Math.floor(2 * dates.length / 3), dates.length - 1])]
-        .sort((left, right) => left - right);
-    return Object.fromEntries(indexes.map((index) => [index, dates[index]]));
-  };
-
-  const emptyDataPlayback = (message, pill = "No date") => [
-    dataHistoryEmptyFigure(message),
-    [],
-    [],
-    0,
-    0,
-    {},
-    0,
-    true,
-    pill,
-    "Play",
-    true,
-    "Static",
-    true,
-    { playing: false, index: 0, key: null },
-    { display: "none" },
-  ];
-
-  const dataPlayback = (
-    bundle, projection, slice, dateA, dateB, buttonClicks, intervalTicks,
-    sliderValue, resetGeneration, cacheState, visibilityState, playerState,
-  ) => {
-    if (!bundle || typeof bundle !== "object") {
-      return emptyDataPlayback("Open an identity to load its history.");
-    }
-    const currentReset = Number(resetGeneration ?? 0);
-    const bundleReset = Number(bundle.reset_generation);
-    const currentGeneration = cacheState?.generation;
-    if (
-      !Number.isInteger(currentReset)
-      || !Number.isInteger(bundleReset)
-      || currentReset !== bundleReset
-      || bundle.generation !== currentGeneration
-    ) {
-      return emptyDataPlayback(
-        "History changed. Reopen this identity to continue.",
-        "History reset",
-      );
-    }
-
-    const dates = dataDates(bundle);
-    if (!dates.length) {
-      const empty = emptyDataPlayback("No archived rows match this request.");
-      empty[13] = { playing: false, index: 0, key: String(bundle.key || "") };
-      return empty;
-    }
-    const axes = dataAxes(bundle);
-    const allowed = dataProjectionOptions(axes.length).map((option) => option.value);
-    const selectedProjection = retainedValue(allowed, projection, allowed[0]);
-    const definition = dataSliceDefinition(bundle, selectedProjection);
-    const selectedSlice = retainedValue(
-      definition.values,
-      slice,
-      definition.values[0] ?? null,
-    );
-    const selectedA = retainedValue(dates, dateA, dates[0]);
-    const selectedB = retainedValue(dates, dateB, dates.at(-1));
-    const key = JSON.stringify(["data-history-chart", String(bundle.key || ""),
-      selectedProjection, selectedSlice, selectedA, selectedB]);
-    const prior = playerState && typeof playerState === "object" ? playerState : {};
-    const clicks = Math.max(0, Number(buttonClicks) || 0);
-    const ticks = Math.max(0, Number(intervalTicks) || 0);
-    const changedIdentity = prior.key !== key;
-    let index = Number.isInteger(Number(prior.index))
-      ? Number(prior.index)
-      : dates.length - 1;
-    index = Math.max(0, Math.min(index, dates.length - 1));
-    let playing = Boolean(prior.playing) && !changedIdentity;
-    const hidden = Boolean(visibilityState?.hidden) || document.hidden;
-
-    if (changedIdentity) {
-      index = dates.length - 1;
-      playing = false;
-    } else if (hidden) {
-      playing = false;
-    } else if (clicks !== Number(prior.button_clicks ?? clicks)) {
-      playing = !playing;
-    } else if (ticks !== Number(prior.interval_ticks ?? ticks) && playing) {
-      index = (index + 1) % dates.length;
-    } else {
-      const requestedIndex = Number(sliderValue);
-      if (Number.isInteger(requestedIndex) && requestedIndex !== index) {
-        index = Math.max(0, Math.min(requestedIndex, dates.length - 1));
-        playing = false;
+  const normal = value => String(value ?? "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  let previousCurrent, previousArchive, index = [];
+  function search(current, archive, query, selected, value) {
+    if (current !== previousCurrent || archive !== previousArchive) {
+      const rows = [];
+      for (const kind of ["risk", "market"]) {
+        for (const label of current?.[kind] || []) {
+          rows.push([`${kind === "risk" ? "Risk" : "Market"} · ${label}`, JSON.stringify([kind, label])]);
+        }
       }
+      rows.push(...(archive?.choices || []));
+      index = rows.map(([label, token]) => ({label, value: token, search: normal(label) + " " + normal(label).replaceAll(" ", "")}));
+      previousCurrent = current;
+      previousArchive = archive;
     }
-
-    const compare = selectedProjection === "one_compare"
-      || selectedProjection === "two_compare";
-    const hasPlayer = dates.length > 1 && !compare;
-    if (!hasPlayer) playing = false;
-    const selectedDate = compare ? selectedB : dates[index];
-    const dateColumn = String(bundle.date_column || "");
-    const records = Array.isArray(bundle.values) ? bundle.values : [];
-    const selectedRows = records.filter(
-      (record) => record && String(record[dateColumn] ?? "") === selectedDate,
-    );
-    const selectedColumns = Object.keys(records[0] || {}).map((column) => ({
-      name: column,
-      id: column,
-    }));
-    const state = {
-      playing, index, key, projection: selectedProjection, slice: selectedSlice,
-      date_a: selectedA, date_b: selectedB, button_clicks: clicks,
-      interval_ticks: ticks,
-    };
-    return [
-      dataHistoryFigure(
-        bundle,
-        index,
-        selectedProjection,
-        selectedSlice,
-        selectedA,
-        selectedB,
-        key,
-      ),
-      selectedRows,
-      selectedColumns,
-      0,
-      dates.length - 1,
-      dataSliderMarks(dates),
-      index,
-      !hasPlayer,
-      selectedDate,
-      playing ? "Pause" : "Play",
-      !hasPlayer,
-      playing ? "Playing" : "Static",
-      !playing,
-      state,
-      hasPlayer ? {} : { display: "none" },
-    ];
-  };
-
-  window.dash_clientside = Object.assign({}, window.dash_clientside, {
-    cube: Object.assign({}, window.dash_clientside?.cube, {
-      dataPlayback,
-      dataProjectionBase,
-      dataProjectionSlice,
-    }),
-  });
-  // Keep wheel scrubbing on Dash's public property boundary. Synthetic
-  // keyboard events are ignored by some rc-slider/browser combinations.
-  document.addEventListener("wheel", (event) => {
-    const controls = event.target?.closest?.("#data-player-controls");
-    if (!controls) return;
-    const handle = controls.querySelector('.data-player-slider [role="slider"]');
-    if (
-      !handle
-      || handle.getAttribute("aria-disabled") === "true"
-      || handle.closest(".rc-slider-disabled")
-    ) return;
-    event.preventDefault();
-    handle.focus({ preventScroll: true });
-    const current = Number(handle.getAttribute("aria-valuenow"));
-    const minimum = Number(handle.getAttribute("aria-valuemin"));
-    const maximum = Number(handle.getAttribute("aria-valuemax"));
-    const direction = event.deltaY > 0 ? 1 : event.deltaY < 0 ? -1 : 0;
-    const next = Math.max(minimum, Math.min(maximum, current + direction));
-    const setProps = window.dash_clientside?.set_props;
-    if (direction && Number.isFinite(next) && typeof setProps === "function") {
-      setProps("data-player-slider", { value: next });
+    const terms = normal(query).split(" ").filter(Boolean);
+    const options = [];
+    for (const option of index) {
+      if (terms.every(term => option.search.includes(term))) options.push(option);
+      if (options.length === 50) break;
     }
-  }, { passive: false });
+    if (selected?.value === value && !options.some(option => option.value === value)) options.unshift(selected);
+    if (options.length > 50) options.length = 50;
+    return [options, index.length ? `Search ${index.length.toLocaleString()} current and archived series. Up to 50 matches shown.` : "Current choices will appear after the first refresh."];
+  }
 
+  const finite = value => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+  const empty = message => ({data: [], layout: {template: "plotly_white", height: 420,
+    margin: {l: 60, r: 25, t: 40, b: 60}, annotations: [{text: message, x: .5, y: .5, xref: "paper", yref: "paper", showarrow: false}]}});
+  function selectedRows(bundle, day) {
+    return (bundle?.values || []).filter(row => String(row[bundle.date_column]) === day);
+  }
+  function figure(bundle, day, error) {
+    if (!bundle || !bundle.values?.length) return empty(error || "No observations for this selection and period.");
+    const axes = bundle.axes || [], metric = bundle.metric_column;
+    const rows = selectedRows(bundle, day);
+    const layout = {template: "plotly_white", height: 420, autosize: true,
+      margin: {l: 65, r: 30, t: 35, b: 65}, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
+      font: {family: "Arial, sans-serif", size: 12, color: "#1e293b"},
+      hovermode: axes.length < 2 ? "x unified" : "closest", uirevision: bundle.key,
+      xaxis: {showgrid: false, zeroline: false}, yaxis: {gridcolor: "#e8edf3", tickformat: ",.2f", zerolinecolor: "#cbd5e1"}};
+    if (!axes.length) {
+      layout.xaxis.title = {text: "Date"};
+      layout.yaxis.title = {text: metric};
+      return {data: [{type: "scatter", mode: "lines+markers", x: bundle.values.map(row => row[bundle.date_column]),
+        y: bundle.values.map(row => finite(row[metric])), line: {color: bundle.kind === "risk" ? "#4C8A4A" : "#2563eb", width: 2}, marker: {size: 5},
+        connectgaps: false, name: metric, hovertemplate: "%{x}<br>%{y:,.2f}<extra></extra>"}], layout};
+    }
+    if (!rows.length) return empty(`No observation on ${day}. Choose a date with data for this series.`);
+    if (axes.length === 1) {
+      const axis = axes[0], byLabel = new Map(rows.map(row => [String(row[axis.column]), finite(row[metric])]));
+      layout.xaxis = {...layout.xaxis, title: {text: axis.column}, type: "category", categoryorder: "array", categoryarray: axis.labels};
+      layout.yaxis.title = {text: metric};
+      return {data: [{type: "scatter", mode: "lines+markers", x: axis.labels, y: axis.labels.map(label => byLabel.get(label) ?? null),
+        line: {color: bundle.kind === "risk" ? "#4C8A4A" : "#2563eb", width: 2}, marker: {size: 6}, connectgaps: false, name: metric,
+        hovertemplate: "%{x}<br>%{y:,.2f}<extra></extra>"}], layout};
+    }
+    const swap = axes.find(axis => axis.column === "Tenor Swap") || axes[0];
+    const option = axes.find(axis => axis.column === "Tenor Option") || axes[1];
+    const cells = new Map(rows.map(row => [JSON.stringify([String(row[swap.column]), String(row[option.column])]), finite(row[metric])]));
+    const z = option.labels.map(o => swap.labels.map(s => cells.get(JSON.stringify([s, o])) ?? null));
+    layout.xaxis = {title: {text: swap.column}, type: "category", categoryorder: "array", categoryarray: swap.labels};
+    layout.yaxis = {title: {text: option.column}, type: "category", categoryorder: "array", categoryarray: option.labels, autorange: "reversed"};
+    const heat = {type: "heatmap", x: swap.labels, y: option.labels, z, xgap: 1, ygap: 1,
+      colorscale: bundle.kind === "risk" ? [[0,"#C26464"],[.5,"#FCFCFA"],[1,"#4C8A4A"]] : "Viridis",
+      colorbar: {title: {text: metric}, tickformat: ",.2f", thickness: 12}, hoverongaps: false,
+      hovertemplate: `${swap.column}: %{x}<br>${option.column}: %{y}<br>${metric}: %{z:,.2f}<extra></extra>`};
+    if (bundle.kind === "risk") {
+      let extent = 1;
+      for (const row of z) for (const value of row) if (value !== null) extent = Math.max(extent, Math.abs(value));
+      heat.zmin = -extent; heat.zmax = extent;
+    }
+    return {data: [heat], layout};
+  }
+
+  function table(bundle, day) {
+    const rows = selectedRows(bundle, day);
+    if (!bundle) return [[], [], []];
+    const names = [bundle.date_column, ...(bundle.axes || []).map(axis => axis.column), bundle.metric_column];
+    const columns = names.map(id => id === bundle.metric_column ? {name: id, id, type: "numeric", format: {specifier: ",.2f"}} : {name: id, id, type: "text"});
+    const style = [{if: {column_id: bundle.metric_column, filter_query: `{${bundle.metric_column}} < 0`}, color: "#b91c1c"}];
+    return [rows.map(row => Object.fromEntries(names.map(name => [name, row[name]]))), columns, style];
+  }
+
+  function play(payload, clicks, ticks, slider, visibility, prior) {
+    const bundles = payload?.bundles || {}, mode = payload?.mode || "risk";
+    const dates = [...new Set(Object.values(bundles).flatMap(bundle => bundle?.dates || []))].sort();
+    const old = prior || {}, changed = old.key !== payload?.key;
+    const count = dates.length;
+    let at = changed ? Math.max(0, count - 1) : Math.max(0, Math.min(Number(old.index) || 0, count - 1));
+    let playing = !changed && Boolean(old.playing) && count > 1;
+    if (document.hidden || visibility?.hidden) playing = false;
+    else if (!changed && Number(clicks || 0) !== Number(old.clicks || 0)) playing = !playing && count > 1;
+    else if (!changed && Number(ticks || 0) !== Number(old.ticks || 0) && playing) at = (at + 1) % count;
+    else if (!changed && Number(slider) !== at && Number.isInteger(Number(slider))) { at = Math.max(0, Math.min(Number(slider), count - 1)); playing = false; }
+    const day = dates[at] || "No date", marks = {};
+    if (count) { marks[0] = dates[0]; marks[count - 1] = dates[count - 1]; }
+    const [riskRows, riskColumns, riskStyle] = table(bundles.risk, day);
+    const [marketRows, marketColumns, marketStyle] = table(bundles.market, day);
+    const title = kind => `${kind === "risk" ? "Risk" : "Market"}${bundles[kind] ? " · " + bundles[kind].handoff.identity.underlying : ""}`;
+    return [figure(bundles.risk, day, payload?.errors?.risk), figure(bundles.market, day, payload?.errors?.market),
+      riskRows, riskColumns, marketRows, marketColumns, riskStyle, marketStyle,
+      mode === "market" ? {display: "none"} : {}, mode === "risk" ? {display: "none"} : {}, title("risk"), title("market"),
+      Math.max(0, count - 1), marks, at, count < 2, day, playing ? "Pause" : "Play", count < 2, !playing,
+      {key: payload?.key || null, index: at, playing, clicks: Number(clicks || 0), ticks: Number(ticks || 0)},
+      payload?.key || "", payload?.refresh ? {...payload.refresh, mounts: [payload.key]} : window.dash_clientside.no_update];
+  }
+  let lastSearch;
+  function searchCurrent(query, selected, _tick, current, archive, value) {
+    const args = [query, selected, current, archive, value];
+    if (lastSearch && args.every((arg, i) => arg === lastSearch[i])) {
+      return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+    }
+    lastSearch = args;
+    return search(current, archive, query, selected, value);
+  }
+  window.dash_clientside = Object.assign({}, window.dash_clientside, {cubeData: {
+    search, play,
+    searchCurrent,
+  }});
 })();

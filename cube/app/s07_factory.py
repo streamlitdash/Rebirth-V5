@@ -472,8 +472,8 @@ def build_app(
         )
 
     def data_page_body():
-        """Build the archive-free Data shell with prefix-correct links."""
-
+        """Build Data immediately and start the shared refresh if it is cold."""
+        schedule_cold_start()
         return build_data_page(
             cube_href=cube_href,
             pnl_href=pnl_href,
@@ -705,7 +705,7 @@ def build_app(
         refresh_manager,
         data_href=data_href,
     )
-    register_data_callbacks(app, history_repository)
+    register_data_callbacks(app, history_repository, refresh_manager)
     register_static_data_callbacks(app)
     if refresh_manager is not None:
         register_pnl_callbacks(

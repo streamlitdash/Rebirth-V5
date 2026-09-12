@@ -146,13 +146,16 @@ def test_quick_identity_change_clears_a_stale_open_in_data_error(
         0,
         "selected-risk",
         None,
+        0,
+        None,
         [],
         [[] for _field in FILTER_DIMENSION_FIELDS],
         [],
         0,
+        "IR",
     )
 
-    assert result == (no_update, no_update, "", no_update)
+    assert result == (no_update, no_update, "", no_update, no_update)
 
 
 def _bundle(source_type: str = "ir/delta") -> HistoryBundle:
@@ -256,7 +259,7 @@ class _Repository:
         self.bundle = bundle
         self.calls: list[HistoryQuery] = []
 
-    def read(self, query: HistoryQuery) -> HistoryBundle:
+    def read(self, query: HistoryQuery, *, current_rows=None, current_revision=0) -> HistoryBundle:
         self.calls.append(query)
         return replace(self.bundle, query=query)
 
@@ -453,8 +456,9 @@ def test_catalog_loading_is_bounded_to_identity_metadata() -> None:
     )
 
     assert repository.calls == 1
-    assert payload == catalog.to_mapping()
-    assert "1 Risk and 1 Market" in status
+    assert {entry["key"] for entry in payload["entries"]} == {entry.key for entry in catalog.entries}
+    assert payload["generation"] == "generation-a:current:0"
+    assert "2 current/archive" in status
     assert set(payload) == {"generation", "entries"}
     assert all("Risk" not in entry for entry in payload["entries"])
 
@@ -556,8 +560,8 @@ def test_fixed_data_series_and_official_market_label() -> None:
             raw_rows=market_raw,
         )
     )
-    assert payload["metric_column"] == "Official"
-    assert all("Official" in row and "Current" not in row for row in payload["values"])
+    assert payload["metric_column"] == "Current"
+    assert all("Current" in row and "Official" not in row for row in payload["values"])
 
 
 def test_browser_payload_budgets_fail_without_silent_truncation() -> None:
@@ -685,437 +689,70 @@ def test_direct_data_route_initializes_generation_without_a_quick_handoff(
 
 def test_playback_and_selected_date_filter_are_clientside() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
-    metadata = _callback_metadata(app, "data-history-chart", "figure")
-    input_ids = {(item["id"], item["property"]) for item in metadata["inputs"]}
-    output = metadata["output"]
-    outputs = list(output) if isinstance(output, (list, tuple)) else [output]
-
+    metadata = _callback_metadata(app, "data-risk-chart", "figure")
     assert "callback" not in metadata
-    assert {
-        ("data-history-bundle-store", "data"),
-        ("data-history-projection", "value"),
-        ("data-history-slice", "value"),
-        ("data-history-date-a", "value"),
-        ("data-history-date-b", "value"),
-        ("data-player-interval", "n_intervals"),
-        ("data-player-visibility-store", "data"),
-    } <= input_ids
-    assert ("data-raw-table", "data") not in input_ids
-    assert ("data-raw-table", "columns") not in input_ids
-    assert all(item.component_id.startswith("data-") for item in outputs)
-
-    base = _callback_metadata(app, "data-history-projection", "options")
-    assert "callback" not in base
-    assert {(item["id"], item["property"]) for item in base["inputs"]} == {
-        ("data-history-bundle-store", "data")
-    }
-    slices = _callback_metadata(app, "data-history-slice", "options")
-    assert "callback" not in slices
-    assert {(item["id"], item["property"]) for item in slices["inputs"]} == {
-        ("data-history-bundle-store", "data"),
-        ("data-history-projection", "value"),
-    }
-
-    source = (
-        Path(__file__).resolve().parents[1] / "assets" / "s09_playback.js"
-    ).read_text(encoding="utf-8")
-    for projection in (
-        "zero_timeline",
-        "one_surface",
-        "one_tenor",
-        "one_compare",
-        "two_surface",
-        "two_swap",
-        "two_option",
-        "two_compare",
-    ):
-        assert projection in source
-    for behavior in (
-        "dataProjectionBase",
-        "dataProjectionSlice",
-        "dataHistoryBounds",
-        "dataDifference",
-        "const records = Array.isArray(bundle.values)",
-        "Object.keys(records[0] || {})",
-        "record[dateColumn]",
-        "document.hidden",
-        '"data-history-chart", String(bundle.key || "")',
-        "selectedProjection, selectedSlice, selectedA, selectedB",
-        "if (changedIdentity)",
-        "playing = false",
-        'playing ? "Playing" : "Static"',
-        'const SUM_SLICE = "__sum__"',
-        "dataNullSafeSum",
-        "values: [SUM_SLICE, ...dataLabels(axes[1])]",
-        "values: [SUM_SLICE, ...dataLabels(axes[0])]",
-        "const hasPlayer = dates.length > 1 && !compare",
-        'setProps("data-player-slider", { value: next })',
-        "const direction = event.deltaY > 0 ? 1",
-        "connectgaps: false",
-        'categoryorder: "array"',
-        "camera: CAMERA",
-        "cmin: bounds[0], cmax: bounds[1]",
-        "uirevision: playerKey",
-        'scene: "scene2"',
-        'scene: "scene3"',
-    ):
-        assert behavior in source
+    inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    assert {("data-history-bundle-store", "data"), ("data-player-interval", "n_intervals"),
+            ("data-player-visibility-store", "data"), ("data-player-slider", "value")} <= inputs
+    outputs = metadata["output"]
+    assert any(item.component_id == "data-market-chart" for item in outputs)
+    assert any(item.component_id == "data-risk-table" for item in outputs)
+    search = _callback_metadata(app, "data-underlying", "options")
+    assert "callback" not in search
+    assert {item["id"] for item in search["inputs"]} == {
+        "committed-revision-poll", "data-underlying", "data-selected-option"}
+    assert {item["id"] for item in search["state"]} == {"data-current-choices", "data-archive-choices", "data-underlying"}
 
 
 def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
-    show_custom = _callback_for_output(app, "data-custom-range-control", "hidden")
-    assert show_custom("custom") is False
-    assert all(
-        show_custom(period) is True
-        for period in ("wtd", "mtd", "ytd", "1y", "5y", "all")
-    )
-    choose_underlying = _callback_for_output(app, "data-underlying", "options")
-    assert choose_underlying(
-        None,
-        "risk",
-        "reported",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ) == ([], None, True)
-    options, selected, disabled = choose_underlying(
-        _catalog().to_mapping(),
-        "risk",
-        "reported",
-        "IR",
-        "Delta",
-        None,
-        None,
-        None,
-        None,
-    )
-    assert options
-    assert selected is not None
-    assert disabled is False
-
+    selection = _callback_metadata(app, "data-selection-store", "data")
+    assert {item["id"] for item in selection["inputs"]} == {
+        "data-underlying", "data-history-handoff-store", "reset-generation-store"}
     request = _callback_metadata(app, "data-history-request-store", "data")
-    request_inputs = {(item["id"], item["property"]) for item in request["inputs"]}
-    assert {
-        ("data-history-handoff-store", "data"),
-        ("data-load-history-button", "n_clicks"),
-        ("reset-generation-store", "data"),
-    } <= request_inputs
-    load_input = next(
-        item for item in request["inputs"] if item["id"] == "data-load-history-button"
-    )
-    assert load_input.get("allow_optional") is True
-    assert ("data-unlock-identity-button", "n_clicks") not in request_inputs
-    assert ("data-history-kind-tabs", "value") not in request_inputs
-
+    assert {"data-selection-store", "data-history-kind-tabs", "data-market-choice"} <= {
+        item["id"] for item in request["inputs"]}
     load = _callback_metadata(app, "data-history-bundle-store", "data")
-    load_inputs = {(item["id"], item["property"]) for item in load["inputs"]}
-    assert load_inputs == {
-        ("data-history-request-store", "data"),
-        ("data-history-cache-state-store", "data"),
-        ("reset-generation-store", "data"),
-    }
-    assert ("data-history-handoff-store", "data") not in load_inputs
-    assert {
-        ("data-history-projection", "value"),
-        ("data-history-slice", "value"),
-        ("data-history-date-a", "value"),
-        ("data-history-date-b", "value"),
-        ("data-player-slider", "value"),
-    }.isdisjoint(load_inputs)
-
-    registration = next(
-        item
-        for item in app._callback_list
-        if "data-history-bundle-store.data" in item["output"]
-    )
-    assert "data-load-history-button.disabled" not in registration["running"]["running"]
-    assert (
-        registration["running"]["running"]["data-load-history-button.children"]
-        == "Loading history…"
-    )
+    assert {item["id"] for item in load["inputs"]} == {
+        "data-history-request-store", "refresh-commit-revision", "reset-generation-store"}
+    assert not {"data-history-handoff-store", "data-player-slider", "data-archive-choices"} & {
+        item["id"] for item in load["inputs"]}
 
 
-def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(monkeypatch) -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
-    handoff = _handoff("ir/delta")
-    stored_handoff = {
-        "handoff": handoff.to_mapping(),
-        "nonce": "risk-2-11",
-    }
-    catalog_calls = 0
-
-    def read_catalog(_repository):
-        nonlocal catalog_calls
-        catalog_calls += 1
-        return _catalog()
-
-    sync = _callback_for_output(app, "data-history-kind-tabs", "value")
-    assert sync(stored_handoff, None, None) == "risk"
-    assert sync(stored_handoff, None, "risk-2-11") is no_update
-    identity = _callback_for_output(app, "data-identity-mode", "value")
-    assert identity("risk", stored_handoff, None, None) == (
-        "underlying",
-        False,
-    )
-    assert identity("market", None, None, None) == (
-        "underlying",
-        True,
-    )
-
-    monkeypatch.setattr(
-        ArchiveHistoryRepository,
-        "catalog",
-        read_catalog,
-    )
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="data-history-handoff-store"),
-    )
-    request = _callback_for_output(app, "data-history-request-store", "data")
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="data-load-history-button"),
-    )
-    mounted_payload, mounted_consumed = request(
-        stored_handoff,
-        0,
-        3,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        None,
-        None,
-    )
-    assert "error" not in mounted_payload
-    assert mounted_consumed == "risk-2-11"
-    assert sync(stored_handoff, mounted_payload, mounted_consumed) == "risk"
-
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id=None),
-    )
-    assert request(
-        None,
-        0,
-        3,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        None,
-        None,
-    ) == (no_update, no_update)
-
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="data-load-history-button"),
-    )
-    assert request(
-        None,
-        0,
-        3,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        None,
-        None,
-    ) == (no_update, no_update)
-
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="data-history-handoff-store"),
-    )
-    payload, consumed = request(
-        stored_handoff,
-        0,
-        3,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        None,
-        None,
-    )
-    assert HistoryHandoff.from_mapping(payload["handoff"]) == handoff
-    assert consumed == "risk-2-11"
-
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="reset-generation-store"),
-    )
-    assert request(
-        None,
-        0,
-        4,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        None,
-        None,
-    ) == (no_update, no_update)
-
-    refresh_catalogue = _callback_for_output(
-        app,
-        "data-history-catalog-store",
-        "data",
-    )
-    catalog_payload, catalog_status = refresh_catalogue(
-        {"generation": "generation-a", "reset_generation": 3},
-        None,
-    )
-    assert catalog_payload == _catalog().to_mapping()
-    assert "Archive ready" in catalog_status
-    assert catalog_calls == 1
-
-    callback_outputs = "\n".join(
-        str(metadata["output"]) for metadata in app.callback_map.values()
-    )
-    assert "data-risk-type.disabled" not in callback_outputs
-    assert "data-risk-greek.disabled" not in callback_outputs
-    assert "data-underlying.disabled" not in callback_outputs
-
-    slider = next(
-        component
-        for component in _walk(build_data_page())
-        if getattr(component, "id", None) == "data-player-slider"
-    )
-    assert slider.updatemode == "drag"
-
-    monkeypatch.setattr(
-        data_callbacks_module,
-        "ctx",
-        SimpleNamespace(triggered_id="data-history-handoff-store"),
-    )
-    repeated = request(
-        stored_handoff,
-        0,
-        3,
-        "risk",
-        None,
-        None,
-        "all",
-        None,
-        None,
-        payload,
-        consumed,
-    )
-    assert repeated == (no_update, no_update)
+    selected = {"risk": _handoff("ir/delta").to_mapping(), "markets": [], "label": "EUR"}
+    import cube.pages.data.s04_workspace as workspace
+    monkeypatch.setattr(workspace, "selection_for_handoff", lambda *args: selected.copy())
+    # Re-register in an isolated app so the injected selection helper is captured.
+    from dash import Dash
+    isolated = Dash(__name__)
+    data_callbacks_module.register_callbacks(isolated, ArchiveHistoryRepository("missing"), None)
+    callback = _callback_for_output(isolated, "data-selection-store", "data")
+    monkeypatch.setattr(data_callbacks_module, "ctx", SimpleNamespace(triggered_id="data-history-handoff-store"))
+    result = callback(None, {"handoff": _handoff("ir/delta").to_mapping(), "nonce": "fresh"}, 3,
+                      None, "market", "old", None)
+    assert result[0]["risk"] == selected["risk"]
+    assert result[2]["label"].startswith("Risk")
+    assert result[5] == "risk"
+    assert result[6] == "fresh"
+    assert _callback_metadata(isolated, "data-underlying", "options").get("callback") is None
 
 
-def test_data_route_and_factory_layout_are_archive_lazy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_data_route_and_factory_layout_are_archive_lazy(monkeypatch) -> None:
     def forbidden(*_args, **_kwargs):
         raise AssertionError("archive I/O occurred during layout construction")
-
-    monkeypatch.setattr(ArchiveHistoryRepository, "read", forbidden)
-    monkeypatch.setattr(ArchiveHistoryRepository, "generation", forbidden)
-    monkeypatch.setattr(ArchiveHistoryRepository, "catalog", forbidden)
+    for name in ("read", "generation", "catalog"):
+        monkeypatch.setattr(ArchiveHistoryRepository, name, forbidden)
     app = build_app(refresh_manager=build_production_refresh_manager())
     root = app.layout() if callable(app.layout) else app.layout
-    root_components = list(_walk(root))
-    root_ids = {getattr(component, "id", None) for component in root_components}
-    handoff_store = next(
-        component
-        for component in root_components
-        if getattr(component, "id", None) == "data-history-handoff-store"
-    )
-
-    assert {
-        "data-route-location",
-        "data-history-handoff-store",
-        "data-history-handoff-consumed-store",
-        "data-history-request-store",
-    } <= root_ids
-    assert handoff_store.storage_type == "session"
-    assert _callback_for_output(app, "data-history-bundle-store", "data")
-    assert _callback_for_output(app, "data-history-handoff-store", "data")
-
-    page = build_data_page(
-        cube_href="/proxy/",
-        pnl_href="/proxy/pnl",
-        stock_href="/proxy/stock",
-    )
-    page_ids = {getattr(component, "id", None) for component in _walk(page)}
-    identity_mode = next(
-        component
-        for component in _walk(page)
-        if getattr(component, "id", None) == "data-identity-mode"
-    )
-    period = next(
-        component
-        for component in _walk(page)
-        if getattr(component, "id", None) == "data-period"
-    )
-    load_button = next(
-        component
-        for component in _walk(page)
-        if getattr(component, "id", None) == "data-load-history-button"
-    )
-    assert {
-        "data-page",
-        "data-history-kind-tabs",
-        "data-risk-type",
-        "data-risk-greek",
-        "data-underlying",
-        "data-load-history-button",
-        "data-history-chart",
-        "data-history-projection",
-        "data-history-slice",
-        "data-history-date-a",
-        "data-history-date-b",
-        "data-selected-table",
-        "data-player-visibility-store",
-    } <= page_ids
-    assert load_button.disabled is True
-    assert isinstance(identity_mode, dcc.Dropdown)
-    assert [option["value"] for option in identity_mode.options] == [
-        "reported",
-        "underlying",
-    ]
-    assert isinstance(period, dcc.RadioItems)
-    assert [option["value"] for option in period.options] == [
-        "wtd",
-        "mtd",
-        "ytd",
-        "1y",
-        "5y",
-        "all",
-        "custom",
-    ]
-    assert "data-period-segmented" in str(period.className).split()
-    assert "data-metric" not in page_ids
-    assert "data-history-request-store" not in page_ids
-    assert "data-unlock-identity-button" not in page_ids
-    assert "data-history-lock-store" not in page_ids
-    assert "data-raw-table" not in page_ids
-    assert not {
-        getattr(component, "href", None)
-        for component in _walk(page)
-        if getattr(component, "href", None)
-    }
+    root_ids = {getattr(item, "id", None) for item in _walk(root)}
+    assert {"data-route-location", "data-history-handoff-store", "data-history-request-store"} <= root_ids
+    page = build_data_page()
+    ids = {getattr(item, "id", None) for item in _walk(page)}
+    assert {"data-page", "data-underlying", "data-history-kind-tabs", "data-risk-chart", "data-market-chart",
+            "data-current-choices", "data-archive-choices", "data-player-visibility-store"} <= ids
+    assert not {"data-history-catalog-store", "data-risk-type", "data-risk-greek", "data-load-history-button",
+                "data-history-projection", "data-history-request-store"} & ids
+    modes = next(item for item in _walk(page) if getattr(item,"id",None)=="data-history-kind-tabs")
+    assert [option["value"] for option in modes.options] == ["risk", "market", "both"]

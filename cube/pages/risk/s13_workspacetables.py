@@ -7,9 +7,10 @@ from typing import Mapping
 
 import numpy as np
 import pandas as pd
-from dash import dash_table, html
+from dash import dash_table, dcc, html
 from dash.dash_table.Format import Format, Scheme
 
+from cube.services.s08_jtd import JTD_PAGE_SIZE, jtd_page
 from cube.domain.s01_schema import PORTFOLIO_FIELDS
 from cube.domain.s05_newtrades import NEW_TRADES_SPLIT
 from cube.ui.s02_aggregation import (
@@ -596,49 +597,59 @@ def _format_new_trade_text(value: object) -> str:
 
 def build_jtd_reference_table(
     frame: pd.DataFrame | None,
-    underlying: str | None,
+    underlying: str | list[str] | None,
     *,
     error: str | None = None,
 ) -> html.Div:
-    """Render every matching s13_jtd column and row as a flat detail table."""
-
-    title = f"JTD reference — {underlying}" if underlying else "JTD reference"
+    keys = [underlying] if isinstance(underlying, str) else list(underlying or [])
+    label = keys[0] if len(keys) == 1 else f"{len(keys):,} underlyings"
+    title = f"JTD reference — {label}" if keys else "JTD reference"
     if error:
         content = html.Div(error, className="empty-state", role="status")
     elif frame is None or frame.empty:
-        message = (
-            f"No JTD reference rows for {underlying}."
-            if underlying
-            else "Select an Underlying row to show its JTD reference."
-        )
-        content = html.Div(message, className="empty-state", role="status")
-    else:
-        headers = [html.Th(str(column), scope="col") for column in frame.columns]
-        rows = [
-            html.Tr(
-                [
-                    html.Td("" if pd.isna(value) else str(value))
-                    for value in record.values()
-                ]
-            )
-            for record in frame.to_dict("records")
-        ]
         content = html.Div(
-            html.Table(
-                [
-                    html.Caption(title, className="sr-only"),
-                    html.Thead(html.Tr(headers)),
-                    html.Tbody(rows),
-                ],
-                className="detail-table jtd-reference-table",
-            ),
-            className="detail-table-wrap jtd-reference-table-wrap",
-            tabIndex=0,
+            "No JTD reference rows for this selection." if keys
+            else "Select an Underlying row to show its JTD reference.",
+            className="empty-state", role="status",
         )
+    else:
+        numeric = [c for c in frame if pd.api.types.is_numeric_dtype(frame[c])]
+        columns = [
+            {"name": column, "id": column, "type": "numeric",
+             "format": Format(precision=2, scheme=Scheme.fixed, group=True, nully="—")}
+            if column in numeric else {"name": column, "id": column, "type": "text"}
+            for column in frame
+        ]
+        records, page_count, page_current, note = jtd_page(frame)
+        content = html.Div([
+            dcc.Store(id="jtd-scope", data=keys),
+            html.Div(note, id="jtd-page-note", role="status", style={"marginBottom": "8px"}),
+            dash_table.DataTable(
+                id="jtd-table", columns=columns, data=records,
+                page_action="custom", page_current=page_current,
+                # The extra first row is the full filtered total, repeated on each page.
+                page_size=JTD_PAGE_SIZE + 1, page_count=page_count,
+                sort_action="custom", sort_mode="multi", sort_by=[],
+                filter_action="custom", filter_query="",
+                filter_options={"case": "insensitive", "placeholder_text": "Filter…"},
+                style_table={"overflowX": "auto"},
+                style_cell={"padding": "7px 10px", "fontSize": 13, "textAlign": "left",
+                            "fontFamily": "inherit", "backgroundColor": "white", "color": "#111111"},
+                style_header={"fontWeight": "600", "backgroundColor": "#f3f4f6"},
+                style_cell_conditional=[
+                    {"if": {"column_id": c}, "textAlign": "right"} for c in numeric
+                ],
+                style_data_conditional=[
+                    {"if": {"row_index": 0}, "fontWeight": "700", "backgroundColor": "#f3f4f6"},
+                ] + [
+                    {"if": {"column_id": c, "filter_query": "{" + c + "} < 0"},
+                     "color": "#b91c1c"} for c in numeric
+                ],
+            ),
+        ])
     return html.Div(
         [html.H3(title, className="jtd-reference-title"), content],
-        className="jtd-reference-card",
-        **{"aria-label": title},
+        className="jtd-reference-card", **{"aria-label": title},
     )
 
 

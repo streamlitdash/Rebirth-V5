@@ -35,7 +35,8 @@ RISK_FILTER_NOTE = (
     "Include mode uses OR within one filter (B or D) and AND across filters. "
     "Exclude mode removes a row if it matches "
     "any selected value in any populated filter. Leave a filter blank for all "
-    "values. Risk is aggregated across Portfolio; Stock and P&L keep their "
+    "values. Portfolio filters Risk Explorer, Aggregate P&L and Quick Risk. "
+    "Click Apply filters to use your selection. Stock and P&L keep their "
     "own Portfolio filters."
 )
 

@@ -58,6 +58,7 @@ def progress_payload(
         startup = startup_coordinator.status()
         payload.update(
             startup_phase=startup.phase,
+            startup_worker_alive=startup.worker_alive,
             startup_attempt=startup.attempt,
             startup_attempt_id=startup.attempt_id,
             server_boot_id=startup.server_boot_id,

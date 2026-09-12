@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets"
 CSS_FILES = (
+    "quick_risk_v8.css",
     "s01_shell.css",
     "s02_controls.css",
     "s03_risk.css",
@@ -19,6 +20,8 @@ CSS_FILES = (
     "s14_app_logs.css",
 )
 JS_FILES = (
+    "quick_search.js",
+    "refresh_views.js",
     "s09_playback.js",
     "s10_theme.js",
     "s11_tables.js",
@@ -47,20 +50,24 @@ def test_css_manifest_is_nonempty_and_balanced() -> None:
 def test_javascript_behaviors_have_one_page_or_shared_owner() -> None:
     sources = {name: _read(name) for name in JS_FILES}
     ownership = {
-        "const dataHistoryFigure": "s09_playback.js",
-        "const dataPlayback = (": "s09_playback.js",
-        "const dataProjectionBase": "s09_playback.js",
-        "const dataProjectionSlice": "s09_playback.js",
+        "function search(current, archive, query, selected, value)": "s09_playback.js",
+        "function selectedRows(bundle, day)": "s09_playback.js",
+        "function figure(bundle, day, error)": "s09_playback.js",
+        "function play(payload, clicks, ticks, slider, visibility, prior)": "s09_playback.js",
+        "api.quickSearch =": "quick_search.js",
+        "const queueAck =": "refresh_views.js",
+        "const visibleOwners =": "refresh_views.js",
         "const registerCubeRollers": "s10_theme.js",
         "const applyTheme": "s10_theme.js",
         "const setGlobalLoaderVisible": "s10_theme.js",
         "const selectedCellsAsTsv": "s11_tables.js",
         "const attachResizeHandles": "s11_tables.js",
         "const syncUiHooks": "s11_tables.js",
-        "const startRefreshProgress": "s12_refresh.js",
-        "const finishRefreshProgress": "s12_refresh.js",
-        "const syncRefreshStatusObserver": "s12_refresh.js",
-        "const refreshProgressPoll": "s12_refresh.js",
+        "app.beginRefreshRequest =": "s12_refresh.js",
+        "app.receiveRefreshResult =": "s12_refresh.js",
+        "app.prepareRefreshViews =": "s12_refresh.js",
+        "app.receiveRefreshViewAck =": "s12_refresh.js",
+        "app.syncRefreshLifecycleNodes = () => {\n": "s12_refresh.js",
         "const syncQuickSearchHierarchy": "s13_risk.js",
         "const publishRiskAction": "s13_risk.js",
         "const metricCellFromTarget": "s13_risk.js",
@@ -75,7 +82,6 @@ def test_javascript_behaviors_have_one_page_or_shared_owner() -> None:
         'event.code === "F9"',
         'event.code === "F8"',
         'refreshTrigger.id === "clear-cache-button"',
-        '"pnl-initial-load-retry"',
         'setProps("data-player-visibility-store"',
         'window.addEventListener("pagehide"',
         'children: "Recalculating…"',

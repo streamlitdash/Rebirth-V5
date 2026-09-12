@@ -139,12 +139,12 @@ def test_quick_risk_and_market_search_use_native_collapsible_chevrons() -> None:
     assert market.id == "quick-market-details"
     assert risk.open is False
     assert market.open is False
-    assert isinstance(risk.children[0], html.Summary)
-    assert isinstance(market.children[0], html.Summary)
-    assert risk.children[0].id == "quick-search-summary"
-    assert market.children[0].id == "quick-market-summary"
-    assert risk.children[0].n_clicks == 0
-    assert market.children[0].n_clicks == 0
+    risk_summary = next(item for item in risk.children if isinstance(item, html.Summary))
+    market_summary = next(item for item in market.children if isinstance(item, html.Summary))
+    assert risk_summary.id == "quick-search-summary"
+    assert market_summary.id == "quick-market-summary"
+    assert risk_summary.n_clicks == 0
+    assert market_summary.n_clicks == 0
     surface_picker = next(
         item
         for item in _walk(market)
@@ -1173,7 +1173,6 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
         index_columns=("Risk Type", "Risk Greek"),
     )
     table = next(item for item in _walk(component) if isinstance(item, html.Table))
-    chart = next(item for item in _walk(component) if isinstance(item, dcc.Graph))
     rows = [
         item
         for item in _walk(table)
@@ -1184,8 +1183,8 @@ def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
     leaf_spacer = rows[1].children[0].children[0]
 
     assert table.role == "treegrid"
-    assert chart.className == "quick-risk-current-chart"
-    assert len(chart.figure.data) == 1
+    # The pivot owns rows; the independent automatic tenor renderer owns plots.
+    assert not any(isinstance(item, dcc.Graph) for item in _walk(component))
     assert root_toggle.children == "−"
     assert {"row-toggle", "quick-search-hierarchy-toggle"} <= set(
         str(root_toggle.className).split()

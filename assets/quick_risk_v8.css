@@ -1,0 +1,12 @@
+/* Quick Risk owns its full workspace width; it is not a tenor side panel. */
+.quick-risk-chart-panel,
+.quick-risk-chart-loading,
+.quick-risk-chart-stack,
+.quick-risk-plot {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+}
+.quick-risk-chart-stack { display: block; }
+.quick-risk-chart-stack > div { width: 100%; margin: 14px 0; }
+.quick-risk-chart-title { margin: 8px 0 0; font-size: 14px; font-weight: 600; }

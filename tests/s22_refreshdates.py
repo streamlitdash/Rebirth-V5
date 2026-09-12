@@ -63,21 +63,19 @@ def _snapshot() -> SimpleNamespace:
 
 
 def test_force_date_lock_waits_for_dash_to_receive_the_click() -> None:
-    source = (Path(__file__).parents[1] / "assets" / "s12_refresh.js").read_text(
-        encoding="utf-8"
-    )
-    start = source.index("const startRefreshProgress = (mode) =>")
-    state_created = source.index("refreshProgressState = {", start)
-    deferred_lock = source.index("const stateForDateActionLock", state_created)
-    lifecycle_sync = source.index("syncRefreshLifecycleNodes();", deferred_lock)
-    section = source[start:lifecycle_sync]
-
-    assert "capture phase" in section
-    assert state_created < deferred_lock
-    assert "setTimeout(() => {" in source[deferred_lock:lifecycle_sync]
-    assert "if (refreshProgressState !== stateForDateActionLock) return;" in section
-    assert "setProps(id, { disabled: true })" in section
-    assert "setProps(id, { disabled: true })" not in source[start:state_created]
+    project = Path(__file__).parents[1]
+    source = (project / "cube/pages/risk/s15_refresh.py").read_text(encoding="utf-8")
+    hero = (project / "assets/s12_refresh.js").read_text(encoding="utf-8")
+    # The native click reaches Dash first; its one clientside dispatcher starts
+    # the hero and returns that same request to Python atomically.
+    start = source.index("function(autoTick, portfolios, pl, reload, apply")
+    end = source.index('Output("refresh-action-request", "data")', start)
+    dispatcher = source[start:end]
+    assert "['force-risk-apply-button', apply, 'dates']" in dispatcher
+    assert "value > 0" in dispatcher
+    assert dispatcher.index("const request =") < dispatcher.index("assets.beginRefreshRequest(request)") < dispatcher.index("return request;")
+    assert 'Input("force-risk-apply-button", "n_clicks", allow_optional=True)' in source
+    assert 'setProps(id, { disabled: true })' not in hero
 
 
 def test_readiness_fallback_label_explains_why_age_zero_was_synthesised() -> None:

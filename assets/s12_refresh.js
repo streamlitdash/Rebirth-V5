@@ -1,1142 +1,513 @@
-/* Shared fail-soft startup and atomic refresh progress lifecycle. */
+/* One refresh lifecycle: live work, callback result, then visible render acknowledgements. */
 (() => {
   "use strict";
-
   const app = window.__cubeV5Assets = window.__cubeV5Assets || {};
-  const { dashIsLoading, setGlobalLoaderVisible } = app;
-  let syncRefreshLifecycleNodes = () => {};
-  app.syncRefreshLifecycleNodes = (...args) => syncRefreshLifecycleNodes(...args);
-
-    let refreshProgressState = null;
-    let refreshProgressClock = null;
-    let backendProgressRequest = null;
-    let backendProgressNextPoll = 0;
-    let backendProgressAvailable = null;
-    let lastBackendProgress = null;
-    let previousBackendProgress = null;
-    let backendProgressFailures = 0;
-    let backendProgressLastError = "";
-    let backendProgressLastSuccessAt = 0;
-    let backendStartRequest = null;
-    let backendStartNextAttempt = 0;
-    let backendStartFailures = 0;
-    let refreshStatusObserver = null;
-    let observedRefreshStatusNode = null;
-    let lastPublishedDataRevision = 0;
-    const BACKEND_PROGRESS_POLL_MS = 1000;
-    const BACKEND_PROGRESS_REQUEST_TIMEOUT_MS = 30000;
-    const BACKEND_PROGRESS_FAILURE_LIMIT = 2;
-    const BACKEND_RETRY_MAX_MS = 30000;
-
-    const clearRefreshProgressTimers = () => {
-      if (refreshProgressClock) clearInterval(refreshProgressClock);
-      refreshProgressClock = null;
-    };
-
-    const backendEndpointUrl = (name) => {
-      try {
-        const endpointNode = document.getElementById("backend-endpoints");
-        const configured = name === "start"
-          ? endpointNode?.dataset.startUrl
-          : endpointNode?.dataset.progressUrl;
-        if (configured) return new URL(configured, window.location.origin).toString();
-        const configNode = document.getElementById("_dash-config");
-        const config = configNode?.textContent ? JSON.parse(configNode.textContent) : {};
-        const prefix = String(config.requests_pathname_prefix || window.location.pathname || "/");
-        const normalizedPrefix = `${prefix.replace(/\/+$/, "")}/`;
-        return new URL(`${normalizedPrefix}${name}`, window.location.origin).toString();
-      } catch (_error) {
-        return new URL(`${name}`, document.baseURI).toString();
-      }
-    };
-
-    const progressEndpointUrl = () => backendEndpointUrl("progress");
-    const startEndpointUrl = () => backendEndpointUrl("start");
-
-    const transportErrorText = (error, endpoint) => {
-      if (error?.name === "AbortError")
-        return `${endpoint} timed out after ${BACKEND_PROGRESS_REQUEST_TIMEOUT_MS / 1000}s`;
-      const detail = String(error?.message || error || "unknown transport error")
-        .replace(/\s+/g, " ")
-        .trim();
-      return `${endpoint}: ${detail}`;
-    };
-
-    const REFRESH_STAGES = ["readiness", "risk", "market", "pl", "final"];
-
-    const normalizeProgressStage = (stage, functionName = "") => {
-      const value = `${stage || ""} ${functionName || ""}`
-        .trim()
-        .toLowerCase()
-        .replace(/_/g, " ")
-        .replace(/-/g, " ")
-        .replace(/\//g, " ")
-        .replace(/\s+/g, " ");
-      if (!value) return null;
-      if (/\b(final|publish|commit|validate|complete|combine|config|threshold|merge|group|aggregate|aggregation|dashboard)\b/.test(value)) return "final";
-      if (/\b(p&l|pnl|pl|profit|calculate)\b/.test(value)) return "pl";
-      if (/\b(market|official|open|live|current|price)\b/.test(value)) return "market";
-      if (/\b(readiness|ready|status|starting|start)\b/.test(value)) return "readiness";
-      if (/\b(risk|snapshot|connector|position)\b/.test(value)) return "risk";
-      return null;
-    };
-
-    const progressStartedAt = (value) => {
-      if (value === null || value === undefined || value === "") return null;
-      if (typeof value === "number" || /^\d+(\.\d+)?$/.test(String(value))) {
-        const numeric = Number(value);
-        if (!Number.isFinite(numeric)) return null;
-        return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
-      }
-      const parsed = Date.parse(String(value));
-      return Number.isFinite(parsed) ? parsed : null;
-    };
-
-    const progressStartedDuringAttempt = (progress, browserStartedAt) => {
-      if (!progress || progress.started_at === null) return false;
-      // Compare clocks using the server timestamp carried by the same
-      // response. A user's computer and Plotly worker need not agree
-      // within the old 500 ms window.
-      const clockOffset = progress.server_time === null
-        ? 0
-        : progress.received_at - progress.server_time;
-      return progress.started_at + clockOffset >= browserStartedAt - 1000;
-    };
-
-    const progressFingerprint = (progress) => progress ? JSON.stringify([
-      progress.attempt_id,
-      progress.started_at,
-      progress.running,
-      progress.function_name,
-      progress.stage,
-      progress.source_type,
-      progress.underlying,
-      progress.product_label,
-      progress.product_index,
-      progress.product_total,
-      progress.hold_seconds,
-      progress.current,
-      progress.total,
-      progress.message,
-      progress.error,
-      progress.updated_at,
-      progress.revision,
-      progress.startup_phase,
-      progress.startup_attempt_id,
-      progress.server_boot_id,
-    ]) : "";
-
-    const normalizedRevision = (value) => {
-      if (
-        (typeof value !== "number" && typeof value !== "string")
-        || (typeof value === "string" && !value.trim())
-      ) return null;
-      const revision = Number(value);
-      return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
-    };
-
-    const renderedDataRevisionFloor = () => {
-      let floor = lastPublishedDataRevision;
-      const store = document.getElementById("data-revision-store");
-      [
-        store?.data,
-        store?.dataset?.revision,
-        store?.getAttribute?.("data-revision"),
-      ].forEach((value) => {
-        const revision = normalizedRevision(value);
-        if (revision !== null) floor = Math.max(floor, revision);
-      });
-      document.querySelectorAll("[data-risk-view-token]").forEach((node) => {
-        try {
-          const token = JSON.parse(node.dataset.riskViewToken || "{}");
-          const revision = normalizedRevision(token.data_revision);
-          if (revision !== null) floor = Math.max(floor, revision);
-        } catch (_error) {
-          // A malformed/stale table token must not block a newer valid revision.
-        }
-      });
-      document.querySelectorAll("[data-snapshot-revision]").forEach((node) => {
-        const revision = normalizedRevision(node.dataset.snapshotRevision);
-        if (revision !== null) floor = Math.max(floor, revision);
-      });
-      const baseline = normalizedRevision(refreshProgressState?.baselineRevision);
-      if (baseline !== null) floor = Math.max(floor, baseline);
-      lastPublishedDataRevision = Math.max(lastPublishedDataRevision, floor);
-      return floor;
-    };
-
-    const financialPageCanConsumeRevision = () => (
-      (
-        document.getElementById("cube-page-container")
-        && document.getElementById("risk-type-tabs")
-      )
-      || document.getElementById("pnl-page-container")
-    );
-
-    const syncCommittedDataRevision = (progress) => {
-      if (refreshProgressState?.mode === "bootstrap") return false;
-      // Revision-driven callbacks target page-local outputs. Hold the common
-      // signal until a warm Risk page or the configured P&L page can consume it.
-      if (!financialPageCanConsumeRevision()) return false;
-      const commitNode = document.getElementById("refresh-commit-revision");
-      const progressRevision = progress?.running === false
-        ? normalizedRevision(progress.revision)
-        : null;
-      const commitRevision = normalizedRevision(commitNode?.textContent);
-      const candidates = [progressRevision, commitRevision]
-        .filter((value) => value !== null);
-      const revision = candidates.length ? Math.max(...candidates) : null;
-      const setProps = window.dash_clientside?.set_props;
-      // dcc.Store renders no DOM node; its colocated commit signal is the
-      // mount sentinel before addressing the Store through Dash's registry.
-      if (
-        revision === null
-        || !commitNode
-        || revision <= renderedDataRevisionFloor()
-        || typeof setProps !== "function"
-      ) return false;
-      try {
-        setProps("data-revision-store", { data: revision });
-        lastPublishedDataRevision = revision;
-        return true;
-      } catch (_error) {
-        // A transient Dash mount race must not poison backend progress polling.
-        return false;
-      }
-    };
-
-    const claimSessionReload = (key) => {
-      try {
-        if (window.sessionStorage.getItem(key)) return false;
-        window.sessionStorage.setItem(key, String(Date.now()));
-        return true;
-      } catch (_error) {
-        // Without durable session state, reloading could recreate a loop.
-        return false;
-      }
-    };
-
-    const requestBackendProgress = async (force = false) => {
-      const now = Date.now();
-      if (!force && now < backendProgressNextPoll) {
-        return backendProgressAvailable === false ? null : lastBackendProgress;
-      }
-      if (backendProgressRequest) return backendProgressRequest;
-      backendProgressNextPoll = now + BACKEND_PROGRESS_POLL_MS;
-      backendProgressRequest = (async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(
-          () => controller.abort(),
-          BACKEND_PROGRESS_REQUEST_TIMEOUT_MS,
-        );
-        try {
-          const response = await fetch(progressEndpointUrl(), {
-            cache: "no-store",
-            credentials: "same-origin",
-            headers: { Accept: "application/json" },
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`progressz returned ${response.status}`);
-          const contentType = response.headers.get("content-type") || "";
-          if (!contentType.toLowerCase().includes("application/json")) {
-            throw new Error(`progressz returned ${contentType || "non-JSON content"}`);
-          }
-          const payload = await response.json();
-          if (!payload || typeof payload !== "object") throw new Error("progressz did not return an object");
-          const numberOrNull = (value) => {
-            if (value === null || value === undefined || value === "") return null;
-            const parsed = Number(value);
-            return Number.isFinite(parsed) ? parsed : null;
-          };
-          const progress = {
-        running: payload.running === true || payload.running === 1 || payload.running === "true",
-            attempt_id: String(payload.attempt_id || ""),
-            function_name: String(payload.function_name || ""),
-            stage: String(payload.stage || ""),
-            source_type: String(payload.source_type || ""),
-            underlying: String(payload.underlying || ""),
-            product_label: String(payload.product_label || ""),
-            product_index: numberOrNull(payload.product_index),
-            product_total: numberOrNull(payload.product_total),
-            hold_seconds: numberOrNull(payload.hold_seconds),
-            current: numberOrNull(payload.current),
-            total: numberOrNull(payload.total),
-            message: String(payload.message || ""),
-            started_at: progressStartedAt(payload.started_at),
-            updated_at: progressStartedAt(payload.updated_at),
-            revision: numberOrNull(payload.revision) || 0,
-            startup_phase: String(payload.startup_phase || ""),
-            startup_attempt_id: String(payload.startup_attempt_id || ""),
-            server_boot_id: String(payload.server_boot_id || ""),
-            server_time: progressStartedAt(payload.server_time),
-            received_at: Date.now(),
-            error: typeof payload.error === "string"
-              ? payload.error
-              : payload.error ? String(payload.message || "Backend refresh failed") : "",
-          };
-          backendProgressFailures = 0;
-          backendProgressAvailable = true;
-          backendProgressLastError = "";
-          backendProgressLastSuccessAt = Date.now();
-          backendProgressNextPoll = Date.now() + BACKEND_PROGRESS_POLL_MS;
-          previousBackendProgress = lastBackendProgress;
-          lastBackendProgress = progress;
-          syncCommittedDataRevision(progress);
-          return progress;
-        } catch (error) {
-          backendProgressFailures += 1;
-          backendProgressLastError = transportErrorText(error, "progressz");
-          const retryDelay = Math.min(
-            BACKEND_RETRY_MAX_MS,
-            BACKEND_PROGRESS_POLL_MS * (2 ** Math.min(backendProgressFailures - 1, 3)),
-          );
-          backendProgressNextPoll = Date.now() + retryDelay;
-          if (backendProgressFailures >= BACKEND_PROGRESS_FAILURE_LIMIT) {
-            backendProgressAvailable = false;
-            return null;
-          }
-          return lastBackendProgress;
-        } finally {
-          clearTimeout(timeout);
-          backendProgressRequest = null;
-        }
-      })();
-      return backendProgressRequest;
-    };
-
-    const requestBackendStart = async (force = false) => {
-      const now = Date.now();
-      if (!force && now < backendStartNextAttempt) return null;
-      if (backendStartRequest) return backendStartRequest;
-      backendStartNextAttempt = now + BACKEND_PROGRESS_POLL_MS;
-      backendStartRequest = (async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(
-          () => controller.abort(),
-          BACKEND_PROGRESS_REQUEST_TIMEOUT_MS,
-        );
-        try {
-          const response = await fetch(startEndpointUrl(), {
-            method: "POST",
-            cache: "no-store",
-            credentials: "same-origin",
-            headers: { Accept: "application/json" },
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`startz returned ${response.status}`);
-          const contentType = response.headers.get("content-type") || "";
-          if (!contentType.toLowerCase().includes("application/json")) {
-            throw new Error(`startz returned ${contentType || "non-JSON content"}`);
-          }
-          await response.json();
-          backendStartFailures = 0;
-          backendStartNextAttempt = Date.now() + 5000;
-          return true;
-        } catch (error) {
-          backendStartFailures += 1;
-          backendProgressLastError = transportErrorText(error, "startz");
-          backendStartNextAttempt = Date.now() + Math.min(
-            BACKEND_RETRY_MAX_MS,
-            BACKEND_PROGRESS_POLL_MS * (2 ** Math.min(backendStartFailures, 3)),
-          );
-          return false;
-        } finally {
-          clearTimeout(timeout);
-          backendStartRequest = null;
-        }
-      })();
-      return backendStartRequest;
-    };
-
-    const setRefreshStageState = (stage, state) => {
-      const row = document.getElementById(`refresh-stage-${stage}`);
-      if (!row) return;
-      row.classList.remove("is-active", "is-complete", "is-skipped", "is-error");
-      if (state) row.classList.add(`is-${state}`);
-    };
-
-    const configureRefreshStage = (stage, _functionName, progressText = "", _sourceType = "") => {
-      const row = document.getElementById(`refresh-stage-${stage}`);
-      if (!row) return;
-      const duration = row.querySelector(".refresh-stage-duration");
-      if (duration) duration.textContent = progressText;
-    };
-
-    const setProgressDetail = (id, value) => {
-      const node = document.getElementById(id);
-      const nextValue = value || "";
-      if (node && node.textContent !== nextValue) node.textContent = nextValue;
-    };
-
-    const refreshStatusNode = () => (
-      document.getElementById("refresh-status")
-      || document.getElementById("bootstrap-refresh-status")
-    );
-
-    const refreshLifecycleVisible = () => {
-      const shell = document.getElementById("shared-refresh-shell");
-      if (!shell) return true;
-      const style = window.getComputedStyle(shell);
-      return style.display !== "none"
-        && style.visibility !== "hidden"
-        && shell.getClientRects().length > 0;
-    };
-
-    const refreshErrorNode = () => (
-      document.getElementById("error-log")
-      || document.getElementById("bootstrap-error-log")
-    );
-
-    const displayFunctionName = (functionName) => {
-      const value = String(functionName || "");
-      return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(value)
-        ? `${value}()`
-        : value;
-    };
-
-    const renderBackendProgress = (progress) => {
-      if (!progress || !refreshProgressState) return;
-      const panel = document.getElementById("refresh-progress");
-      if (panel) {
-        panel.dataset.progressSource = "backend";
-        if (!progress.error)
-          panel.classList.remove("is-error");
-        panel.classList.add("is-running");
-      }
-
-      const functionName = progress.function_name || "Backend task";
-      const stage = normalizeProgressStage(progress.stage, functionName);
-      const hasProduct = progress.product_index !== null
-        && progress.product_total !== null
-        && progress.product_total > 0;
-      const isUnderlyingLoop = ["market", "market_open", "market_status"]
-        .includes(stage);
-      const unitLabel = isUnderlyingLoop ? "Underlying" : "Product";
-      const countText = hasProduct
-        ? `${unitLabel} ${Math.max(0, progress.product_index)} of ${progress.product_total}`
-        : "";
-      const holdText = hasProduct && progress.hold_seconds > 0
-        ? `${progress.hold_seconds}s Risk/dRisk hold`
-        : "";
-      const percent = hasProduct
-        ? Math.max(0, Math.min(100, (progress.product_index / progress.product_total) * 100))
-        : 0;
-      setProgressDetail("refresh-progress-function", displayFunctionName(functionName));
-      setProgressDetail(
-        "refresh-progress-source",
-        [progress.source_type, progress.underlying].filter(Boolean).join(" - "),
-      );
-      setProgressDetail("refresh-progress-count", countText);
-      setProgressDetail("refresh-progress-hold", holdText);
-      setProgressDetail(
-        "refresh-progress-product",
-        hasProduct
-          ? isUnderlyingLoop
-            ? `${progress.underlying || "Market underlying"} - ${progress.error ? "market call failed" : "loading market data"}`
-            : `${progress.product_label || "Risk product"} - ${progress.error ? "Risk & dRisk failed" : "loading Risk & dRisk"}`
-          : progress.message || progress.product_label || "Refresh pipeline",
-      );
-
-      const meter = document.getElementById("refresh-progress-bar-track");
-      const bar = document.getElementById("refresh-progress-bar");
-      if (bar && hasProduct) bar.style.width = `${percent}%`;
-      if (meter) {
-        meter.hidden = !["reload", "bootstrap"].includes(refreshProgressState.mode);
-        if (hasProduct) {
-          meter.setAttribute("role", "progressbar");
-          meter.setAttribute("aria-valuemin", "0");
-          meter.setAttribute("aria-valuenow", String(progress.product_index));
-          meter.setAttribute("aria-valuemax", String(progress.product_total));
-          meter.setAttribute("aria-label", countText);
-          meter.setAttribute(
-            "aria-valuetext",
-            `${progress.underlying || progress.product_label || unitLabel}, ${countText}`,
-          );
-        } else {
-          meter.removeAttribute("role");
-          meter.removeAttribute("aria-valuemin");
-          meter.removeAttribute("aria-valuenow");
-          meter.removeAttribute("aria-valuemax");
-          meter.removeAttribute("aria-label");
-          meter.removeAttribute("aria-valuetext");
-        }
-      }
-
-      const title = document.getElementById("refresh-progress-title");
-      if (progress.error) {
-        refreshProgressState.backendError = progress.error;
-        refreshProgressState.backendErrorStage = stage;
-        if (title) title.textContent = progress.error;
-      }
-      if (!stage) return;
-
-      const stages = REFRESH_STAGES;
-      const activeIndex = stages.indexOf(stage);
-      stages.forEach((candidate, index) => {
-        const row = document.getElementById(`refresh-stage-${candidate}`);
-        if (!row || row.classList.contains("is-skipped")) return;
-        if (index < activeIndex) {
-          setRefreshStageState(candidate, "complete");
-          if (candidate !== "risk") configureRefreshStage(candidate, "", "Complete");
-        }
-        else if (index === activeIndex) setRefreshStageState(candidate, progress.error ? "error" : progress.running ? "active" : "complete");
-        else setRefreshStageState(candidate, null);
-        if (index !== activeIndex) {
-          row.style.removeProperty("--stage-progress");
-          row.removeAttribute("role");
-          row.removeAttribute("aria-valuemin");
-          row.removeAttribute("aria-valuenow");
-          row.removeAttribute("aria-valuemax");
-        }
-      });
-
-      const activeRow = document.getElementById(`refresh-stage-${stage}`);
-      if (activeRow) {
-        activeRow.style.setProperty("--stage-progress", `${percent}%`);
-      }
-      configureRefreshStage(
-        stage,
-        functionName,
-        hasProduct ? countText : progress.running ? "Running" : "Complete",
-        progress.source_type,
-      );
-    };
-
-    const recoverReadyBootstrap = (progress) => {
-      if (
-        !refreshProgressState
-        || refreshProgressState.mode !== "bootstrap"
-        || Number(progress?.revision || 0) < 1
-      ) return false;
-      const state = refreshProgressState;
-      if (state.serverReplaced) {
-        // The replacement process has now published a valid revision. The
-        // restart remains diagnostic history, not a terminal dashboard error.
-        state.serverReplaced = false;
-        state.backendError = "";
-        state.backendErrorStage = null;
-      }
-      if (refreshProgressState.reloadRequested) return true;
-      state.reloadRequested = true;
-      const title = document.getElementById("refresh-progress-title");
-      if (title) title.textContent = "Opening validated dashboard";
-      setProgressDetail(
-        "refresh-progress-function",
-        "Server refresh completed; synchronising this browser",
-      );
-      setProgressDetail(
-        "refresh-progress-product",
-        "Revision is ready",
-      );
-      const handoffDeadline = Date.now() + 15000;
-      const recoverMount = () => {
-        if (!refreshProgressState || refreshProgressState !== state) return;
-        if (!document.querySelector(".cube-initial-load-shell")) {
-          finishRefreshProgress();
-          return;
-        }
-        // Never interrupt Dash while it is materialising the validated tree.
-        if (dashIsLoading() || Date.now() < handoffDeadline) {
-          setTimeout(recoverMount, 1000);
-          return;
-        }
-        const latestProgress = lastBackendProgress || progress;
-        const bootId = String(latestProgress.server_boot_id || "unknown");
-        const revision = normalizedRevision(latestProgress.revision) || 0;
-        const recoveryKey = `cube-bootstrap-ready-reload:${bootId}:${revision}`;
-        if (claimSessionReload(recoveryKey)) {
-          window.location.reload();
-          return;
-        }
-        setProgressDetail(
-          "refresh-progress-function",
-          "Dashboard handoff is still pending; polling continues without repeated reloads",
-        );
-        setTimeout(recoverMount, 1000);
-      };
-      setTimeout(recoverMount, 3000);
-      return true;
-    };
-
-    const startRefreshProgress = (mode) => {
-      const panel = document.getElementById("refresh-progress");
-      if (!panel) return;
-      setGlobalLoaderVisible(true);
-      clearRefreshProgressTimers();
-      const reloadAll = mode === "reload";
-      const bootstrap = mode === "bootstrap";
-      const portfolioOnly = mode === "portfolios";
-      const commoditySetting = mode === "commo";
-      const checkerSetting = mode === "checker";
-      const dateSettings = mode === "dates";
-      const cacheReset = mode === "reset";
-      const settingsOnly = commoditySetting || checkerSetting || dateSettings;
-      const fullRiskLoad = reloadAll || bootstrap || cacheReset;
-      const automatic = mode === "automatic";
-      const requestedFunction = bootstrap
-        ? "RiskRefreshManager.refresh(initial_load)"
-        : cacheReset ? "RiskRefreshManager.reset_refresh()"
-        : reloadAll ? "RiskRefreshManager.refresh(force_risk=True)"
-        : portfolioOnly ? "RiskRefreshManager.refresh_portfolios()"
-        : commoditySetting ? "RiskRefreshManager.refresh(commodity_market)"
-        : checkerSetting ? "RiskRefreshManager.refresh(risk_checker)"
-        : dateSettings ? "RiskRefreshManager.refresh(forced_dates)"
-        : "RiskRefreshManager.refresh(force_pl=True)";
-      const requestedSource = fullRiskLoad
-        ? cacheReset ? "cleared caches and all connector sources" : "all connector sources"
-        : portfolioOnly ? "portfolio mapping connector only"
-        : commoditySetting ? "commodity market setting"
-        : checkerSetting ? "risk checker setting"
-        : dateSettings ? "staged risk and market dates"
-        : automatic ? "automatic 15-minute refresh" : "manual P&L refresh";
-      const riskProductDelay = Number(panel.dataset.riskProductDelay || 0);
-      const title = document.getElementById("refresh-progress-title");
-      const elapsed = document.getElementById("refresh-progress-elapsed");
-      const operationTitle = bootstrap
-        ? "Loading Cube data"
-        : cacheReset ? "Resetting cache"
-        : reloadAll ? "Reloading all risk"
-        : portfolioOnly ? "Refreshing portfolios"
-        : commoditySetting ? "Updating Commo market"
-        : checkerSetting ? "Updating RiskChecker"
-        : dateSettings ? "Applying date settings"
-        : automatic ? "Automatic refresh"
-        : "Refreshing P&L";
-      if (title) title.textContent = bootstrap
-        ? operationTitle
-        : `${operationTitle} · Current snapshot remains usable`;
-      panel.hidden = false;
-      panel.classList.remove("is-complete", "is-error");
-      panel.classList.add("is-running");
-      panel.dataset.progressSource = "pending";
-      REFRESH_STAGES.forEach((stage) => {
-        setRefreshStageState(stage, null);
-        const row = document.getElementById(`refresh-stage-${stage}`);
-        row?.style.removeProperty("--stage-progress");
-        row?.removeAttribute("role");
-        row?.removeAttribute("aria-valuemin");
-        row?.removeAttribute("aria-valuenow");
-        row?.removeAttribute("aria-valuemax");
-      });
-      configureRefreshStage("readiness", "get_risk_checker", portfolioOnly ? "Not called" : "queued");
-      configureRefreshStage(
-        "risk",
-        fullRiskLoad ? requestedFunction : "Conditional on changed readiness dates",
-        fullRiskLoad && riskProductDelay > 0
-          ? `Risk products / ${riskProductDelay}s each`
-          : fullRiskLoad ? "queued" : "Conditional",
-      );
-      configureRefreshStage("market", requestedFunction, "queued", requestedSource);
-      configureRefreshStage("pl", requestedFunction, "queued", requestedSource);
-      configureRefreshStage("final", "_commit_full_snapshot", "queued");
-      setProgressDetail("refresh-progress-function", requestedFunction);
-      setProgressDetail("refresh-progress-source", requestedSource);
-      setProgressDetail("refresh-progress-count", "");
-      setProgressDetail("refresh-progress-hold", "");
-      setProgressDetail(
-        "refresh-progress-product",
-        portfolioOnly
-          ? "Reloading portfolio mapping and rebuilding dependent views"
-          : settingsOnly
-            ? "Applying settings through one atomic refresh"
-          : fullRiskLoad
-            ? "Preparing Risk & dRisk product calls"
-            : "Checking readiness before conditional risk and market/P&L refresh",
-      );
-      const progressBar = document.getElementById("refresh-progress-bar");
-      if (progressBar) progressBar.style.width = "0%";
-      const progressTrack = document.getElementById("refresh-progress-bar-track");
-      if (progressTrack) progressTrack.hidden = !fullRiskLoad;
-      if (portfolioOnly) {
-        ["readiness", "risk", "market", "pl"].forEach((stage) => {
-          setRefreshStageState(stage, "skipped");
-          configureRefreshStage(stage, "", "Not called");
-        });
-        setRefreshStageState("final", "active");
-      } else {
-        setRefreshStageState("readiness", "active");
-      }
-
-      const startedAt = Date.now();
-      refreshProgressState = {
-        mode,
-        panel,
-        startedAt,
-        sawRunning: false,
-        sawDashRunning: false,
-        dashCallbackComplete: false,
-        dashStatusNode: null,
-        followingExistingWriter: false,
-        sawBackendRunning: false,
-        sawBackendAttempt: false,
-        baselineProgressKey: null,
-        baselineRefreshAttemptId: lastBackendProgress?.attempt_id || null,
-        baselineRevision: lastBackendProgress
-          ? Number(lastBackendProgress.revision || 0)
-          : null,
-        baselineAttemptId: null,
-        serverBootId: null,
-        serverReplaced: false,
-        reloadRequested: false,
-        transportLostAt: null,
-        backendError: "",
-        backendErrorStage: null,
-        initialErrorText: (refreshErrorNode()?.textContent || "").trim(),
-        initialStatusText: (refreshStatusNode()?.textContent || "").trim(),
-      };
-      // This listener runs in the capture phase. Disabling Apply here used to
-      // mutate the click target before Dash's own handler received the same
-      // event. The progress hero would open, but the n_clicks request could be
-      // lost, leaving no callback transition capable of closing it. Defer the
-      // lock until the click has fully propagated; the Python busy Store
-      // remains authoritative for the rest of the transaction.
-      const stateForDateActionLock = refreshProgressState;
-      setTimeout(() => {
-        if (refreshProgressState !== stateForDateActionLock) return;
-        if (cacheReset) {
-          const clearButton = document.getElementById("clear-cache-button");
-          if (clearButton) {
-            clearButton.textContent = "Resetting…";
-            clearButton.title = "Resetting · Reloading Risk and P&L";
-          }
-        }
-        const setProps = window.dash_clientside?.set_props;
-        ["force-risk-apply-button", "force-risk-cancel-button"].forEach((id) => {
-          const action = document.getElementById(id);
-          if (!action) return;
-          try {
-            if (typeof setProps === "function") setProps(id, { disabled: true });
-            else action.disabled = true;
-          } catch (_error) {
-            action.disabled = true;
-          }
-        });
-      }, 0);
-      syncRefreshLifecycleNodes();
-      const updateElapsed = () => {
-        if (elapsed && refreshProgressState) {
-          elapsed.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s elapsed`;
-        }
-      };
-      updateElapsed();
-      refreshProgressClock = setInterval(updateElapsed, 1000);
-      backendProgressNextPoll = 0;
-      if (bootstrap) void requestBackendStart(true);
-      void requestBackendProgress(true).then((progress) => {
-        if (!progress || !refreshProgressState || refreshProgressState.startedAt !== startedAt) return;
-        refreshProgressState.serverBootId = progress.server_boot_id || null;
-        const refreshAttemptChanged = Boolean(
-          progress.attempt_id
-          && refreshProgressState.baselineRefreshAttemptId
-          && progress.attempt_id !== refreshProgressState.baselineRefreshAttemptId
-        );
-        const revisionAdvanced = (
-          refreshProgressState.baselineRevision !== null
-          && progress.revision > refreshProgressState.baselineRevision
-        );
-        const belongsToAttempt = (
-          (
-            bootstrap
-            && Boolean(progress.startup_attempt_id)
-            && progress.startup_attempt_id !== refreshProgressState.baselineAttemptId
-          )
-          || refreshAttemptChanged
-          || revisionAdvanced
-          || progressStartedDuringAttempt(progress, startedAt)
-        );
-        if (recoverReadyBootstrap(progress)) return;
-        if (progress.running) {
-          refreshProgressState.sawBackendRunning = true;
-          refreshProgressState.sawBackendAttempt = true;
-          renderBackendProgress(progress);
-        } else if (belongsToAttempt) {
-          refreshProgressState.sawBackendAttempt = true;
-          renderBackendProgress(progress);
-        } else {
-          refreshProgressState.baselineProgressKey = progressFingerprint(progress);
-          refreshProgressState.baselineRefreshAttemptId = progress.attempt_id || null;
-          refreshProgressState.baselineRevision = progress.revision;
-          refreshProgressState.baselineAttemptId = progress.startup_attempt_id || null;
-        }
-      });
+  const STAGES = ["readiness", "risk", "market", "pl", "final"];
+  const POLL_MS = 1000;
+  const TIMEOUT_MS = 30000;
+  let state = null;
+  let lastProgress = null;
+  let pollPromise = null;
+  let startPromise = null;
+  let nextPoll = 0;
+  let nextStart = 0;
+  let failures = 0;
+  let lastSuccessAt = 0;
+  let transportError = "";
+  let stopped = false;
+  let paintQueued = false;
+  let observer = null;
+  let pageKey = window.location.pathname;
+  let lastStartupLayout = null;
+  let initialProgressSeen = false;
+  const viewAcks = new Map();
+  const preparedViews = new Map();
+  const node = (id) => document.getElementById(id);
+  const revision = (value) => {
+    if (value === null || value === undefined || String(value).trim() === "") return null;
+    const result = Number(value);
+    return Number.isSafeInteger(result) && result >= 0 ? result : null;
   };
-
-  const finishRefreshProgress = () => {
-    if (!refreshProgressState) return;
-    const panel = document.getElementById("refresh-progress");
-    const title = document.getElementById("refresh-progress-title");
-    const state = refreshProgressState;
-    const errorText = (refreshErrorNode()?.textContent || "").trim();
-    const backendError = state.backendError || "";
-    const hasNewError = Boolean(backendError || (errorText && errorText !== state.initialErrorText));
-    if (state.mode === "reset") {
-      const clearButton = document.getElementById("clear-cache-button");
-      if (clearButton) {
-        clearButton.textContent = hasNewError ? "Clear Cache · Retry" : "Clear Cache";
-        clearButton.title = hasNewError
-          ? "Failed · Retry Clear Cache"
-          : "Ready · Clear cached views and reload Risk and P&L";
-      }
-    }
-    clearRefreshProgressTimers();
-    panel?.classList.remove("is-running");
-    panel?.classList.add(hasNewError ? "is-error" : "is-complete");
-    const errorStage = hasNewError ? state.backendErrorStage : null;
-    const stages = REFRESH_STAGES;
-    stages.forEach((stage, index) => {
-      const row = document.getElementById(`refresh-stage-${stage}`);
-      if (row) {
-        row.style.removeProperty("--stage-progress");
-        row.removeAttribute("role");
-        row.removeAttribute("aria-valuemin");
-        row.removeAttribute("aria-valuenow");
-        row.removeAttribute("aria-valuemax");
-        if (stage === errorStage) {
-          setRefreshStageState(stage, "error");
-          configureRefreshStage(stage, "", "Failed");
-        }
-        else if (row.classList.contains("is-skipped")) return;
-        else if (errorStage) {
-          const errorIndex = stages.indexOf(errorStage);
-          const completed = index < errorIndex;
-          setRefreshStageState(stage, completed ? "complete" : null);
-          if (completed && stage !== "risk") configureRefreshStage(stage, "", "Complete");
-        } else {
-          setRefreshStageState(stage, "complete");
-          if (stage !== "risk") configureRefreshStage(stage, "", "Complete");
-        }
-      }
-    });
-    if (title) title.textContent = hasNewError
-      ? `Refresh failed - ${backendError || "last successful data retained"}`
-      : "Refresh complete";
-    setProgressDetail(
-      "refresh-progress-product",
-      hasNewError
-        ? state.serverReplaced
-          ? "Server process changed; reload this page to reconnect before using refreshed data"
-          : (state.mode === "bootstrap" ? "No financial snapshot was published" : "Previous validated snapshot retained")
-        : "Validated snapshot is live",
-    );
-    setProgressDetail("refresh-progress-hold", "");
-    const progressBar = document.getElementById("refresh-progress-bar");
-    if (progressBar) progressBar.style.width = hasNewError ? "0%" : "100%";
-    const progressTrack = document.getElementById("refresh-progress-bar-track");
-    if (progressTrack) progressTrack.hidden = hasNewError || !["reload", "bootstrap", "reset"].includes(state.mode);
-    refreshProgressState = null;
-    setGlobalLoaderVisible(false);
-    // With no last-good snapshot, the startup incident and its
-    // failed stage stay visible beside Retry. Later refresh errors
-    // still collapse back to the usable committed dashboard.
-    if (!(hasNewError && (state.mode === "bootstrap" || state.serverReplaced))) {
-      setTimeout(() => {
-        if (!refreshProgressState && panel) panel.hidden = true;
-      }, hasNewError ? 5000 : 300);
-    }
+  const text = (id, value) => {
+    const element = node(id);
+    const next = String(value ?? "");
+    if (element && element.textContent !== next) element.textContent = next;
   };
-
-  const abandonRefreshProgress = (state) => {
-    if (!state || refreshProgressState !== state) return;
-    clearRefreshProgressTimers();
-    refreshProgressState = null;
-    setGlobalLoaderVisible(false);
+  const stageOf = (progress) => {
+    const value = `${progress.stage || ""} ${progress.function_name || ""}`.toLowerCase().replace(/[_/-]/g, " ");
+    if (/\b(final|publish|commit|validate|complete|combine|config|threshold|merge|group|aggregate|dashboard)\b/.test(value)) return "final";
+    if (/\b(p&l|pnl|pl|profit|calculate)\b/.test(value)) return "pl";
+    if (/\b(market|official|open|live|current|price)\b/.test(value)) return "market";
+    if (/\b(readiness|ready|status|starting|start)\b/.test(value)) return "readiness";
+    if (/\b(risk|snapshot|connector|position)\b/.test(value)) return "risk";
+    return null;
   };
-
-  const handleRefreshStatusTransition = (node) => {
-    const state = refreshProgressState;
-    if (!state || !node) return;
-    const running = node.classList.contains("is-refreshing");
-    if (running) {
-      state.sawDashRunning = true;
-      state.sawRunning = true;
-      state.dashCallbackComplete = false;
-      state.dashStatusNode = node;
-      return;
-    }
-    if (
-      state.mode === "bootstrap"
-      || !state.sawDashRunning
-      || state.dashStatusNode !== node
-      || state.dashCallbackComplete
-    ) return;
-
-    // Dash's `running` output is applied before the request and removed only
-    // after its response. Observing both class states closes the sub-second
-    // race where the one-second poll never sees a fast refresh in flight.
-    state.dashCallbackComplete = true;
-    const statusText = (node.textContent || "").trim();
-    state.followingExistingWriter = /already running; following its live progress/i
-      .test(statusText);
-    if (state.followingExistingWriter) {
-      // This callback has ended, but another browser/task still owns the
-      // financial writer. Keep following real backend progress without an
-      // invented timeout or an unconfirmed success state.
-      void requestBackendProgress(true).then((progress) => {
-        if (!refreshProgressState || refreshProgressState !== state) return;
-        if (progress?.running) {
-          state.sawBackendRunning = true;
-          state.sawBackendAttempt = true;
-          renderBackendProgress(progress);
-        } else if (progress) {
-          finishRefreshProgress();
-        }
-      });
-      return;
-    }
-
-    syncCommittedDataRevision(lastBackendProgress);
-    finishRefreshProgress();
-  };
-
-  const syncRefreshStatusObserver = () => {
-    const node = refreshStatusNode();
-    if (node === observedRefreshStatusNode) {
-      handleRefreshStatusTransition(node);
-      return;
-    }
-    refreshStatusObserver?.disconnect();
-    observedRefreshStatusNode = node;
-    refreshStatusObserver = null;
-    if (!node) return;
-    refreshStatusObserver = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.attributeName === "class")) {
-        const state = refreshProgressState;
-        const transitionedFromRunning = mutations.some((mutation) => (
-          /(^|\s)is-refreshing(?:\s|$)/.test(mutation.oldValue || "")
-        ));
-        if (state && transitionedFromRunning) {
-          state.sawDashRunning = true;
-          state.sawRunning = true;
-          state.dashStatusNode = node;
-        }
-        handleRefreshStatusTransition(node);
-      }
-    });
-    refreshStatusObserver.observe(node, {
-      attributes: true,
-      attributeFilter: ["class"],
-      attributeOldValue: true,
-    });
-    // Automatic refreshes can already be running when the poll first creates
-    // their progress state; seed that confirmed DOM state immediately.
-    handleRefreshStatusTransition(node);
-  };
-
-  syncRefreshLifecycleNodes = () => {
-    syncRefreshStatusObserver();
-    if (financialPageCanConsumeRevision()) {
-      syncCommittedDataRevision(lastBackendProgress);
-    }
-    const state = refreshProgressState;
-    if (!state || state.panel?.isConnected) return;
-    const replacement = document.getElementById("refresh-progress");
-    if (state.mode === "bootstrap") {
-      // The cold shell is expected to be replaced by the validated layout.
-      // Preserve bootstrap recovery and follow the newly mounted panel.
-      if (replacement) state.panel = replacement;
-      return;
-    }
-    // A normal page unmount must not leave clocks, loaders, or stale state
-    // alive against a detached hero.
-    abandonRefreshProgress(state);
-  };
-  syncRefreshLifecycleNodes();
-
-  let refreshProgressTickRunning = false;
-  const refreshProgressPoll = setInterval(async () => {
-    if (refreshProgressTickRunning) return;
-    refreshProgressTickRunning = true;
+  const modeOf = (trigger) => ({
+    "reload-risk-button": "reload", "refresh-portfolios-button": "portfolios",
+    "commo-market-toggle": "commo", "risk-checker-toggle": "checker",
+    "force-risk-apply-button": "dates", "clear-cache-button": "reset",
+    "auto-refresh-interval": "automatic",
+  }[trigger] || "pl");
+  const endpoint = (kind) => {
+    const configured = node("backend-endpoints")?.dataset[kind === "start" ? "startUrl" : "progressUrl"];
+    if (configured) return new URL(configured, window.location.origin).toString();
     try {
-      syncRefreshLifecycleNodes();
-      const running = refreshStatusNode()?.classList.contains("is-refreshing") || false;
-      const lifecycleVisible = refreshLifecycleVisible();
-      // Checking Dash's global loading tree is only useful during a
-      // refresh attempt. In particular, an ordinary Risk Explorer
-      // tab callback must not activate the cube loader.
-      const dashLoading = (running || Boolean(refreshProgressState))
-        ? dashIsLoading()
-        : false;
-      if (running && !refreshProgressState && lifecycleVisible) {
-        const initialLoad = document.getElementById("refresh-progress")?.dataset.initialLoad === "true";
-        startRefreshProgress(initialLoad ? "bootstrap" : "automatic");
-      }
-      setGlobalLoaderVisible(Boolean(refreshProgressState) || (running && lifecycleVisible));
-      if (!refreshProgressState) return;
-
-      if (running || dashLoading) refreshProgressState.sawRunning = true;
-      const progress = await requestBackendProgress();
-      if (!refreshProgressState) return;
-      const statusText = (refreshStatusNode()?.textContent || "").trim();
-      const statusChanged = Boolean(statusText && statusText !== refreshProgressState.initialStatusText);
-      if (progress) {
-        refreshProgressState.transportLostAt = null;
-        const previousBootId = refreshProgressState.serverBootId;
-        const serverWasReplaced = Boolean(
-          previousBootId
-          && progress.server_boot_id
-          && previousBootId !== progress.server_boot_id
-        );
-        refreshProgressState.serverBootId = progress.server_boot_id || previousBootId;
-        if (serverWasReplaced) {
-          const previous = previousBackendProgress || {};
-          const previousContext = [
-            previous.stage,
-            previous.source_type,
-            previous.product_label || previous.underlying,
-          ].filter(Boolean).join(" · ");
-          refreshProgressState.sawBackendRunning = false;
-          refreshProgressState.sawBackendAttempt = false;
-          refreshProgressState.sawRunning = false;
-          refreshProgressState.baselineProgressKey = null;
-          refreshProgressState.baselineRefreshAttemptId = null;
-          refreshProgressState.baselineRevision = null;
-          refreshProgressState.baselineAttemptId = null;
-          refreshProgressState.backendError = (
-            "Server process restarted; the previous attempt ended before Python could report an error."
-          );
-          refreshProgressState.serverReplaced = true;
-          const title = document.getElementById("refresh-progress-title");
-          if (title) title.textContent = "Server process restarted during refresh";
-          setProgressDetail(
-            "refresh-progress-function",
-            previousContext
-              ? `Last confirmed work: ${previousContext}`
-              : "No final Python error was available from the previous process",
-          );
-          setProgressDetail(
-            "refresh-progress-product",
-            refreshProgressState.mode === "bootstrap"
-              ? "Automatic recovery will start one new process-owned attempt"
-              : "Reload this page to reconnect to the replacement server process",
-          );
-          document.getElementById("refresh-progress")?.classList.add("is-error");
-          if (refreshProgressState.mode === "bootstrap") {
-            void requestBackendStart();
-          }
-          // Do not let the old DOM's running marker finish the newly reset
-          // follower in this same tick. The next response owns recovery.
-          return;
-        }
-        if (recoverReadyBootstrap(progress)) return;
-        if (
-          refreshProgressState.mode === "bootstrap"
-          && Number(progress.revision || 0) === 0
-          && ["", "idle"].includes(progress.startup_phase)
-        ) {
-          void requestBackendStart();
-        }
-        const isBaselineSnapshot = Boolean(
-          refreshProgressState.baselineProgressKey
-          && progressFingerprint(progress) === refreshProgressState.baselineProgressKey
-        );
-        const startupAttemptMatches = (
-          refreshProgressState.mode === "bootstrap"
-          && Boolean(progress.startup_attempt_id)
-          && progress.startup_attempt_id !== refreshProgressState.baselineAttemptId
-        );
-        const refreshAttemptMatches = Boolean(
-          progress.attempt_id
-          && refreshProgressState.baselineRefreshAttemptId
-          && progress.attempt_id !== refreshProgressState.baselineRefreshAttemptId
-        );
-        const revisionAdvanced = (
-          refreshProgressState.baselineRevision !== null
-          && progress.revision > refreshProgressState.baselineRevision
-        );
-        const attemptMatches = (
-          startupAttemptMatches || refreshAttemptMatches || revisionAdvanced
-        );
-        const timestampMatchesAttempt = (
-          progressStartedDuringAttempt(progress, refreshProgressState.startedAt)
-          && !isBaselineSnapshot
-        );
-        if (progress.running) {
-          refreshProgressState.sawBackendRunning = true;
-          refreshProgressState.sawBackendAttempt = true;
-          renderBackendProgress(progress);
-        } else if (
-          refreshProgressState.sawBackendAttempt
-          || refreshProgressState.sawBackendRunning
-          || attemptMatches
-          || timestampMatchesAttempt
-        ) {
-          refreshProgressState.sawBackendAttempt = true;
-          renderBackendProgress(progress);
-          // Only the refresh callback's running state gates this
-          // panel. Revision-driven table callbacks may legitimately
-          // retain unrelated Dash loading markers while they render.
-          if (!running) finishRefreshProgress();
-        } else if (!running && !dashLoading && (refreshProgressState.sawRunning || statusChanged)) {
-          if (!isBaselineSnapshot) renderBackendProgress(progress);
-          finishRefreshProgress();
-        }
-      } else {
-        const panel = document.getElementById("refresh-progress");
-        if (panel) panel.dataset.progressSource = backendProgressAvailable === false ? "fallback" : "pending";
-        if (backendProgressAvailable === false) {
-          if (!refreshProgressState.transportLostAt) {
-            refreshProgressState.transportLostAt = Date.now();
-          }
-          if (refreshProgressState.mode === "bootstrap") {
-            void requestBackendStart();
-          }
-          const disconnectedFor = Date.now() - refreshProgressState.transportLostAt;
-          const sinceSuccess = backendProgressLastSuccessAt
-            ? `Last response ${Math.max(1, Math.floor((Date.now() - backendProgressLastSuccessAt) / 1000))}s ago.`
-            : "";
-          setProgressDetail(
-            "refresh-progress-function",
-            `Reconnecting to server progress. ${backendProgressLastError || "No JSON response."}${sinceSuccess}`,
-          );
-          if (disconnectedFor >= 15000) {
-            const title = document.getElementById("refresh-progress-title");
-            if (title) title.textContent = "Server connection interrupted - retrying";
-            setProgressDetail(
-              "refresh-progress-product",
-              "Refresh state is not confirmed; automatic recovery is active",
-            );
-            panel?.classList.add("is-error");
-          }
-          if (
-            disconnectedFor >= 45000
-            && refreshProgressState.mode === "bootstrap"
-          ) {
-            const bootId = String(refreshProgressState.serverBootId || "unknown");
-            const recoveryKey = `cube-progress-transport-reload:${bootId}`;
-            if (claimSessionReload(recoveryKey)) {
-              window.location.reload();
-              return;
-            }
-            setProgressDetail(
-              "refresh-progress-product",
-              "Automatic reload is unavailable or already attempted; progress polling continues",
-            );
-          }
-        }
-        if (
-          !refreshProgressState.followingExistingWriter
-          && !running
-          && !dashLoading
-          && (refreshProgressState.sawRunning || statusChanged)
-        ) {
-          finishRefreshProgress();
-        }
-      }
-    } finally {
-      refreshProgressTickRunning = false;
-    }
-  }, BACKEND_PROGRESS_POLL_MS);
-
-  const stopRefreshLifecycle = () => {
-    clearRefreshProgressTimers();
-    refreshProgressState = null;
-    setGlobalLoaderVisible(false);
-    refreshStatusObserver?.disconnect();
-    refreshStatusObserver = null;
-    observedRefreshStatusNode = null;
-    clearInterval(refreshProgressPoll);
+      const config = JSON.parse(node("_dash-config")?.textContent || "{}");
+      const prefix = String(config.requests_pathname_prefix || "/").replace(/\/+$/, "");
+      return new URL(`${prefix}/${kind}`, window.location.origin).toString();
+    } catch (_) { return new URL(kind, document.baseURI).toString(); }
   };
-
-  app.startRefreshProgress = startRefreshProgress;
-  app.stopRefreshLifecycle = stopRefreshLifecycle;
+  app.pendingCommittedDataRevision = Number(app.pendingCommittedDataRevision || 0);
+  app.observedPublishedDataRevision = Number(app.observedPublishedDataRevision || 0);
+  app.canPublishDataRevision = () => Boolean(
+    (node("cube-page-container") && node("risk-type-tabs")) || node("pnl-page-container")
+    || node("data-page") || node("stock-page") || node("static-data-page")
+  );
+  const knownRevision = () => Math.max(0,
+    revision(app.pendingCommittedDataRevision) || 0,
+    revision(app.observedPublishedDataRevision) || 0,
+    revision(node("refresh-commit-revision")?.textContent) || 0);
+  const offerRevision = (value) => {
+    const candidate = revision(value);
+    if (candidate !== null) app.pendingCommittedDataRevision = Math.max(app.pendingCommittedDataRevision, candidate);
+  };
+  const newState = (mode, request = null) => ({
+    mode, request, startedAt: Date.now(), active: true, phase: "requested",
+    baseline: knownRevision(), bootId: lastProgress?.server_boot_id || null,
+    attemptId: null, startupAttemptId: null, progress: null,
+    result: null, targetRevision: null, layoutReady: mode !== "bootstrap",
+    viewsReady: false, owners: null, pageKey, stages: {}, error: "", message: "",
+    finishedAt: null, hideAt: null, handoffAt: null, callbackPending: Boolean(request),
+    startError: "",
+  });
+  const terminal = (phase, message, error = "") => {
+    if (!state) return;
+    state.phase = phase;
+    state.message = message;
+    state.error = error;
+    state.active = false;
+    state.callbackPending = false;
+    state.finishedAt = Date.now();
+    // Match the original hero: brief success, longer warm errors, persistent
+    // startup/reconnect errors. A timer for an old action cannot hide a new one.
+    const keepVisible = phase === "interrupted" || phase === "unconfirmed"
+      || (phase === "failed" && state.mode === "bootstrap");
+    state.hideAt = keepVisible ? null : state.finishedAt + (["complete", "no_work"].includes(phase) ? 300 : 5000);
+    if (state.hideAt !== null) {
+      const completed = state;
+      setTimeout(() => { if (state === completed && !state.active) queuePaint(); }, state.hideAt - state.finishedAt);
+    }
+    for (const stage of STAGES) {
+      if (state.stages[stage] === "active") state.stages[stage] = phase === "complete" ? "complete" : "observed";
+    }
+    queuePaint();
+  };
+  const visibleTitle = () => {
+    if (!state) return "Refresh";
+    if (state.active && state.startError) return "Startup request unconfirmed — use Retry";
+    if (state.active && transportError) return "Progress connection interrupted — retrying";
+    const operation = {
+      bootstrap: "Loading Cube data", reset: "Resetting cache", reload: "Reloading all risk",
+      portfolios: "Refreshing portfolios", commo: "Updating Commo market",
+      checker: "Updating RiskChecker", dates: "Applying date settings",
+      automatic: "Automatic refresh", pl: "Refreshing P&L",
+    }[state.mode] || "Refreshing Cube data";
+    const titles = {
+      requested: operation, data: operation,
+      finishing: operation, views: operation,
+      complete: "Refresh complete", failed: "Refresh failed", rejected: "Refresh not applied",
+      busy: "Another refresh is running — this action did not start", no_work: "No refresh was needed",
+      interrupted: "Server process changed — reload to reconnect", unconfirmed: "Refresh outcome unconfirmed",
+    };
+    return titles[state.phase] || operation;
+  };
+  const paint = () => {
+    paintQueued = false;
+    if (!state || stopped) return;
+    const panel = node("refresh-progress");
+    if (!panel) return;
+    panel.hidden = !state.active && state.hideAt !== null && Date.now() >= state.hideAt;
+    panel.classList.toggle("is-running", state.active);
+    panel.classList.toggle("is-complete", state.phase === "complete" || state.phase === "no_work");
+    panel.classList.toggle("is-error", Boolean(state.error) || state.phase === "interrupted");
+    panel.dataset.progressSource = state.progress ? "backend" : "pending";
+    panel.dataset.refreshPhase = state.phase;
+    panel.dataset.refreshRequest = state.request?.id || "";
+    panel.dataset.refreshAttempt = state.attemptId || "";
+    text("refresh-progress-title", visibleTitle());
+    const elapsedEnd = state.finishedAt || Date.now();
+    text("refresh-progress-elapsed", `${Math.max(0, Math.floor((elapsedEnd - state.startedAt) / 1000))}s elapsed`);
+    const progress = state.progress;
+    const rendering = state.phase === "views";
+    const callFinished = rendering || !state.active;
+    const fn = !state.active ? "" : rendering ? "Updating tables and charts" : progress?.function_name || (state.mode === "bootstrap" ? "Starting server data load" : "Waiting for refresh callback");
+    text("refresh-progress-function", state.active && (state.startError || transportError) ? state.startError || transportError : fn);
+    text("refresh-progress-source", callFinished ? "" : [progress?.source_type, progress?.underlying].filter(Boolean).join(" · "));
+    const callLabel = panel.querySelector(".refresh-function-label");
+    if (callLabel) callLabel.hidden = !state.active;
+    let detail = state.message || progress?.message || progress?.product_label || "Preparing refresh";
+    if (state.phase === "views") {
+      detail = "Updating tables and charts";
+    }
+    if (state.phase === "complete") detail = "Validated snapshot is live";
+    if (state.error) detail = state.error;
+    if (state.active && transportError && lastSuccessAt) detail += ` · Last confirmed response ${Math.floor((Date.now() - lastSuccessAt) / 1000)}s ago`;
+    text("refresh-progress-product", detail);
+    const total = callFinished ? 0 : Number(progress?.product_total || 0);
+    const current = Number(progress?.product_index || 0);
+    text("refresh-progress-count", total > 0 ? `${Math.max(0, current)} of ${total}` : "");
+    text("refresh-progress-hold", !callFinished && Number(progress?.hold_seconds || 0) > 0 ? `${progress.hold_seconds}s product hold` : "");
+    const track = node("refresh-progress-bar-track");
+    const bar = node("refresh-progress-bar");
+    if (track) track.hidden = !(state.active && total > 0);
+    if (bar) bar.style.width = `${total > 0 ? Math.max(0, Math.min(100, current / total * 100)) : 0}%`;
+    for (const stage of STAGES) {
+      const row = node(`refresh-stage-${stage}`);
+      if (!row) continue;
+      const outcome = state.stages[stage] || "";
+      for (const name of ["active", "complete", "skipped", "error"]) row.classList.toggle(`is-${name}`, outcome === name);
+      row.style.removeProperty("--stage-progress");
+      const duration = row.querySelector(".refresh-stage-duration");
+      const caption = outcome === "active" ? "Running" : outcome === "complete" ? "Complete" : outcome === "error" ? "Failed" : outcome === "skipped" ? "Not called" : state.active && !rendering ? "queued" : "";
+      if (duration && duration.textContent !== caption) duration.textContent = caption;
+    }
+    // The original hero already contains its cube. Do not add a second overlay.
+    app.setGlobalLoaderVisible?.(false);
+  };
+  function queuePaint() {
+    if (paintQueued || stopped) return;
+    paintQueued = true;
+    window.requestAnimationFrame(paint);
+  }
+  const pendingOwners = () => {
+    if (!state?.owners) return [];
+    return state.owners.filter((owner) => {
+      const ack = viewAcks.get(owner);
+      return !ack || ack.revision !== state.targetRevision || !["rendered", "failed"].includes(ack.status)
+        || ack.pageKey !== state.pageKey || (ack.request_id || null) !== (state.request?.id || null);
+    });
+  };
+  const advance = () => {
+    if (!state?.active) { queuePaint(); return; }
+    if (!state.result || state.callbackPending) { queuePaint(); return; }
+    if (state.result.outcome !== "complete") {
+      terminal(state.result.outcome, state.result.message || "The requested action did not publish a new snapshot", state.result.error || "");
+      return;
+    }
+    if (!state.layoutReady) { state.phase = "finishing"; queuePaint(); return; }
+    state.phase = "views";
+    // The callback has finished. Stop showing its last sampled connector as
+    // still running; final remains active until the visible outputs are ready.
+    for (const stage of STAGES) if (state.stages[stage] === "active") state.stages[stage] = "complete";
+    state.stages.final = "active";
+    if (state.owners === null && preparedViews.has(state.targetRevision)) {
+      const plan = preparedViews.get(state.targetRevision);
+      if (plan.pageKey === state.pageKey) state.owners = [...plan.owners];
+    }
+    if (state.owners === null) { queuePaint(); return; }
+    const viewErrors = [];
+    for (const owner of state.owners) {
+      const ack = viewAcks.get(owner);
+      if (ack?.revision === state.targetRevision && ack.pageKey === state.pageKey
+          && (ack.request_id || null) === (state.request?.id || null) && ack.status === "failed") {
+        viewErrors.push(`${owner}: ${ack.message || "render failed"}`);
+      }
+    }
+    if (viewErrors.length) state.error = viewErrors.join(" · ");
+    if (pendingOwners().length) { queuePaint(); return; }
+    if (viewErrors.length) { terminal("failed", "Server data committed, but a visible result failed", state.error); return; }
+    state.viewsReady = true;
+    terminal("complete", state.presentationSuperseded
+      ? `This action committed revision ${state.result.revision}; visible updates triggered by newer revision ${state.targetRevision} have finished`
+      : `Visible updates triggered by revision ${state.targetRevision} have finished`);
+  };
+  const setTarget = (value) => {
+    const target = revision(value);
+    if (!state || target === null) return false;
+    state.targetRevision = target;
+    offerRevision(target); // Never wait for view acknowledgements before offering publication.
+    const plan = preparedViews.get(target);
+    state.owners = plan?.pageKey === state.pageKey ? [...plan.owners] : null;
+    return true;
+  };
+  const observeProgress = (progress) => {
+    lastProgress = progress;
+    if (!progress.running) offerRevision(progress.revision);
+    const firstReady = !initialProgressSeen && !progress.running && progress.startup_phase === "succeeded" && revision(progress.revision) > 0;
+    initialProgressSeen = true;
+    if (!state && (firstReady || node("refresh-progress")?.dataset.initialLoad === "true")) {
+      // Only startup or a local request owns this browser's hero. A different
+      // browser's warm refresh cannot deliver a local callback receipt.
+      state = newState("bootstrap");
+    }
+    if (!state?.active) return;
+    if (state.bootId && progress.server_boot_id && state.bootId !== progress.server_boot_id) {
+      if (state.mode === "bootstrap") {
+        state = newState("bootstrap");
+        state.bootId = progress.server_boot_id;
+        app.pendingCommittedDataRevision = 0;
+        app.observedPublishedDataRevision = 0;
+      } else {
+        terminal("interrupted", "The previous process cannot confirm this refresh", "Reload the page to reconnect; the action was not automatically retried.");
+        return;
+      }
+    }
+    state.bootId ||= progress.server_boot_id || null;
+    if (state.mode === "bootstrap") {
+      if (state.retryBaseline && (!progress.startup_attempt_id || progress.startup_attempt_id === state.retryBaseline)) {
+        state.message = state.startError
+          ? "The startup request could not be confirmed. Use Retry; progress checks continue."
+          : "Retry requested — waiting for a new startup attempt";
+        queuePaint();
+        return;
+      }
+      state.retryBaseline = null;
+      if (progress.startup_attempt_id && ["running", "succeeded", "stalled"].includes(progress.startup_phase)) state.startError = "";
+      if (progress.startup_attempt_id) state.startupAttemptId ||= progress.startup_attempt_id;
+      if (state.startupAttemptId && progress.startup_attempt_id !== state.startupAttemptId) return;
+      // Coordinator failure after its worker exits is authoritative even if
+      // a final exception left the inner financial progress marker running.
+      if (progress.startup_phase === "failed" && progress.startup_worker_alive === false) {
+        state.progress = progress;
+        terminal("failed", "Initial data load failed", progress.error || progress.message || "Use Retry after checking the error");
+        return;
+      }
+    }
+    if (state.result && state.mode !== "bootstrap") { advance(); return; }
+    if (progress.running) {
+      // Live painting is independent of callback and terminal confirmation.
+      if (!state.result) {
+        if (state.attemptId && state.attemptId !== progress.attempt_id) state.stages = {};
+        state.attemptId = progress.attempt_id || null;
+        state.progress = progress;
+        state.phase = "data";
+        const stage = stageOf(progress);
+        if (stage) {
+          for (const previous of STAGES) if (state.stages[previous] === "active" && previous !== stage) state.stages[previous] = "complete";
+          state.stages[stage] = progress.error ? "error" : "active";
+        }
+      }
+      queuePaint();
+      return;
+    }
+    if (state.attemptId && progress.attempt_id !== state.attemptId) return;
+    if (state.mode === "bootstrap") {
+      const phase = progress.startup_phase;
+      state.progress = progress;
+      state.phase = "finishing";
+      state.message = progress.startup_worker_alive
+        ? "Finishing the startup worker before opening the validated dashboard"
+        : "Waiting for the validated dashboard to mount";
+      if (phase === "failed" && !progress.startup_worker_alive) {
+        terminal("failed", "Initial data load failed", progress.error || progress.message || "Use Retry after checking the error");
+        return;
+      }
+      if (phase === "succeeded" && progress.startup_worker_alive === false && revision(progress.revision) > 0) {
+        state.progress = progress;
+        state.result = {outcome: "complete", revision: progress.revision};
+        state.callbackPending = false;
+        state.handoffAt ||= Date.now();
+        setTarget(progress.revision);
+        if (lastStartupLayout?.server_boot_id === state.bootId
+            && lastStartupLayout?.startup_attempt_id === state.startupAttemptId
+            && revision(lastStartupLayout?.revision) === state.targetRevision
+            && lastStartupLayout.status === "rendered") state.layoutReady = true;
+        advance();
+      } else if (["idle", ""].includes(phase)) void requestStart();
+    } else if (state.request) {
+      if (!state.attemptId) return; // An old idle sample is not evidence that the new request started.
+      // A sampled backend finish is only an intermediate milestone.
+      state.progress = progress;
+      if (!state.result) state.phase = "finishing";
+      advance();
+    }
+  };
+  async function requestStart(force = false) {
+    if (startPromise || (!force && Date.now() < nextStart)) return startPromise;
+    nextStart = Date.now() + 5000;
+    if (state?.mode === "bootstrap") state.startError = "";
+    startPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      try {
+        const response = await fetch(endpoint("start"), {method: "POST", cache: "no-store", credentials: "same-origin", headers: {Accept: "application/json"}, signal: controller.signal});
+        if (!response.ok) throw new Error(`Start returned ${response.status}`);
+        await response.json();
+      } catch (error) {
+        transportError = String(error.message || error);
+        if (state?.mode === "bootstrap") state.startError = transportError;
+      } finally { clearTimeout(timeout); startPromise = null; queuePaint(); }
+    })();
+    return startPromise;
+  }
+  async function poll(force = false) {
+    if (stopped || pollPromise || (!force && Date.now() < nextPoll)) return pollPromise;
+    nextPoll = Date.now() + POLL_MS;
+    pollPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      try {
+        const response = await fetch(endpoint("progress"), {cache: "no-store", credentials: "same-origin", headers: {Accept: "application/json"}, signal: controller.signal});
+        if (!response.ok || !(response.headers.get("content-type") || "").includes("application/json")) throw new Error(`Progress returned ${response.status} without a valid JSON response`);
+        const progress = await response.json();
+        if (!progress || typeof progress !== "object") throw new Error("Progress response was not an object");
+        progress.running = progress.running === true || progress.running === 1 || progress.running === "true";
+        failures = 0; transportError = ""; lastSuccessAt = Date.now();
+        observeProgress(progress);
+      } catch (error) {
+        failures += 1;
+        transportError = error.name === "AbortError" ? "Progress request timed out; work status is not confirmed" : String(error.message || error);
+        nextPoll = Date.now() + Math.min(30000, POLL_MS * (2 ** Math.min(failures, 5)));
+        queuePaint();
+      } finally { clearTimeout(timeout); pollPromise = null; }
+    })();
+    return pollPromise;
+  }
+  app.beginRefreshRequest = (request) => {
+    if (!request?.id || !request.trigger) return false;
+    if (state?.request?.id === request.id) return false;
+    // Suppress the dispatch itself, not just its hero, while our prior writer request is unanswered.
+    if (state?.active && state.callbackPending && state.request) {
+      const busyNode = node("refresh-status") || node("bootstrap-refresh-status");
+      const freshIdle = lastProgress?.running === false && !transportError
+        && Date.now() - lastSuccessAt < POLL_MS * 3 && busyNode
+        && !busyNode.classList.contains("is-refreshing");
+      if (request.trigger === "auto-refresh-interval" || !freshIdle) {
+        state.message = "The previous refresh request is still awaiting its result";
+        queuePaint();
+        return false;
+      }
+      // A deliberate new action after reconnect is allowed; this does not
+      // convert the unanswered preceding request into a success or retry it automatically.
+    }
+    state = newState(request.mode || modeOf(request.trigger), {...request});
+    if (state.mode === "portfolios") for (const stage of ["readiness", "risk", "market", "pl"]) state.stages[stage] = "skipped";
+    queuePaint(); void poll(true);
+    return true;
+  };
+  app.receiveRefreshResult = (result) => {
+    if (!state?.request || result?.request_id !== state.request.id) return false;
+    if (state.bootId && result.server_boot_id && state.bootId !== result.server_boot_id) {
+      terminal("interrupted", "The refresh result came from a replacement process", "Reload to reconnect.");
+      return false;
+    }
+    state.bootId ||= result.server_boot_id || null;
+    state.callbackPending = false;
+    state.result = {...result};
+    state.result.outcome = ({committed: "complete", unchanged: "no_work"})[result.outcome] || result.outcome;
+    if (!["complete", "failed", "rejected", "busy", "no_work"].includes(state.result.outcome)) {
+      state.phase = "unconfirmed";
+      state.message = "The refresh callback returned an unrecognised outcome";
+      queuePaint();
+      return false;
+    }
+    if (result.attempt_id) state.attemptId = result.attempt_id;
+    if (state.result.outcome === "complete" && (!(revision(result.revision) > 0) || !setTarget(result.revision))) {
+      state.phase = "unconfirmed"; state.message = "The result did not identify its committed revision"; queuePaint(); return false;
+    }
+    state.error = String(result.error || "");
+    advance();
+    return true;
+  };
+  app.prepareRefreshViews = (value, owners) => {
+    const target = revision(value);
+    if (target === null || !Array.isArray(owners)) return false;
+    const unique = [...new Set(owners.map(String))];
+    preparedViews.set(target, {owners: unique, pageKey});
+    while (preparedViews.size > 4) preparedViews.delete(preparedViews.keys().next().value);
+    if (state?.active && state.result?.outcome === "complete" && state.phase === "views"
+        && state.targetRevision !== null && target > state.targetRevision && state.pageKey === pageKey) {
+      // The request receipt remains immutable. Only its visible presentation
+      // target is replaced when a newer publication supersedes pending draws.
+      state.targetRevision = target;
+      state.presentationSuperseded = true;
+      state.error = "";
+    }
+    if (state?.active && state.targetRevision === target) { state.owners = unique; advance(); }
+    return true;
+  };
+  app.receiveRefreshViewAck = (ack) => {
+    if (!ack?.owner || !["rendered", "failed"].includes(ack.status)) return false;
+    const target = revision(ack.revision);
+    if (target === null) return false;
+    if (state?.active && (ack.request_id || null) !== (state.request?.id || null)) return false;
+    const previous = viewAcks.get(String(ack.owner));
+    if (previous && previous.pageKey === pageKey && previous.revision > target) return false;
+    viewAcks.set(String(ack.owner), {...ack, revision: target, pageKey: ack.pageKey || pageKey});
+    advance();
+    return true;
+  };
+  app.receiveStartupLayout = (ack) => {
+    if (ack) lastStartupLayout = {...ack};
+    if (!state || state.mode !== "bootstrap" || !ack) return false;
+    if (ack.server_boot_id !== state.bootId || ack.startup_attempt_id !== state.startupAttemptId) return false;
+    if (ack.status === "failed") { terminal("failed", "Initial dashboard rendering failed", String(ack.message || "Render failed")); return true; }
+    if (ack.status !== "rendered" || revision(ack.revision) !== state.targetRevision) return false;
+    state.layoutReady = true; advance(); return true;
+  };
+  app.noteStartupLayoutReady = () => {
+    if (!app.canPublishDataRevision() || !lastProgress?.startup_attempt_id || !lastProgress.server_boot_id) return false;
+    return app.receiveStartupLayout({
+      startup_attempt_id: lastProgress.startup_attempt_id,
+      server_boot_id: lastProgress.server_boot_id,
+      revision: revision(lastProgress.revision), status: "rendered",
+    });
+  };
+  app.refreshPageChanged = (nextPage, owners) => {
+    if (!Array.isArray(owners)) return false;
+    if (pageKey === String(nextPage)) return true;
+    pageKey = String(nextPage);
+    viewAcks.clear(); preparedViews.clear();
+    if (state?.active) {
+      state.pageKey = pageKey;
+      state.owners = null;
+      if (state.targetRevision !== null) app.prepareRefreshViews(state.targetRevision, owners);
+    }
+    queuePaint(); return true;
+  };
+  app.startRefreshProgress = (mode) => {
+    // Native warm actions are owned by beginRefreshRequest's atomic dispatcher.
+    if (mode !== "bootstrap") { queuePaint(); return; }
+    if (!state?.active || state.mode !== "bootstrap") {
+      const retryBaseline = state?.mode === "bootstrap" && state.phase === "failed"
+        ? state.startupAttemptId || lastProgress?.startup_attempt_id || null : null;
+      state = newState("bootstrap");
+      state.retryBaseline = retryBaseline;
+    }
+    queuePaint(); void requestStart(true); void poll(true);
+  };
+  app.syncRefreshLifecycleNodes = () => {
+    for (const element of document.querySelectorAll("[data-refresh-view-ack]")) {
+      try { app.receiveRefreshViewAck(JSON.parse(element.dataset.refreshViewAck)); } catch (_) { /* Partial DOM writes wait for the next observation. */ }
+    }
+    offerRevision(node("refresh-commit-revision")?.textContent);
+    queuePaint();
+  };
+  app.refreshDiagnostics = () => state ? {
+    active: state.active, phase: state.phase, request_id: state.request?.id || null,
+    attempt_id: state.attemptId, server_boot_id: state.bootId, startup_attempt_id: state.startupAttemptId,
+    target_revision: state.targetRevision,
+    callback_pending: state.callbackPending, layout_ready: state.layoutReady,
+    participants_established: state.owners !== null, pending_views: pendingOwners(),
+    last_progress_age_ms: lastSuccessAt ? Date.now() - lastSuccessAt : null,
+  } : null;
+  const clock = setInterval(() => {
+    if (stopped) return;
+    if (!state && node("refresh-progress")?.dataset.initialLoad === "true") app.startRefreshProgress("bootstrap");
+    app.syncRefreshLifecycleNodes(); void poll();
+  }, POLL_MS);
+  const installObserver = () => {
+    if (!document.body || observer || stopped) return;
+    observer = new MutationObserver((changes) => {
+      if (changes.some((change) => change.type === "childList" || change.attributeName === "data-refresh-view-ack")) app.syncRefreshLifecycleNodes();
+    });
+    observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["data-refresh-view-ack"]});
+    app.syncRefreshLifecycleNodes();
+  };
+  app.stopRefreshLifecycle = () => {
+    stopped = true; clearInterval(clock); observer?.disconnect(); observer = null;
+    app.setGlobalLoaderVisible?.(false);
+  };
+  if (document.body) installObserver();
+  else document.addEventListener("DOMContentLoaded", installObserver, {once: true});
 })();

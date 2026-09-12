@@ -194,10 +194,10 @@ def tenor_axis_order(
 
     chosen: dict[str, float] = {}
     ambiguous = bool((~finite).any())
-    for label in labels.drop_duplicates():
-        label_orders = orders.loc[labels.eq(label) & finite]
-        if label_orders.empty:
-            continue
+    grouped_orders = orders.loc[finite].groupby(
+        labels.loc[finite], sort=False
+    )
+    for label, label_orders in grouped_orders:
         counts = label_orders.value_counts()
         largest = counts.max()
         candidates = sorted(float(value) for value in counts[counts.eq(largest)].index)
@@ -372,13 +372,6 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
             frame[column] = "Unspecified"
         else:
             frame[column] = frame[column].fillna("Unspecified").astype(str)
-    # Portfolio remains part of the prepared position data for P&L, Stock,
-    # history, and diagnostics even though Risk has no Portfolio filter or
-    # grouping. Keep its historical string contract (including named books).
-    if "portfolio" not in frame:
-        frame["portfolio"] = "Unspecified"
-    else:
-        frame["portfolio"] = frame["portfolio"].fillna("Unspecified").astype(str)
     for column in META_COLUMNS:
         frame[column] = frame[column].fillna("").astype(str)
 
@@ -456,10 +449,6 @@ def prepare_risk_data(data: pd.DataFrame) -> pd.DataFrame:
             *(["source type"] if "source type" in frame else []),
             "risk type",
             *ALT_GROUPS,
-            # P&L and history reuse this prepared frame and still require the
-            # position identity. Risk has no Portfolio control or grouping,
-            # so its table group-bys aggregate across this retained column.
-            "portfolio",
             *VIEW_DIMENSIONS,
             *META_COLUMNS,
             *NUMERIC_COLUMNS,

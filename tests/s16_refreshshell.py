@@ -204,15 +204,14 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
 
 
 def test_clear_cache_reuses_the_refresh_progress_lifecycle() -> None:
-    assets = Path(__file__).parents[1] / "assets"
-    source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(assets.glob("*.js"))
-    )
-
-    assert 'refreshTrigger.id === "clear-cache-button" ? "reset"' in source
-    assert 'clearButton.textContent = "Resetting…"' in source
-    assert '"Clear Cache · Retry"' in source
-    assert '"Ready · Clear cached views and reload Risk and P&L"' in source
+    project = Path(__file__).parents[1]
+    source = (project / "assets/s12_refresh.js").read_text(encoding="utf-8")
+    dispatcher = (project / "cube/pages/risk/s15_refresh.py").read_text(encoding="utf-8")
+    assert '"clear-cache-button": "reset"' in source
+    assert "['clear-cache-button', clear, 'reset']" in dispatcher
+    assert "assets.beginRefreshRequest(request)" in dispatcher
+    assert "assets.receiveRefreshResult(receipt)" in dispatcher
+    assert "Clear Cache · Retry" not in source  # the original control stays clean
 
 
 def test_clear_cache_callback_publishes_generation_and_clears_date_state(
@@ -239,15 +238,17 @@ def test_clear_cache_callback_publishes_generation_and_clears_date_state(
         ),
     )
 
-    result = callback(0, 0, 0, 0, 0, 1, 0, 0, {}, True, 4, 0)
+    result = callback({"id": "clear-1", "trigger": "clear-cache-button", "count": 1}, {}, True, 4, 0)
 
-    assert len(result) == 9
+    assert len(result) == 10
     assert result[0] == manager.health.revision
     assert result[1] == 5
     assert str(result[2]).startswith("Ready · Cache cleared")
     assert result[3:5] == ("", "error-log")
     assert result[5:7] == ({}, None)
-    assert result[7:] == (1, 1)
+    assert result[7:9] == (1, 1)
+    assert result[9]["request_id"] == "clear-1"
+    assert result[9]["outcome"] == "complete"
     assert manager.snapshot.forced_dates == {}
     assert manager.snapshot.forced_view_date is None
 
@@ -281,12 +282,10 @@ def test_remounted_zero_click_controls_do_not_start_another_refresh(
                 triggered_prop_ids={f"{component_id}.n_clicks": component_id},
             ),
         )
-        try:
-            callback(0, 0, 0, 0, 0, 0, 0, 0, {}, True, 0, 0)
-        except PreventUpdate:
-            pass
-        else:  # pragma: no cover - explicit failure keeps the callback contract clear
-            raise AssertionError(f"{component_id} accepted a zero-click mount event")
+        result = callback({"id": "mount-" + component_id, "trigger": component_id, "count": 0}, {}, True, 0, 0)
+        assert result[0] is no_update
+        assert result[9]["outcome"] == "rejected"
+        assert result[9]["request_id"] == "mount-" + component_id
 
     assert manager.health.revision == baseline_revision
 
@@ -308,7 +307,7 @@ def test_positive_pl_click_still_runs_one_manual_refresh(monkeypatch) -> None:
         ),
     )
 
-    result = callback(0, 0, 1, 0, 0, 0, 0, 0, {}, True, 0, 0)
+    result = callback({"id": "pl-1", "trigger": "refresh-pl-button", "count": 1}, {}, True, 0, 0)
 
     assert manager.health.revision == baseline_revision + 1
     assert manager.snapshot.refresh_reason == "manual P&L"
@@ -343,7 +342,7 @@ def test_manual_pl_callback_copies_only_the_new_dashboard_frame(monkeypatch) -> 
         ),
     )
 
-    result = callback(0, 0, 1, 0, 0, 0, 0, 0, {}, True, 0, 0)
+    result = callback({"id": "pl-1", "trigger": "refresh-pl-button", "count": 1}, {}, True, 0, 0)
 
     assert result[0] == manager.health.revision
     assert reads == ["dashboard_frame"]
@@ -383,12 +382,10 @@ def test_browser_auto_ticks_coalesce_after_another_browser_auto_attempt(
         ),
     )
 
-    try:
-        callback(1, 0, 0, 0, 0, 0, 0, 0, {}, True, 0, 0)
-    except PreventUpdate:
-        pass
-    else:  # pragma: no cover - explicit failure documents the callback contract
-        raise AssertionError("a recent automatic refresh was not coalesced")
+    result = callback({"id": "auto-1", "trigger": "auto-refresh-interval", "count": 1}, {}, True, 0, 0)
+    assert all(value is no_update for value in result[:9])
+    assert result[9]["outcome"] == "no_work"
+    assert result[9]["request_id"] == "auto-1"
 
     assert manager.health.revision == baseline_revision
 
@@ -488,14 +485,16 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         ("pnl-initial-retry-enabled-store", "data"),
         ("pnl-page", "id"),
     }
+    dispatcher = _callback_for_output(app, "refresh-action-request", "data")
+    assert refresh_callback["inputs"] == [{"id": "refresh-action-request", "property": "data"}]
     force_apply = next(
         item
-        for item in refresh_callback["inputs"]
+        for item in dispatcher["inputs"]
         if item["id"] == "force-risk-apply-button"
     )
     assert force_apply.get("allow_optional") is True
     assert ("clear-cache-button", "n_clicks") in {
-        (item["id"], item["property"]) for item in refresh_callback["inputs"]
+        (item["id"], item["property"]) for item in dispatcher["inputs"]
     }
     assert refresh_registration["running"]["running"]["refresh-busy-store.data"] is True
     assert (
@@ -778,37 +777,22 @@ def test_operating_dates_stay_neutral_before_the_cold_start_commits() -> None:
 
 
 def test_browser_defers_revision_until_a_financial_page_can_consume_it() -> None:
-    assets = Path(__file__).parents[1] / "assets"
-    source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(assets.glob("*.js"))
-    )
-    assert 'document.getElementById("shared-refresh-shell")' in source
-    assert "shell.getClientRects().length > 0" in source
-    assert "running && !refreshProgressState && lifecycleVisible" in source
-    assert "const financialPageCanConsumeRevision" in source
-    assert 'document.getElementById("cube-page-container")' in source
-    assert 'document.getElementById("risk-type-tabs")' in source
-    assert 'document.getElementById("pnl-page-container")' in source
-    assert "if (!financialPageCanConsumeRevision()) return false;" in source
-    assert "syncCommittedDataRevision(lastBackendProgress);" in source
-    trigger_start = source.index("const refreshTrigger = event.target.closest")
-    trigger_end = source.index("const header = event.target.closest", trigger_start)
-    trigger_source = source[trigger_start:trigger_end]
-    for selector in (
-        "#refresh-portfolios-button",
-        "#refresh-pl-button",
-        "#reload-risk-button",
-        "#commo-market-toggle",
-        "#risk-checker-toggle",
-        "#force-risk-apply-button",
-    ):
-        assert selector in trigger_source
-    assert "#auto-refresh-toggle" not in trigger_source
-    assert '"commo"' in trigger_source
-    assert '"checker"' in trigger_source
-    assert '"dates"' in trigger_source
-    assert "Updating Commo market" in source
-    assert "Updating RiskChecker" in source
-    assert "Applying date settings" in source
-    assert '["force-risk-apply-button", "force-risk-cancel-button"]' in source
-    assert "setProps(id, { disabled: true })" in source
+    project = Path(__file__).parents[1]
+    publisher = (project / "assets/refresh_views.js").read_text(encoding="utf-8")
+    hero = (project / "assets/s12_refresh.js").read_text(encoding="utf-8")
+    # Mounted pages consume revisions independently of hero completion. This
+    # breaks the former circle: new views need the revision before they can ack.
+    assert "if (!assets || !pageMounted()) return noUpdate" in publisher
+    assert "assets.prepareRefreshViews(revision, owners)" in publisher
+    assert "return revision > current ? revision : noUpdate" in publisher
+    assert "state.callbackPending" not in publisher
+    assert 'node("risk-type-tabs")' in publisher
+    assert 'node("pnl-page-container")' in publisher
+    assert "ack.request_id || null" in publisher
+    assert "offerRevision(target)" in hero
+    app = build_app(refresh_manager=build_production_refresh_manager())
+    owner = _callback_for_output(app, "data-revision-store", "data")
+    assert owner["inputs"] == [{"id": "committed-revision-poll", "property": "n_intervals"}]
+    assert ("refresh-commit-revision", "children") in {
+        (item["id"], item["property"]) for item in owner["state"]
+    }

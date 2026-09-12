@@ -30,6 +30,7 @@ def test_shared_ui_has_one_ordered_v5_tree() -> None:
         "s02_aggregation.py",
         "s03_filters.py",
         "s04_components.py",
+        "s08_refresh_views.py",
     }
 
 
@@ -37,6 +38,7 @@ def test_v4_ui_never_reaches_into_pages_or_data_sources() -> None:
     for path in UI_PACKAGE.glob("*.py"):
         imported_roots = {module.partition(".")[0] for module in _imports(path)}
         assert not (imported_roots & FORBIDDEN_ROOTS), path.relative_to(PROJECT)
+        assert not any(module.startswith(("cube.pages.", "cube.connectors.")) for module in _imports(path)), path.relative_to(PROJECT)
 
 
 def test_completed_v4_owners_do_not_use_removed_root_packages() -> None:

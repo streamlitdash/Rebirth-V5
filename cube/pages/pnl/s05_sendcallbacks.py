@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from cube.ui.s08_refresh_views import refresh_view
+
 from collections.abc import Mapping, Sequence
 from threading import Lock
 
 import pandas as pd
-from dash import Dash, Input, Output, Patch, State, ctx, no_update
+from dash import Dash, Input, Output, Patch, State, ctx, html, no_update
 from dash.exceptions import PreventUpdate
 
 from cube.domain.s08_pnl import (
@@ -316,6 +318,7 @@ def register_pl_send_callbacks(
             Output(draft_store_id, "data"),
             Output(active_scope_store_id, "data"),
             Output(f"{table_id}-data-status", "children"),
+            Output(f"refresh-view-pnl-editor-{section}", "data"),
             Input("pl-send-effective-query-store", "data"),
             Input(filter_id, "value"),
             Input(add_id, "n_clicks"),
@@ -324,12 +327,14 @@ def register_pl_send_callbacks(
             State(table_id, "data_previous"),
             State(draft_store_id, "data"),
             State(active_scope_store_id, "data"),
+            State("refresh-action-request", "data"),
             running=[
                 (Output(add_id, "disabled"), True, False),
                 (Output(save_id, "disabled"), True, False),
                 (Output(send_id, "disabled"), True, False),
             ],
         )
+        @refresh_view(f"pnl-editor-{section}", revision_arg='query', outputs=6, content=[0, 5], stamp=[5])
         def control_editor(
             query,
             selected_scope,
@@ -520,7 +525,7 @@ def register_pl_send_callbacks(
                     no_update,
                     no_update,
                     no_update,
-                    f"Could not prepare {scope_column} rows: {exc}",
+                    html.Span(f"Could not prepare {scope_column} rows: {exc}", role="alert"),
                 )
 
         app.clientside_callback(

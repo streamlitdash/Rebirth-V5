@@ -806,7 +806,11 @@ def build_layout(
                                                 ),
                                                 dcc.RadioItems(
                                                     id="aggregate-pl-dimension",
-                                                    options=view_dimension_options,
+                                                    options=[
+                                                        option
+                                                        for option in view_dimension_options
+                                                        if option["value"] != "portfolio"
+                                                    ],
                                                     value=DEFAULT_VIEW_DIMENSION,
                                                     inline=True,
                                                     className="aggregate-pl-selector",
@@ -1196,6 +1200,23 @@ def build_layout(
                             ),
                         ],
                         className="detail-plot-controls",
+                    ),
+                    html.Div(
+                        [
+                            html.Button(
+                                "Open underlying in Data",
+                                id="risk-explorer-open-data",
+                                n_clicks=0,
+                                disabled=True,
+                                className="secondary-button",
+                            ),
+                            html.Small(
+                                " Opens the entire underlying under your page filters. "
+                                "Expanded groups and individual cells are not separate history selections."
+                            ),
+                            html.Span(id="risk-explorer-data-status", role="status"),
+                        ],
+                        className="detail-history-action",
                     ),
                     # Preserve the current detail while a new cell/tab context
                     # is resolved. A quiet non-animated loading label is

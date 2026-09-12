@@ -17,12 +17,13 @@ from cube.history import (
     HISTORY_RAW_ROW_BUDGET,
     ArchiveHistoryRepository,
     HistoryBundle,
+    HistoryCatalogEntry,
+    HistoryIdentityCatalog,
     HistoryHandoff,
     HistoryQuery,
     HistoryValidationError,
 )
 from .s01_selection import (
-    catalog_key_for_handoff,
     direct_history_handoff,
     risk_greek_options,
     risk_type_options,
@@ -127,9 +128,6 @@ def serialize_history_bundle(bundle: HistoryBundle) -> dict[str, object]:
         )
     metric_column = bundle.metric_column
     browser_values = bundle.values
-    if bundle.query.handoff.kind == "market" and metric_column == "Current":
-        metric_column = "Official"
-        browser_values = browser_values.rename(columns={"Current": metric_column})
     values, _columns = _frame_payload(
         browser_values,
         date_column=bundle.date_column,
@@ -187,11 +185,11 @@ def history_breadcrumb(raw_handoff: object) -> str:
         return "No history identity selected"
     identity = handoff.identity
     mode = "Reported" if identity.identity_mode == "reported" else "Underlying"
-    series = "Risk" if handoff.kind == "risk" else "Official"
+    series = "Risk" if handoff.kind == "risk" else "Current"
     sources = ", ".join(identity.source_types)
     return (
-        f"{handoff.kind.title()} › {identity.risk_type} › {identity.risk_greek} "
-        f"› {identity.underlying} · {series} · {mode} · {sources}"
+        f"{handoff.kind.title()}  >  {identity.risk_type}  >  {identity.risk_greek} "
+        f" >  {identity.underlying}  |  {series}  |  {mode}  |  {sources}"
     )
 
 
@@ -246,6 +244,7 @@ def query_history_bundle(
     raw_request: object,
     cache_state: object,
     reset_generation: object,
+    refresh_manager=None,
 ) -> tuple[dict[str, object] | None, str]:
     """Validate one browser request and perform exactly one repository read."""
 
@@ -265,11 +264,15 @@ def query_history_bundle(
             "or Quick Market."
         )
     if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
-        return None, "Preparing the archive index…"
-    bundle = repository.read(query)
+        return None, "Preparing the archive index..."
+    revision, rows = (
+        refresh_manager.read_data_history(handoff)
+        if refresh_manager is not None else (0, pd.DataFrame())
+    )
+    bundle = repository.read(query, current_rows=rows, current_revision=revision)
     payload = serialize_history_bundle(bundle)
     if bundle.empty:
-        status = "No archived rows match this exact identity and period."
+        status = "No current or archived rows match this identity and period."
     else:
         status = (
             f"Loaded {len(bundle.dates):,} dates and {len(bundle.raw_rows):,} exact "
@@ -306,541 +309,220 @@ def poll_archive_generation(
 def load_archive_catalog(
     repository: ArchiveHistoryRepository,
     cache_state: object,
+    refresh_manager=None,
 ) -> tuple[dict[str, object] | None, str]:
-    """Load the tiny direct-selector catalog after the Data route is mounted."""
-
+    """Combine archive identities with compact committed current choices."""
     if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
-        return None, "Preparing archive choices…"
-    catalog = repository.catalog()
-    risk_count = sum(entry.kind == "risk" for entry in catalog.entries)
-    market_count = sum(entry.kind == "market" for entry in catalog.entries)
-    if not catalog.entries:
-        status = (
-            "No completed schema-v4 Risk or Market archive identities are available."
-        )
-    else:
-        status = (
-            f"Archive ready: {risk_count:,} Risk and {market_count:,} Market choices."
-        )
+        return None, "Preparing Data choices..."
+    archive = repository.catalog()
+    entries = {entry.key: entry for entry in archive.entries}
+    revision = 0
+    if refresh_manager is not None:
+        for resolved in refresh_manager.data_history_identities():
+            handoff = HistoryHandoff.from_resolved_identity(
+                resolved, metric="risk" if resolved.kind == "risk" else "current"
+            )
+            entry = HistoryCatalogEntry(
+                kind=handoff.kind, identity=handoff.identity,
+                source_revision=handoff.source_revision,
+                snapshot_date=handoff.snapshot_date,
+            )
+            entries[entry.key] = entry
+            revision = max(revision, entry.source_revision)
+    ordered = tuple(sorted(entries.values(), key=lambda entry: (
+        entry.kind, entry.identity.risk_type, entry.identity.risk_greek,
+        entry.identity.underlying.casefold(), entry.identity.identity_mode,
+        entry.identity.source_types,
+    )))
+    catalog = HistoryIdentityCatalog(
+        generation=f"{archive.generation}:current:{revision}", entries=ordered
+    )
+    status = (
+        f"Ready: {len(ordered):,} current/archive identity choices."
+        if ordered else "No choices yet. Wait for the initial data refresh to finish."
+    )
     return catalog.to_mapping(), status
 
 
-def register_callbacks(
-    app: Dash,
-    repository: ArchiveHistoryRepository,
-) -> None:
-    """Register the Data page's lazy query and isolated playback graph."""
+def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_manager=None) -> None:
+    """Register independent search metadata, one selection and one history load."""
+    from .s04_workspace import DataChoices, describe, encode_choice, selection_for_handoff, workspace_request
+    choices = DataChoices(refresh_manager, repository)
 
     @app.callback(
-        Output("data-history-kind-tabs", "value"),
-        Input("data-history-handoff-store", "data"),
-        Input("data-history-request-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
+        Output("data-current-choices", "data"),
+        Input("refresh-commit-revision", "children"),
+        Input("reset-generation-store", "data"),
     )
-    def sync_quick_handoff(raw_handoff, raw_request, consumed_nonce):
+    def current_choices(_revision, reset):
+        return choices.metadata(reset)
+
+    @app.callback(
+        Output("data-archive-choices", "data"), Output("data-archive-status", "children"),
+        Input("data-history-generation-interval", "n_intervals"),
+        Input("clear-cache-complete-store", "data"),
+    )
+    def archive_choices(_tick, reset):
         try:
-            handoff = _requested_history_handoff(raw_request)
-        except (HistoryValidationError, TypeError, ValueError):
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-            except (HistoryValidationError, TypeError, ValueError):
-                return no_update
-        return handoff.kind
+            repository.clear_for_reset_generation(int(reset or 0))
+            metadata = choices.archive_metadata()
+            return metadata, f"{len(metadata['choices']):,} archived series available."
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return {"choices": []}, f"Archive unavailable: {error}. Current data is still available."
 
-    @app.callback(
-        Output("data-identity-mode", "value"),
-        Output("data-identity-mode", "disabled"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-history-handoff-store", "data"),
-        Input("data-history-request-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def configure_identity_mode(
-        kind,
-        raw_handoff,
-        raw_request,
-        consumed_nonce,
-    ):
-        selected_kind = str(kind or "risk").strip().casefold()
-        if selected_kind == "market":
-            return "underlying", True
-        try:
-            handoff = _requested_history_handoff(raw_request)
-        except (HistoryValidationError, TypeError, ValueError):
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-            except (HistoryValidationError, TypeError, ValueError):
-                handoff = None
-        preferred = (
-            handoff.identity.identity_mode
-            if handoff is not None and handoff.kind == selected_kind
-            else "reported"
-        )
-        return (
-            preferred if preferred in {"reported", "underlying"} else "reported"
-        ), False
-
-    @app.callback(
-        Output("data-identity-breadcrumb", "children"),
-        Input("data-history-request-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-    )
-    def configure_request(raw_request, kind):
-        if isinstance(raw_request, Mapping) and "handoff" in raw_request:
-            try:
-                handoff = HistoryHandoff.from_mapping(raw_request["handoff"])
-                if handoff.kind == str(kind or "risk").strip().casefold():
-                    return history_breadcrumb(handoff.to_mapping())
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-        return "Choose an exact identity, then load history"
-
-    @app.callback(
-        Output("data-history-catalog-store", "data"),
-        Output("data-catalog-status", "children"),
-        Input("data-history-cache-state-store", "data"),
-        State("data-history-catalog-store", "data"),
-    )
-    def refresh_archive_catalog(cache_state, current):
-        if not isinstance(cache_state, Mapping) or not cache_state.get("generation"):
-            return None, "Preparing archive choices…"
-        if (
-            isinstance(current, Mapping)
-            and current.get("generation") == cache_state.get("generation")
-            and isinstance(current.get("entries"), list)
-        ):
-            return no_update, no_update
-        try:
-            return load_archive_catalog(repository, cache_state)
-        except (OSError, HistoryValidationError, TypeError, ValueError) as error:
-            return None, f"Archive choices failed: {error}"
-
-    @app.callback(
-        Output("data-risk-type", "options"),
-        Output("data-risk-type", "value"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-history-request-store", "data"),
-        State("data-risk-type", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def choose_risk_type(
-        raw_catalog,
-        kind,
-        identity_mode,
-        raw_request,
-        current,
-        raw_handoff,
-        consumed_nonce,
-    ):
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if (
-                    handoff.kind == str(kind or "risk").casefold()
-                    and handoff.identity.identity_mode
-                    == str(identity_mode or "reported").casefold()
-                ):
-                    value = handoff.identity.risk_type
-                    return [{"label": value, "value": value}], value
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None
-        try:
-            options = risk_type_options(raw_catalog, kind, identity_mode)
-            preferred = None
-            try:
-                handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                except (HistoryValidationError, TypeError, ValueError):
-                    handoff = None
-            if (
-                handoff is not None
-                and handoff.kind == str(kind or "risk").casefold()
-                and handoff.identity.identity_mode
-                == str(identity_mode or "reported").casefold()
-            ):
-                preferred = handoff.identity.risk_type
-            return options, selected_value(options, current, preferred)
-        except (HistoryValidationError, TypeError, ValueError):
-            return [], None
-
-    @app.callback(
-        Output("data-risk-greek", "options"),
-        Output("data-risk-greek", "value"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-risk-type", "value"),
-        Input("data-history-request-store", "data"),
-        State("data-risk-greek", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
-    )
-    def choose_risk_greek(
-        raw_catalog,
-        kind,
-        identity_mode,
-        risk_type,
-        raw_request,
-        current,
-        raw_handoff,
-        consumed_nonce,
-    ):
-        if risk_type is None:
-            return [], None
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if handoff.kind == str(
-                    kind or "risk"
-                ).casefold() and handoff.identity.risk_type == str(risk_type):
-                    value = handoff.identity.risk_greek
-                    return [{"label": value, "value": value}], value
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None
-        try:
-            options = risk_greek_options(
-                raw_catalog,
-                kind,
-                identity_mode,
-                risk_type,
-            )
-            preferred = None
-            try:
-                handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                except (HistoryValidationError, TypeError, ValueError):
-                    handoff = None
-            if (
-                handoff is not None
-                and handoff.kind == str(kind or "risk").casefold()
-                and handoff.identity.identity_mode
-                == str(identity_mode or "reported").casefold()
-                and handoff.identity.risk_type == str(risk_type)
-            ):
-                preferred = handoff.identity.risk_greek
-            return options, selected_value(options, current, preferred)
-        except (HistoryValidationError, TypeError, ValueError):
-            return [], None
-
-    @app.callback(
-        Output("data-underlying", "options"),
-        Output("data-underlying", "value"),
-        Output("data-load-history-button", "disabled"),
-        Input("data-history-catalog-store", "data"),
-        Input("data-history-kind-tabs", "value"),
-        Input("data-identity-mode", "value"),
-        Input("data-risk-type", "value"),
-        Input("data-risk-greek", "value"),
-        Input("data-history-request-store", "data"),
+    app.clientside_callback(
+        ClientsideFunction(namespace="cubeData", function_name="searchCurrent"),
+        Output("data-underlying", "options"), Output("data-search-status", "children"),
+        Input("data-underlying", "search_value"), Input("data-selected-option", "data"),
+        Input("committed-revision-poll", "n_intervals"),
+        State("data-current-choices", "data"),
+        State("data-archive-choices", "data"),
         State("data-underlying", "value"),
-        State("data-history-handoff-store", "data"),
-        State("data-history-handoff-consumed-store", "data"),
     )
-    def choose_underlying(
-        raw_catalog,
-        kind,
-        identity_mode,
-        risk_type,
-        risk_greek,
-        raw_request,
-        current,
-        raw_handoff,
-        consumed_nonce,
-    ):
-        if risk_type is None or risk_greek is None:
-            return [], None, True
-        if raw_catalog is None:
-            try:
-                handoff = _pending_history_handoff(raw_handoff, consumed_nonce)
-                if (
-                    handoff.kind == str(kind or "risk").casefold()
-                    and handoff.identity.risk_type == str(risk_type)
-                    and handoff.identity.risk_greek == str(risk_greek)
-                ):
-                    return (
-                        [
-                            {
-                                "label": handoff.identity.underlying,
-                                "value": QUICK_HANDOFF_ENTRY_KEY,
-                            }
-                        ],
-                        QUICK_HANDOFF_ENTRY_KEY,
-                        False,
-                    )
-            except (HistoryValidationError, TypeError, ValueError):
-                pass
-            return [], None, True
+
+    @app.callback(
+        Output("data-selection-store", "data"), Output("data-underlying", "value"),
+        Output("data-selected-option", "data"), Output("data-market-choice", "options"),
+        Output("data-market-choice", "value"), Output("data-history-kind-tabs", "value"),
+        Output("data-history-handoff-consumed-store", "data"),
+        Output("data-selection-status", "children"),
+        Output("data-period", "value"), Output("data-custom-range", "start_date"),
+        Output("data-custom-range", "end_date"),
+        Input("data-underlying", "value"), Input("data-history-handoff-store", "data"),
+        Input("reset-generation-store", "data"),
+        State("data-selection-store", "data"), State("data-history-kind-tabs", "value"),
+        State("data-history-handoff-consumed-store", "data"),
+        State("data-history-request-store", "data"),
+    )
+    def choose_identity(token, raw_handoff, reset, selected, mode, consumed, saved):
+        trigger = ctx.triggered_id
+        unchanged = (no_update,) * 11
+        restored = False
         try:
-            options = underlying_options(
-                raw_catalog,
-                kind,
-                identity_mode,
-                risk_type,
-                risk_greek,
-            )
-            preferred = None
-            try:
-                selected_handoff = _requested_history_handoff(raw_request)
-            except (HistoryValidationError, TypeError, ValueError):
-                try:
-                    selected_handoff = _pending_history_handoff(
-                        raw_handoff,
-                        consumed_nonce,
-                    )
-                except (HistoryValidationError, TypeError, ValueError):
-                    selected_handoff = None
-            if (
-                selected_handoff is not None
-                and selected_handoff.kind == str(kind or "risk").casefold()
-                and selected_handoff.identity.identity_mode
-                == str(identity_mode or "reported").casefold()
-                and selected_handoff.identity.risk_type == str(risk_type)
-                and selected_handoff.identity.risk_greek == str(risk_greek)
-            ):
-                preferred = catalog_key_for_handoff(
-                    raw_catalog,
-                    selected_handoff.to_mapping(),
-                )
-            selected = selected_value(options, current, preferred)
-            return options, selected, selected is None
-        except (HistoryValidationError, TypeError, ValueError):
-            return [], None, True
+            nonce = _stored_handoff_nonce(raw_handoff) if raw_handoff else ""
+            incoming = raw_handoff and nonce != str(consumed or "") and trigger in {None, "data-history-handoff-store"}
+            if incoming:
+                handoff = replace(_stored_history_handoff(raw_handoff), reset_generation=int(reset or 0))
+                token = encode_choice("handoff", handoff.to_mapping())
+                mode = handoff.kind
+            elif not token and isinstance(saved, Mapping) and saved.get("selection"):
+                selected = saved["selection"]
+                token = selected["token"]
+                mode = saved.get("display_mode", "risk")
+                handoff = choices.resolve(token, reset)
+                restored = True
+            elif token:
+                if selected and selected.get("token") == token and trigger != "reset-generation-store":
+                    return unchanged
+                handoff = choices.resolve(token, reset)
+            else:
+                return None, None, None, [], None, no_update, no_update, "Choose an underlying above.", no_update, no_update, no_update
+            selection = selection_for_handoff(handoff, refresh_manager, repository)
+            selection["token"] = token
+            options = [{"label": describe(HistoryHandoff.from_mapping(raw)), "value": str(index)}
+                       for index, raw in enumerate(selection["markets"])]
+            label = f"{handoff.kind.title()}  |  {describe(handoff)}"
+            scope = ""
+            if handoff.filter_view and handoff.filter_view.filters:
+                scope = "Risk Explorer filters are preserved. Market quotes use their raw identity."
+            market_value = "0" if options else None
+            if restored and options:
+                saved_market = saved.get("handoffs", {}).get("market", {}).get("identity")
+                market_value = next((str(index) for index, market in enumerate(selection["markets"])
+                                     if market["identity"] == saved_market), market_value)
+            period_values = (saved.get("period", "all"), saved.get("start_date"), saved.get("end_date")) if restored else (no_update,) * 3
+            return (selection, token, {"label": label, "value": token}, options, market_value,
+                    mode or handoff.kind, (nonce if incoming else no_update), scope, *period_values)
+        except (OSError, RuntimeError, LookupError, TypeError, ValueError) as error:
+            return (None, no_update, no_update, [], None, no_update, no_update,
+                    f"Could not select this identity: {error}", no_update, no_update, no_update)
 
     @app.callback(
         Output("data-history-request-store", "data"),
-        Output("data-history-handoff-consumed-store", "data"),
-        Input("data-history-handoff-store", "data"),
-        Input("data-load-history-button", "n_clicks", allow_optional=True),
+        Output("data-identity-breadcrumb", "children"),
+        Output("data-market-choice-control", "hidden"), Output("data-custom-range-control", "hidden"),
+        Input("data-selection-store", "data"), Input("data-history-kind-tabs", "value"),
+        Input("data-market-choice", "value"), Input("data-period", "value"),
+        Input("data-custom-range", "start_date"), Input("data-custom-range", "end_date"),
         Input("reset-generation-store", "data"),
-        State("data-history-kind-tabs", "value", allow_optional=True),
-        State("data-history-catalog-store", "data", allow_optional=True),
-        State("data-underlying", "value", allow_optional=True),
-        State("data-period", "value", allow_optional=True),
-        State("data-custom-range", "start_date", allow_optional=True),
-        State("data-custom-range", "end_date", allow_optional=True),
-        State("data-history-request-store", "data", allow_optional=True),
-        State("data-history-handoff-consumed-store", "data"),
     )
-    def choose_history_request(
-        raw_handoff,
-        load_clicks,
-        reset_generation,
-        kind,
-        raw_catalog,
-        entry_key,
-        period,
-        start_date,
-        end_date,
-        current_request,
-        consumed_nonce,
-    ):
-        triggered = ctx.triggered_id
-        if triggered is None and raw_handoff is None:
-            return no_update, no_update
-        if (
-            triggered == "data-load-history-button"
-            and int(load_clicks or 0) <= 0
-            and raw_handoff is None
-        ):
-            return no_update, no_update
-        if triggered == "data-history-handoff-store":
-            if raw_handoff is None:
-                return no_update, no_update
+    def choose_request(selection, mode, market_index, period, start, end, reset):
+        show_market = bool(selection and len(selection.get("markets", [])) > 1 and mode in {"market", "both"})
+        try:
+            request = workspace_request(selection, mode, market_index, period, start, end, reset)
+            if request is not None:
+                request["selection"] = selection
+            label = selection.get("label", "") if selection else ""
+            return request, label, not show_market, period != "custom"
+        except (TypeError, ValueError) as error:
+            return {"error": str(error), "display_mode": mode}, "Choose a valid period.", not show_market, period != "custom"
+
+    @app.callback(
+        Output("data-history-bundle-store", "data"), Output("data-history-status", "children"),
+        Input("data-history-request-store", "data"),
+        Input("refresh-commit-revision", "children"), Input("reset-generation-store", "data"),
+        State("refresh-action-request", "data"),
+    )
+    def load_workspace(request, _revision, reset, refresh_request):
+        receipt = {
+            "owner": "data-history", "revision": int(_revision or 0),
+            "request_id": refresh_request.get("id") if isinstance(refresh_request, Mapping) else None,
+            "status": "rendered", "message": "",
+        }
+        def finish(payload, message):
+            payload["refresh"] = receipt
+            key_parts = [receipt, payload.get("mode"), payload.get("errors"),
+                         {kind: bundle.get("key") for kind, bundle in payload["bundles"].items()}]
+            payload["key"] = hashlib.sha256(json.dumps(key_parts, sort_keys=True).encode()).hexdigest()
+            return payload, message
+        if not request:
+            return finish({"mode": "risk", "bundles": {}, "errors": {}}, "Choose an underlying; its data loads automatically.")
+        mode = request.get("display_mode", "risk")
+        payload = {"mode": mode, "bundles": {}, "errors": {}}
+        if request.get("error"):
+            receipt.update(status="failed", message=request["error"])
+            return finish(payload, request["error"])
+        messages = []
+        for kind in (["risk", "market"] if mode == "both" else [mode]):
+            handoff = request.get("handoffs", {}).get(kind)
+            if not handoff:
+                payload["errors"][kind] = "No exact Market series is available for this Risk selection."
+                continue
             try:
-                handoff_nonce = _stored_handoff_nonce(raw_handoff)
-            except (HistoryValidationError, TypeError, ValueError):
-                handoff_nonce = ""
-            if handoff_nonce and handoff_nonce == str(consumed_nonce or ""):
-                return no_update, no_update
-        try:
-            reset = int(reset_generation or 0)
-        except (TypeError, ValueError):
-            reset = 0
-        try:
-            if triggered == "data-load-history-button" and int(load_clicks or 0) > 0:
-                if entry_key == QUICK_HANDOFF_ENTRY_KEY:
-                    handoff = _stored_history_handoff(raw_handoff)
-                    if handoff.kind != str(kind or "risk").strip().casefold():
-                        raise HistoryValidationError(
-                            "Quick history identity belongs to another tab"
-                        )
-                    handoff = replace(handoff, reset_generation=reset)
-                else:
-                    handoff = direct_history_handoff(
-                        raw_catalog,
-                        entry_key,
-                        kind=kind,
-                        reset_generation=reset,
-                    )
-                return history_request_payload(
-                    handoff,
-                    period=period,
-                    start_date=start_date,
-                    end_date=end_date,
-                    request_id=f"load-{int(load_clicks or 0)}-{reset}",
-                ), no_update
-            if triggered == "reset-generation-store":
-                if current_request is None:
-                    return no_update, no_update
-                query = _request_query(current_request)
-                return history_request_payload(
-                    replace(query.handoff, reset_generation=reset),
-                    period=query.period,
-                    start_date=query.start_date,
-                    end_date=query.end_date,
-                    request_id=f"reset-{reset}",
-                ), no_update
-            handoff = _stored_history_handoff(raw_handoff)
-            nonce = _stored_handoff_nonce(raw_handoff)
-            return history_request_payload(
-                replace(handoff, reset_generation=reset),
-                period=period,
-                start_date=start_date,
-                end_date=end_date,
-                request_id=f"quick-{nonce}-{reset}",
-            ), nonce
-        except (HistoryValidationError, TypeError, ValueError) as error:
-            detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
-            return {
-                "error": detail,
-                "request_id": f"invalid-{triggered}-{int(load_clicks or 0)}-{reset}",
-            }, no_update
-
-    @app.callback(
-        Output("data-custom-range-control", "hidden"),
-        Input("data-period", "value"),
-    )
-    def show_custom_range(period):
-        return str(period or "all").casefold() != "custom"
-
-    @app.callback(
-        Output("data-history-cache-state-store", "data"),
-        Output("data-clear-status", "children"),
-        Input("data-history-generation-interval", "n_intervals"),
-        Input("clear-cache-complete-store", "data"),
-        Input("data-history-request-store", "data"),
-        State("data-history-cache-state-store", "data"),
-    )
-    def refresh_archive_generation(
-        _intervals,
-        reset_generation,
-        raw_handoff,
-        previous_state,
-    ):
-        return poll_archive_generation(
-            repository,
-            raw_handoff,
-            previous_state,
-            reset_generation,
-        )
-
-    @app.callback(
-        Output("data-history-bundle-store", "data"),
-        Output("data-history-status", "children"),
-        Input("data-history-request-store", "data"),
-        Input("data-history-cache-state-store", "data"),
-        Input("reset-generation-store", "data"),
-        running=[
-            (
-                Output("data-load-history-button", "children"),
-                "Loading history…",
-                "Load history",
-            ),
-        ],
-    )
-    def load_history(
-        raw_request,
-        cache_state,
-        reset_generation,
-    ):
-        if raw_request is None:
-            return None, "Choose an exact identity, then load its history."
-        try:
-            payload, status = query_history_bundle(
-                repository,
-                raw_request,
-                cache_state,
-                reset_generation,
-            )
-            return payload, status
-        except (OSError, HistoryValidationError, TypeError, ValueError) as error:
-            return None, f"History request failed: {error}"
+                single = {"handoff": handoff, "period": request.get("period", "all"),
+                          "start_date": request.get("start_date"), "end_date": request.get("end_date")}
+                # No archive-selector dependency: an incoming exact selection can
+                # load immediately while the separate archive label index builds.
+                bundle, status = query_history_bundle(repository, single,
+                    {"generation": "selected-query"}, reset, refresh_manager)
+                payload["bundles"][kind] = bundle
+                messages.append(f"{kind.title()}: {status}")
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                payload["errors"][kind] = str(error)
+                messages.append(f"{kind.title()}: {error}")
+                receipt.update(status="failed", message=str(error))
+        return finish(payload, " ".join(messages))
 
     app.clientside_callback(
-        ClientsideFunction(namespace="cube", function_name="dataProjectionBase"),
-        Output("data-history-projection", "options"),
-        Output("data-history-projection", "value"),
-        Output("data-history-projection", "disabled"),
-        Output("data-history-date-a", "options"),
-        Output("data-history-date-a", "value"),
-        Output("data-history-date-b", "options"),
-        Output("data-history-date-b", "value"),
-        Input("data-history-bundle-store", "data"),
-        State("data-history-projection", "value"),
-        State("data-history-date-a", "value"),
-        State("data-history-date-b", "value"),
-    )
-
-    app.clientside_callback(
-        ClientsideFunction(namespace="cube", function_name="dataProjectionSlice"),
-        Output("data-history-slice-label", "children"),
-        Output("data-history-slice", "options"),
-        Output("data-history-slice", "value"),
-        Output("data-history-slice", "disabled"),
-        Output("data-history-slice-control", "style"),
-        Output("data-history-comparison-dates", "style"),
-        Input("data-history-bundle-store", "data"),
-        Input("data-history-projection", "value"),
-        State("data-history-slice", "value"),
-    )
-
-    app.clientside_callback(
-        ClientsideFunction(namespace="cube", function_name="dataPlayback"),
-        Output("data-history-chart", "figure"),
-        Output("data-selected-table", "data"),
-        Output("data-selected-table", "columns"),
-        Output("data-player-slider", "min"),
-        Output("data-player-slider", "max"),
-        Output("data-player-slider", "marks"),
-        Output("data-player-slider", "value"),
-        Output("data-player-slider", "disabled"),
-        Output("data-player-date-pill", "children"),
-        Output("data-player-button", "children"),
-        Output("data-player-button", "disabled"),
-        Output("data-player-mode-pill", "children"),
-        Output("data-player-interval", "disabled"),
+        ClientsideFunction(namespace="cubeData", function_name="play"),
+        Output("data-risk-chart", "figure"), Output("data-market-chart", "figure"),
+        Output("data-risk-table", "data"), Output("data-risk-table", "columns"),
+        Output("data-market-table", "data"), Output("data-market-table", "columns"),
+        Output("data-risk-table", "style_data_conditional"), Output("data-market-table", "style_data_conditional"),
+        Output("data-risk-panel", "style"), Output("data-market-panel", "style"),
+        Output("data-risk-title", "children"), Output("data-market-title", "children"),
+        Output("data-player-slider", "max"), Output("data-player-slider", "marks"),
+        Output("data-player-slider", "value"), Output("data-player-slider", "disabled"),
+        Output("data-player-date-pill", "children"), Output("data-player-button", "children"),
+        Output("data-player-button", "disabled"), Output("data-player-interval", "disabled"),
         Output("data-player-state-store", "data"),
-        Output("data-player-controls", "style"),
-        Input("data-history-bundle-store", "data"),
-        Input("data-history-projection", "value"),
-        Input("data-history-slice", "value"),
-        Input("data-history-date-a", "value"),
-        Input("data-history-date-b", "value"),
-        Input("data-player-button", "n_clicks"),
-        Input("data-player-interval", "n_intervals"),
-        Input("data-player-slider", "value"),
-        Input("reset-generation-store", "data"),
-        Input("data-history-cache-state-store", "data"),
-        Input("data-player-visibility-store", "data"),
-        State("data-player-state-store", "data"),
+        Output("data-history-results", "data-refresh-render"),
+        Output("refresh-view-data-history", "data"),
+        Input("data-history-bundle-store", "data"), Input("data-player-button", "n_clicks"),
+        Input("data-player-interval", "n_intervals"), Input("data-player-slider", "value"),
+        Input("data-player-visibility-store", "data"), State("data-player-state-store", "data"),
     )
 
 
-__all__ = [
-    "load_archive_catalog",
-    "history_request_payload",
-    "history_breadcrumb",
-    "poll_archive_generation",
-    "query_history_bundle",
-    "register_callbacks",
-    "serialize_history_bundle",
-]
+__all__ = ["history_request_payload", "history_breadcrumb", "query_history_bundle",
+           "serialize_history_bundle", "register_callbacks"]

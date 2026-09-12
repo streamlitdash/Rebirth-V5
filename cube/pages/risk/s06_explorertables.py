@@ -10,8 +10,10 @@ from dash import html
 
 from cube.ui.s02_aggregation import (
     HierarchyAggregationIndex,
+    _credit_cross_gamma_source_mask,
     aggregate_values,
     credit_measure_available,
+    credit_measure_column,
     credit_measure_values,
     dimension_title,
     display_metric,
@@ -43,8 +45,9 @@ def _active_groups_for_frame(
     promotion_enabled: bool,
     region_enabled: bool,
     underlying_identity_mode: str = "reported",
+    dimension: str | None = None,
 ) -> list[str]:
-    """Resolve the Risk Explorer hierarchy for the selected identity."""
+    """Resolve the existing hierarchy and its final reporting dimension."""
     region_available = bool(
         "region" in frame
         and frame["region"].fillna("").astype(str).str.strip().ne("").any()
@@ -54,7 +57,7 @@ def _active_groups_for_frame(
         if str(underlying_identity_mode).strip().casefold() == "underlying"
         else "reported underlying"
     )
-    return [
+    groups = [
         group
         for group in get_active_groups(
             promotion_enabled,
@@ -63,6 +66,18 @@ def _active_groups_for_frame(
         )
         if group not in {"reported underlying", "underlying"} or group == identity_group
     ]
+    if dimension is not None:
+        groups[-1] = selected_dimension(dimension)
+    return groups
+
+
+def _risk_row_label(value: object, *, key: str | None = None) -> html.Button:
+    """A row name opens detail; the separate chevron still expands the tree."""
+    return html.Button(
+        str(value), type="button", className="row-label-text row-detail-button",
+        title="Open this branch's detail; Credit Multi uses JTD",
+        **({"data-risk-key": key} if key is not None else {}),
+    )
 
 
 def metric_class(column: str, expanded_metrics: list[str] | None = None) -> str:
@@ -161,13 +176,19 @@ def build_tree_rows(
     if group_column is None:
         return rows
 
+    child_positions = frame.groupby(
+        frame[group_column].astype(str), sort=False
+    ).indices
     for value in ordered_unique(
         frame,
         group_column,
         underlying_sort_metric=underlying_sort_metric,
     ):
         next_context = {**context, group_column: value}
-        scoped = tree_scope(frame, group_column, value)
+        if group_column == "display bucket" and value == "Other":
+            scoped = tree_scope(frame, group_column, value)
+        else:
+            scoped = frame.iloc[child_positions[str(value)]]
         if scoped.empty:
             continue
         key = row_key(next_context)
@@ -225,7 +246,11 @@ def build_tree_rows(
         )
         index_children = [
             label,
-            html.Span(str(value), className="row-label-text"),
+            (
+                _risk_row_label(value)
+                if delegated_actions and cell_type != "top-book-risk-cell"
+                else html.Span(str(value), className="row-label-text")
+            ),
         ]
         if group_column == "display bucket" and value != "Other":
             reasons = scoped["promotion reason"].dropna().astype(str)
@@ -362,7 +387,7 @@ def build_risk_table(
     total_metrics = aggregation_index.aggregate(frame, include_market=False)
     total_cells = [
         html.Th(
-            html.Span("TOTAL", className="row-label-text"),
+            _risk_row_label("TOTAL", key=""),
             className="index-cell total-index",
             scope="row",
             **{"data-metric": "index", "data-copy-value": "TOTAL"},
@@ -416,6 +441,7 @@ def build_risk_table(
                     promotion_enabled,
                     region_enabled,
                     underlying_identity_mode,
+                    dimension=dimension,
                 ),
                 toggle_type=toggle_type,
                 cell_type=cell_type,
@@ -495,6 +521,18 @@ def build_alt_risk_table(
     dimension_values = (
         ordered_unique(frame, dimension_column) if not frame.empty else []
     )
+    if dimension_column == "portfolio" and len(dimension_values) > 20:
+        return html.Div(
+            [
+                html.Strong("Too many portfolio columns for SplitVA"),
+                html.Span(
+                    "Use Cross to explore all portfolios, or choose at most "
+                    "20 portfolios in Filter View and click Apply filters."
+                ),
+            ],
+            className="empty-state",
+            role="status",
+        )
 
     def dimension_cells(scoped: pd.DataFrame, context: dict[str, str]) -> list[html.Td]:
         by_dimension = (
@@ -549,7 +587,7 @@ def build_alt_risk_table(
 
     total_cells = [
         html.Th(
-            html.Span("TOTAL", className="row-label-text"),
+            _risk_row_label("TOTAL", key=""),
             className="index-cell total-index",
             scope="row",
             **{"data-metric": "index", "data-copy-value": "TOTAL"},
@@ -569,7 +607,7 @@ def build_alt_risk_table(
                     promotion_enabled,
                     region_enabled,
                     underlying_identity_mode,
-                ),
+                )[:-1],
                 cell_builder=dimension_cells,
                 toggle_type="alt-row-toggle",
                 cell_type="alt-risk-cell",
@@ -662,6 +700,36 @@ def build_credit_multi_table(
     measure_completeness = {
         measure: credit_measure_available(frame, measure) for measure in CREDIT_MEASURES
     }
+    row_position_column = "__cube_credit_row_position__"
+    while row_position_column in frame.columns:
+        row_position_column = f"_{row_position_column}"
+    frame = frame.copy(deep=False)
+    frame.insert(len(frame.columns), row_position_column, range(len(frame)))
+    connector_mask = ~_credit_cross_gamma_source_mask(frame)
+    prepared_measures = {}
+    for measure in CREDIT_MEASURES:
+        column = (
+            credit_measure_column(selected_metric, measure)
+            if selected_metric != "pl"
+            else None
+        )
+        # A complete dRisk column can make a measure available while Risk is
+        # incomplete (and vice versa). Keep the existing per-branch decision.
+        partial_metric = (
+            measure_completeness[measure]
+            and column in frame.columns
+            and frame.loc[connector_mask, column].isna().any()
+        )
+        prepared_measures[measure] = (
+            None
+            if partial_metric
+            else credit_measure_values(
+                frame,
+                selected_metric,
+                measure,
+                connector_complete=measure_completeness[measure],
+            )
+        )
 
     def measure_cells(
         scoped: pd.DataFrame,
@@ -669,12 +737,18 @@ def build_credit_multi_table(
     ) -> list[html.Td]:
         show_value = should_show_sum(selected_metric, context)
         cells: list[html.Td] = []
+        positions = scoped[row_position_column].to_numpy()
         for measure in CREDIT_MEASURES:
-            series = credit_measure_values(
-                scoped,
-                selected_metric,
-                measure,
-                connector_complete=measure_completeness[measure],
+            prepared = prepared_measures[measure]
+            series = (
+                credit_measure_values(
+                    scoped,
+                    selected_metric,
+                    measure,
+                    connector_complete=measure_completeness[measure],
+                )
+                if prepared is None
+                else prepared.take(positions)
             )
             value = float(series.sum(min_count=1))
             display_value = (
@@ -716,7 +790,7 @@ def build_credit_multi_table(
         html.Tr(
             [
                 html.Th(
-                    html.Span("TOTAL", className="row-label-text"),
+                    _risk_row_label("TOTAL", key=""),
                     className="index-cell total-index",
                     scope="row",
                     **{"data-metric": "index", "data-copy-value": "TOTAL"},
@@ -738,6 +812,7 @@ def build_credit_multi_table(
                 promotion_enabled,
                 region_enabled,
                 underlying_identity_mode,
+                dimension=dimension,
             ),
             cell_builder=measure_cells,
             toggle_type="main-row-toggle",
@@ -747,9 +822,7 @@ def build_credit_multi_table(
         )
     )
     missing_measures = [
-        measure
-        for measure in CREDIT_MEASURES
-        if not credit_measure_available(frame, measure)
+        measure for measure in CREDIT_MEASURES if not measure_completeness[measure]
     ]
     if selected_metric == "pl":
         availability_note = "P&L is measure-invariant, so the same portfolio P&L appears under every credit measure."

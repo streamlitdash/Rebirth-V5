@@ -14,6 +14,7 @@ from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from cube.app.s02_contracts import RefreshManagerProtocol
 from cube.services.s04_savedviews import SavedFilterViewRepository
+from cube.ui.s08_refresh_views import refresh_view
 from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     committed_filter_state_values,
@@ -155,28 +156,30 @@ def register_callbacks(
             trigger = ctx.triggered_id
         except MissingCallbackContextException:
             trigger = None
-        if trigger == "clear-cache-complete-store":
-            with cache_lock:
-                cached_pages.clear()
-            if isinstance(stock_history_source, StockHistoryQueryProtocol):
-                stock_history_source.clear()
-
-        if not isinstance(date_state, Mapping):
-            return no_update, "Stock dates are unavailable."
-        current_date = date_state.get("current_date")
-        prior_date = date_state.get("prior_date")
         revision = committed_revision()
-        token = {
-            "revision": revision,
-            "current_date": str(current_date),
-            "prior_date": str(prior_date),
-        }
-        key = _stock_snapshot_key(token)
-        if key is None:
-            return no_update, "Stock dates are invalid."
-
+        try:
+            requested_revision = int(_refresh_revision or revision)
+        except (TypeError, ValueError):
+            requested_revision = revision
         started = perf_counter()
         try:
+            if trigger == "clear-cache-complete-store":
+                with cache_lock:
+                    cached_pages.clear()
+                if isinstance(stock_history_source, StockHistoryQueryProtocol):
+                    stock_history_source.clear()
+            if not isinstance(date_state, Mapping):
+                raise ValueError("Stock dates are unavailable.")
+            current_date = date_state.get("current_date")
+            prior_date = date_state.get("prior_date")
+            token = {
+                "revision": revision,
+                "current_date": str(current_date),
+                "prior_date": str(prior_date),
+            }
+            key = _stock_snapshot_key(token)
+            if key is None:
+                raise ValueError("Stock dates are invalid.")
             with cache_lock:
                 page_data = cached_pages.get(key)
                 if page_data is None:
@@ -190,22 +193,27 @@ def register_callbacks(
                     cached_pages[key] = page_data
                     while len(cached_pages) > 4:
                         cached_pages.pop(next(iter(cached_pages)))
+            elapsed_ms = (perf_counter() - started) * 1_000
+            current_rows = len(stock_display_rows(page_data.mapped_stock))
+            app.logger.info(
+                "stock.current.loaded rows=%s elapsed_ms=%.1f revision=%s",
+                current_rows, elapsed_ms, revision,
+            )
+            status = (
+                f"As of {page_data.current_date.date().isoformat()} · "
+                f"{current_rows:,} positions · {elapsed_ms:.0f} ms"
+            )
         except Exception as error:
             app.logger.exception("Could not load current Stock")
-            return no_update, f"Stock could not be loaded: {error}"
-
-        elapsed_ms = (perf_counter() - started) * 1_000
-        current_rows = len(stock_display_rows(page_data.mapped_stock))
-        app.logger.info(
-            "stock.current.loaded rows=%s elapsed_ms=%.1f revision=%s",
-            current_rows,
-            elapsed_ms,
-            revision,
-        )
-        return token, (
-            f"As of {page_data.current_date.date().isoformat()} · "
-            f"{current_rows:,} positions · {elapsed_ms:.0f} ms"
-        )
+            if committed_revision() != revision:
+                return no_update, no_update
+            message = f"Stock could not be loaded: {error}"
+            # The final renderer owns the receipt even when loading failed.
+            # A new token triggers it without replacing the last good table.
+            return {"revision": max(requested_revision, revision), "error": message}, message
+        if committed_revision() != revision:
+            return no_update, no_update
+        return token, status
 
     filter_outputs = [
         output
@@ -237,6 +245,8 @@ def register_callbacks(
     ):
         """Own all five filter values and apply Base Review exactly once."""
 
+        if isinstance(loaded_snapshot, Mapping) and loaded_snapshot.get("error"):
+            return (no_update,) * (len(filter_outputs) + 2)
         page_data = cached_page(loaded_snapshot)
         selected_values = list(state[: len(STOCK_FILTER_FIELDS)])
         exclude_value = list(state[len(STOCK_FILTER_FIELDS)] or [])
@@ -306,14 +316,18 @@ def register_callbacks(
         Output("stock-unmapped-count", "children"),
         Output("stock-history-crds", "options"),
         Output("stock-history-activity", "options"),
+        Output("refresh-view-stock-current", "data"),
         Input("stock-loaded-snapshot", "data"),
         Input(STOCK_SAVED_VIEW_CONTROLS.committed_state_id, "data"),
         Input("stock-pivot-rows", "value"),
         Input("stock-pivot-column", "value"),
         Input("stock-pivot-values", "value"),
         Input("stock-pivot-open-paths", "data"),
+        State("refresh-action-request", "data"),
         prevent_initial_call=True,
     )
+    @refresh_view("stock-current", revision_arg="loaded_snapshot", outputs=8,
+                  content=[0, 2, 3], stamp=[3])
     def render_current_stock(
         loaded_snapshot,
         committed_filter_state,
@@ -324,8 +338,12 @@ def register_callbacks(
     ):
         """Rebuild the pivot from applied filters, never draft controls."""
 
+        if isinstance(loaded_snapshot, Mapping) and loaded_snapshot.get("error"):
+            raise RuntimeError(str(loaded_snapshot["error"]))
         page_data = cached_page(loaded_snapshot)
         if page_data is None:
+            if _stock_snapshot_key(loaded_snapshot) is not None:
+                raise RuntimeError("The loaded Stock snapshot is no longer available. Refresh Stock again.")
             empty = pd.DataFrame(columns=list(STOCK_DISPLAY_COLUMNS))
             pivot = build_stock_pivot(
                 empty,

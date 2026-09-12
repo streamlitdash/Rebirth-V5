@@ -88,7 +88,7 @@ def _callback_for_output(app: Dash, component_id: str, component_property: str):
     return metadata["callback"].__wrapped__
 
 
-def test_risk_omits_portfolio_while_stock_and_pnl_keep_shared_contract() -> None:
+def test_risk_stock_and_pnl_share_all_portfolio_filter_fields() -> None:
     assert FILTER_KEYS == (
         "activity",
         "signoffgroup",
@@ -104,12 +104,7 @@ def test_risk_omits_portfolio_while_stock_and_pnl_keep_shared_contract() -> None
         "Sub Category",
     )
     assert tuple(field.key for field in STOCK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
-    assert tuple(field.key for field in RISK_SAVED_VIEW_CONTROLS.fields) == (
-        "activity",
-        "signoffgroup",
-        "category",
-        "subcategory",
-    )
+    assert tuple(field.key for field in RISK_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
     assert tuple(field.key for field in PL_SAVED_VIEW_CONTROLS.fields) == FILTER_KEYS
     assert {
         RISK_SAVED_VIEW_CONTROLS.selector_id,
@@ -635,7 +630,7 @@ def test_page_readiness_commits_base_without_treating_drafts_as_inputs(
         )
     )
     commit = metadata["callback"].__wrapped__
-    base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], []]
+    base_values = [["Activity 1", "Activity 2", "Activity 3"], *([[]] * (len(RISK_FILTER_KEYS) - 1))]
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
@@ -754,6 +749,7 @@ def test_factory_shares_one_catalogue_without_sharing_live_page_state(
     assert risk_values == (
         ["Credit"],
         ["SOG-A"],
+        ["BOOK-B", "BOOK-D"],
         ["Core"],
         ["Rates"],
     )
@@ -881,7 +877,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         ["exclude"],
     )
     assert current_label(committed, saved[0]) == "Morning"
-    assert repository.get("stock", identifier).filters["portfolio"] == ()
+    assert repository.get("stock", identifier).filters["portfolio"] == ("BOOK-A",)
 
     # An Apply arriving with the one-time initialization update still owns the
     # commit; initialization must not force the identifier back to Base.
@@ -1034,9 +1030,9 @@ def test_callbacks_save_update_delete_and_apply_base(
     )
     assert cancelled_custom[1] == CUSTOM_SAVED_VIEW_ID
 
-    risk_base_values = [["Activity 1", "Activity 2", "Activity 3"], [], [], []]
+    risk_base_values = [["Activity 1", "Activity 2", "Activity 3"], *([[]] * (len(RISK_FILTER_KEYS) - 1))]
     edited_base_values = [*risk_base_values]
-    edited_base_values[2] = ["Core"]
+    edited_base_values[RISK_FILTER_KEYS.index("category")] = ["Core"]
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
@@ -1062,7 +1058,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     )
     assert base_from_custom["view_id"] == BASE_SAVED_VIEW_ID
 
-    incomplete_base_values = [["Macro", "Credit"], [], [], []]
+    incomplete_base_values = [["Macro", "Credit"], *([[]] * (len(RISK_FILTER_KEYS) - 1))]
     incomplete_activity_options = [
         {"label": "Macro", "value": "Macro"},
         {"label": "Credit", "value": "Credit"},
@@ -1162,7 +1158,7 @@ def test_callbacks_save_update_delete_and_apply_base(
         ["exclude"],
     )
     base_values, exclude = saved_view_request_values(base_request, controls)
-    assert base_values == ([], [], [], [])
+    assert base_values == tuple([] for _key in RISK_FILTER_KEYS)
     assert exclude == []
 
     monkeypatch.setattr(

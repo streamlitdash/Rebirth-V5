@@ -254,7 +254,7 @@ def _callback_inputs_for_output(
     return {(item["id"], item["property"]) for item in metadata["inputs"]}
 
 
-def test_portfolio_is_internal_but_not_a_risk_filter_or_view() -> None:
+def test_portfolio_is_a_risk_filter_and_optional_view_dimension() -> None:
     assert [field.key for field in SHARED_FILTER_DIMENSION_FIELDS] == [
         "activity",
         "signoffgroup",
@@ -265,6 +265,7 @@ def test_portfolio_is_internal_but_not_a_risk_filter_or_view() -> None:
     assert [field.key for field in FILTER_DIMENSION_FIELDS] == [
         "activity",
         "signoffgroup",
+        "portfolio",
         "category",
         "subcategory",
     ]
@@ -274,11 +275,12 @@ def test_portfolio_is_internal_but_not_a_risk_filter_or_view() -> None:
         "signoffgroup",
         "category",
         "subcategory",
+        "portfolio",
     ]
-    assert "portfolio" not in DIMENSION_FILTER_IDS
+    assert DIMENSION_FILTER_IDS["portfolio"] == "portfolio-filter"
     assert DEFAULT_VIEW_DIMENSION == "activity"
-    assert selected_dimension("portfolio") == "activity"
-    assert dimension_title("portfolio") == "Activity"
+    assert selected_dimension("portfolio") == "portfolio"
+    assert dimension_title("portfolio") == "Portfolio"
 
 
 def test_prepare_retains_portfolio_but_risk_filters_use_reporting_fields() -> None:
@@ -347,7 +349,7 @@ def test_risk_explorer_hides_raw_underlyings_without_losing_detail_identity() ->
     labels = [
         str(item.children)
         for item in _walk(component)
-        if isinstance(item, html.Span) and item.className == "row-label-text"
+        if "row-label-text" in str(getattr(item, "className", "")).split()
     ]
 
     assert any("group-kind-reported-underlying" in value for value in row_classes)
@@ -423,7 +425,7 @@ def test_risk_explorer_hides_raw_underlyings_without_losing_detail_identity() ->
     raw_labels = [
         str(item.children)
         for item in _walk(raw_component)
-        if isinstance(item, html.Span) and item.className == "row-label-text"
+        if "row-label-text" in str(getattr(item, "className", "")).split()
     ]
     assert any("group-kind-underlying" in value for value in raw_row_classes)
     assert not any(
@@ -631,17 +633,17 @@ def test_clear_cache_drops_only_reconstructable_risk_views() -> None:
 
     rendered = cache.rendered("risk-table", build_rendered)
     assert cache.filtered(None, "IR", None, ["Risk"], selected) is filtered
-    assert cache.rendered("risk-table", build_rendered) is rendered
+    assert cache.rendered("risk-table", build_rendered) is not rendered
 
     cache.clear_reconstructable()
 
     assert cache.current(None) is prepared
     assert cache.filtered(None, "IR", None, ["Risk"], selected) is not filtered
     assert cache.rendered("risk-table", build_rendered) is not rendered
-    assert builds == [1, 2]
+    assert builds == [1, 2, 3]
 
 
-def test_render_cache_serializes_and_deduplicates_concurrent_builds() -> None:
+def test_render_builds_serialize_without_retaining_prior_component_trees() -> None:
     cache = _RiskDataCache(prepare_risk_data(_raw_risk_frame()), revision=7)
     entered = Event()
     release = Event()
@@ -670,8 +672,8 @@ def test_render_cache_serializes_and_deduplicates_concurrent_builds() -> None:
         first_result = first.result(timeout=2.0)
         second_result = second.result(timeout=2.0)
 
-    assert first_result is second_result
-    assert builds == 1
+    assert first_result is not second_result
+    assert builds == 2
     assert max_active == 1
 
 
@@ -1131,6 +1133,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         filters={
             "activity": ("1111",),
             "signoffgroup": ("SOG-A",),
+            "portfolio": (),
             "category": ("Core",),
             "subcategory": ("Rates",),
         },
@@ -1157,9 +1160,10 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         False,
     )
 
-    assert result[1::2][:4] == (
+    assert result[1::2][:5] == (
         ["1111"],
         ["SOG-A"],
+        [],
         ["Core"],
         ["Rates"],
     )
@@ -1182,13 +1186,13 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         None,
         True,
     )
-    assert coalesced[1::2][:4] == result[1::2][:4]
+    assert coalesced[1::2][:5] == result[1::2][:5]
     assert coalesced[-1] == ["exclude"]
 
     manual = [[] for _field in FILTER_DIMENSION_FIELDS]
-    manual[2] = ["Hedge"]
+    manual[3] = ["Hedge"]
     superseded = callback(3, request, None, *manual, [], None, True)
-    assert superseded[5] == ["Hedge"]
+    assert superseded[7] == ["Hedge"]
     assert superseded[-1] == []
 
     acknowledged = callback(
@@ -1200,7 +1204,7 @@ def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edit
         request["request_id"],
         True,
     )
-    assert acknowledged[1::2][:4] == ([], [], [], [])
+    assert acknowledged[1::2][:5] == ([], [], [], [], [])
     assert acknowledged[-1] == []
 
 
@@ -1260,7 +1264,7 @@ def test_risk_clear_cache_preserves_the_committed_filter_draft(monkeypatch) -> N
         )
     )
     owner = metadata["callback"].__wrapped__
-    selected = [["1111"], ["SOG-A"], ["Core"], ["Rates"]]
+    selected = [["1111"], ["SOG-A"], ["BOOK-A"], ["Core"], ["Rates"]]
     monkeypatch.setattr(
         events_module,
         "ctx",
@@ -1269,7 +1273,7 @@ def test_risk_clear_cache_preserves_the_committed_filter_draft(monkeypatch) -> N
 
     result = owner(2, None, 1, *selected, ["exclude"], None, True)
 
-    assert result[1::2][:4] == tuple(selected)
+    assert result[1::2][:5] == tuple(selected)
     assert result[-2] is True
     assert result[-1] == ["exclude"]
 
@@ -1370,8 +1374,8 @@ def test_quick_risk_identity_choices_follow_the_governed_filter_view() -> None:
     app = build_app(refresh_manager=_warm_manager())
     inputs = _callback_inputs_for_output(
         app,
-        "quick-search-combine-udl",
-        "options",
+        "quick-risk-search-index",
+        "data",
     )
     assert {
         ("split-filter", "value"),
@@ -1385,8 +1389,13 @@ def test_quick_risk_identity_choices_follow_the_governed_filter_view() -> None:
         & inputs
     )
 
+    assert _callback_inputs_for_output(app, "quick-search-combine-udl", "options") == {
+        ("quick-risk-search-index", "data"),
+        ("quick-search-combine-udl", "search_value"),
+    }
 
-def test_portfolio_is_not_rendered_as_a_risk_filter_or_dimension() -> None:
+
+def test_portfolio_is_rendered_as_a_risk_filter_and_optional_dimension() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
     components = list(_walk(layout))
@@ -1420,7 +1429,7 @@ def test_portfolio_is_not_rendered_as_a_risk_filter_or_dimension() -> None:
         if isinstance(item, dcc.RadioItems) and item.id == "table-dimension"
     )
 
-    assert not any(
+    assert any(
         isinstance(item, dcc.Dropdown) and item.id == "portfolio-filter"
         for item in components
     )
@@ -1435,6 +1444,7 @@ def test_portfolio_is_not_rendered_as_a_risk_filter_or_dimension() -> None:
     assert [control.children[0].children for control in filter_fields] == [
         "Activity",
         "Signoff Group",
+        "Portfolio",
         "Category",
         "Sub Category",
     ]
@@ -1447,10 +1457,13 @@ def test_portfolio_is_not_rendered_as_a_risk_filter_or_dimension() -> None:
         and "saved-view-filter-note" in set(str(getattr(item, "className", "")).split())
     ]
     assert len(saved_view_notes) == 1
-    assert "Risk is aggregated across Portfolio" in saved_view_notes[0].children
+    assert "Portfolio filters Risk Explorer, Aggregate P&L and Quick Risk" in saved_view_notes[0].children
     assert filter_row in list(_walk(saved_view_bar))
+    # Portfolio is available on the main Risk dimension selector. The broad
+    # Aggregate P&L pivot intentionally keeps the smaller reporting dimensions.
+    assert "portfolio" in {option["value"] for option in table_dimension.options}
+    assert "portfolio" not in {option["value"] for option in aggregate_dimension.options}
     for selector in (aggregate_dimension, table_dimension):
-        assert "portfolio" not in {option["value"] for option in selector.options}
         assert selector.value == "activity"
 
 
@@ -1549,7 +1562,7 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
     inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
     callback = metadata["callback"].__wrapped__
 
-    closed_grid, closed_status = callback(
+    closed_grid, closed_status, receipt = callback(
         "aggregate-pl",
         1,
         None,
@@ -1557,10 +1570,12 @@ def test_top_promotions_callback_is_lazy_and_has_no_tree_inputs() -> None:
         [[] for _field in FILTER_DIMENSION_FIELDS],
         [],
         "vol-score",
+        None,
     )
 
-    assert closed_grid is None
+    assert getattr(closed_grid, "children", None) is None
     assert "Select Top Promotions" in closed_status
+    assert receipt["owner"] == "top-promotions"
     assert ("risk-workspace-tabs", "value") in inputs
     assert ("top-promotions-signal", "value") in inputs
     assert ("promotion-generation-store", "data") in inputs
@@ -1675,13 +1690,13 @@ def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
     ) in aggregate_inputs
 
 
-def test_aggregate_pl_falls_back_from_portfolio_and_aggregates_books() -> None:
+def test_aggregate_pl_can_display_each_portfolio_without_merging_books() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     component = build_aggregate_pl_table(prepared, "portfolio", [])
     header = next(item for item in _walk(component) if isinstance(item, html.Thead))
     labels = [str(item.children) for item in _walk(header) if isinstance(item, html.Th)]
 
-    assert labels == ["Index", "1111", "Total"]
+    assert labels == ["Index", "BOOK-A", "BOOK-B", "Total"]
 
 
 def test_aggregate_waits_for_the_matching_risk_render_revision(monkeypatch) -> None:
@@ -1696,24 +1711,26 @@ def test_aggregate_waits_for_the_matching_risk_render_revision(monkeypatch) -> N
         )
     )
     callback = metadata["callback"].__wrapped__
-    arguments = ("activity", 0, None, [], [], [[], [], [], []], [], [])
+    arguments = ("activity", 0, None, [], [], [[] for _ in FILTER_DIMENSION_FIELDS], [], [], None)
 
     with pytest.raises(PreventUpdate):
         callback(*arguments)
 
     monkeypatch.setattr(workspace_callbacks, "ctx", SimpleNamespace(triggered_id=None))
-    _open_rows, component = callback(
+    _open_rows, component, receipt = callback(
         "activity",
         0,
         0,
         [],
         [],
-        [[], [], [], []],
+        [[] for _ in FILTER_DIMENSION_FIELDS],
         [],
         [],
+        None,
     )
 
     assert any(isinstance(item, html.Table) for item in _walk(component))
+    assert receipt is no_update  # Revision zero is not a committed refresh.
 
 
 def test_risk_consumers_use_applied_filters_but_unmapped_inventory_is_complete() -> (
@@ -1821,7 +1838,7 @@ def _quick_catalog() -> SearchCatalog:
     )
 
 
-def test_search_catalog_retains_portfolio_but_risk_dashboard_rejects_it() -> None:
+def test_search_catalog_and_risk_dashboard_agree_on_portfolio_filtering() -> None:
     catalog = _quick_catalog()
     kwargs = {
         "index_columns": ("Portfolio",),
@@ -1838,8 +1855,7 @@ def test_search_catalog_retains_portfolio_but_risk_dashboard_rejects_it() -> Non
         **kwargs,
     ).frame
     prepared = prepare_risk_data(_raw_risk_frame())
-    with pytest.raises(ValueError, match="Unknown reporting-dimension"):
-        apply_filters(
+    dashboard_included = apply_filters(
             prepared,
             ["IR"],
             ["Risk"],
@@ -1849,6 +1865,7 @@ def test_search_catalog_retains_portfolio_but_risk_dashboard_rejects_it() -> Non
 
     assert included[["Portfolio", "Risk"]].values.tolist() == [["BOOK-A", 10.0]]
     assert excluded[["Portfolio", "Risk"]].values.tolist() == [["BOOK-B", 20.0]]
+    assert dashboard_included[["portfolio", "risk"]].values.tolist() == [["BOOK-A", 10.0]]
     assert dashboard["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
     assert dashboard["risk"].sum() == 30.0
 

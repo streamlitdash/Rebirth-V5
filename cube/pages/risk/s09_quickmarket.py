@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import dcc, html
+from dash import dash_table, dcc, html
 
 from cube.ui.s02_aggregation import tenor_axis_order
 
@@ -47,6 +47,7 @@ def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.
 
     disclosure = html.Details(
         [
+            dcc.Store(id="quick-market-search-index", data=None),
             html.Summary(
                 [
                     html.Span(
@@ -86,7 +87,7 @@ def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.
                                         id="quick-market-combine-udl",
                                         options=[],
                                         value=None,
-                                        clearable=False,
+                                        clearable=True,
                                         searchable=True,
                                         placeholder="Select Risk Type · Risk Greek · Underlying",
                                         className="quick-search-combine-dropdown",
@@ -168,6 +169,26 @@ def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.
                         type="dot",
                         delay_show=160,
                     ),
+                    html.Div(
+                        [
+                            html.H3("Market values"),
+                            html.P("50 quote rows per page. The chart includes the full selected tenor structure."),
+                            dash_table.DataTable(
+                                id="quick-market-values",
+                                columns=[], data=[],
+                                page_action="custom", page_current=0,
+                                page_size=50, page_count=0,
+                                sort_action="none", filter_action="none",
+                                style_table={"overflowX": "auto"},
+                                style_cell={"fontFamily": "inherit", "fontSize": 12, "padding": "8px", "textAlign": "right"},
+                                style_data_conditional=[
+                                    {"if": {"column_id": name, "filter_query": "{" + name + "} < 0"}, "color": "#b42318"}
+                                    for name in ("Open", "Current", "Move")
+                                ],
+                            ),
+                        ],
+                        className="quick-market-values-panel",
+                    ),
                 ],
                 className="quick-search-pivot-body",
             ),
@@ -180,7 +201,7 @@ def build_quick_market_search(*, embedded: bool = False) -> html.Details | html.
     if not embedded:
         return disclosure
     return html.Div(
-        disclosure.children[1:],
+        [disclosure.children[0], *disclosure.children[2:]],
         id=disclosure.id,
         className="quick-search-shell quick-search-tab-body",
         **{"aria-label": "Quick Market Search"},
@@ -794,6 +815,7 @@ def build_quick_market_result(
     surface_metric: str,
     market_status: str,
     revision: int,
+    include_values: bool = True,
 ) -> tuple[
     html.Div,
     str,
@@ -844,6 +866,7 @@ def build_quick_market_result(
     ]
 
     chart = None
+    table = None
     matrix = None
     matrix_metric = None
     matrix_label = None
@@ -853,124 +876,127 @@ def build_quick_market_result(
             market_status=market_status,
             metric=surface_metric,
         )
-        table = html.Div(
-            build_surface_matrix_table(
-                matrix,
-                matrix_metric,
-                metric_label=matrix_label,
-                wrapper_class=(
-                    "risk-table-wrap quick-search-pivot-table-wrap tenor-matrix-wrap"
+        if include_values:
+            table = html.Div(
+                build_surface_matrix_table(
+                    matrix,
+                    matrix_metric,
+                    metric_label=matrix_label,
+                    wrapper_class=(
+                        "risk-table-wrap quick-search-pivot-table-wrap tenor-matrix-wrap"
+                    ),
                 ),
-            ),
-            className="tenor-surface-pair",
-        )
+                className="tenor-surface-pair",
+            )
     elif selected in {"swap", "option"}:
         axis = {
             "swap": "Tenor Swap",
             "option": "Tenor Option",
         }[selected]
         chart = _market_line_chart(frame, axis=axis, market_status=market_status)
-        axes = [
-            column
-            for column in ("Tenor Swap", "Tenor Option")
-            if _market_axis(frame, column)
-        ]
-        display_frame = _sort_market_rows(frame, axes)
-        columns = [*axes, "Open", "Current", "Move"]
-        header = [
-            html.Th(
-                market_status if column == "Current" else column,
-                className="index-header" if column in axes else "metric-header",
+        if include_values:
+            axes = [
+                column
+                for column in ("Tenor Swap", "Tenor Option")
+                if _market_axis(frame, column)
+            ]
+            display_frame = _sort_market_rows(frame, axes)
+            columns = [*axes, "Open", "Current", "Move"]
+            header = [
+                html.Th(
+                    market_status if column == "Current" else column,
+                    className="index-header" if column in axes else "metric-header",
+                )
+                for column in columns
+            ]
+            body = []
+            for record in display_frame.to_dict("records"):
+                cells = []
+                for column in columns:
+                    value = record.get(column)
+                    if column in {"Open", "Current", "Move"}:
+                        text, sign = _quick_search_number(value, column=column)
+                        cells.append(
+                            html.Td(
+                                text,
+                                className=f"metric-cell {sign}",
+                                **{"data-copy-value": "" if pd.isna(value) else str(value)},
+                            )
+                        )
+                    else:
+                        cells.append(
+                            html.Th(
+                                _quick_search_text(value),
+                                scope="row",
+                                className="index-cell",
+                                **{
+                                    "data-copy-value": _quick_search_text(
+                                        value, fallback=""
+                                    )
+                                },
+                            )
+                        )
+                body.append(html.Tr(cells))
+            table = html.Div(
+                html.Table(
+                    [html.Thead(html.Tr(header)), html.Tbody(body)],
+                    className="cell-selection-table quick-search-pivot-table",
+                ),
+                className="risk-table-wrap quick-search-pivot-table-wrap",
+                tabIndex=0,
             )
-            for column in columns
-        ]
-        body = []
-        for record in display_frame.to_dict("records"):
-            cells = []
-            for column in columns:
-                value = record.get(column)
-                if column in {"Open", "Current", "Move"}:
-                    text, sign = _quick_search_number(value, column=column)
-                    cells.append(
-                        html.Td(
-                            text,
-                            className=f"metric-cell {sign}",
-                            **{"data-copy-value": "" if pd.isna(value) else str(value)},
-                        )
-                    )
-                else:
-                    cells.append(
-                        html.Th(
-                            _quick_search_text(value),
-                            scope="row",
-                            className="index-cell",
-                            **{
-                                "data-copy-value": _quick_search_text(
-                                    value, fallback=""
-                                )
-                            },
-                        )
-                    )
-            body.append(html.Tr(cells))
-        table = html.Div(
-            html.Table(
-                [html.Thead(html.Tr(header)), html.Tbody(body)],
-                className="cell-selection-table quick-search-pivot-table",
-            ),
-            className="risk-table-wrap quick-search-pivot-table-wrap",
-            tabIndex=0,
-        )
     else:
-        axes = [
-            column
-            for column in ("Tenor Swap", "Tenor Option")
-            if _market_axis(frame, column)
-        ]
-        display_frame = _sort_market_rows(frame, axes)
-        columns = [*axes, "Open", "Current", "Move"]
-        header = [
-            html.Th(
-                market_status if column == "Current" else column,
-                className="index-header" if column in axes else "metric-header",
+        if include_values:
+            axes = [
+                column
+                for column in ("Tenor Swap", "Tenor Option")
+                if _market_axis(frame, column)
+            ]
+            display_frame = _sort_market_rows(frame, axes)
+            columns = [*axes, "Open", "Current", "Move"]
+            header = [
+                html.Th(
+                    market_status if column == "Current" else column,
+                    className="index-header" if column in axes else "metric-header",
+                )
+                for column in columns
+            ]
+            body = []
+            for record in display_frame.to_dict("records"):
+                cells = []
+                for column in columns:
+                    value = record.get(column)
+                    if column in {"Open", "Current", "Move"}:
+                        text, sign = _quick_search_number(value, column=column)
+                        cells.append(
+                            html.Td(
+                                text,
+                                className=f"metric-cell {sign}",
+                                **{"data-copy-value": "" if pd.isna(value) else str(value)},
+                            )
+                        )
+                    else:
+                        cells.append(
+                            html.Th(
+                                _quick_search_text(value),
+                                scope="row",
+                                className="index-cell",
+                                **{
+                                    "data-copy-value": _quick_search_text(
+                                        value, fallback=""
+                                    )
+                                },
+                            )
+                        )
+                body.append(html.Tr(cells))
+            table = html.Div(
+                html.Table(
+                    [html.Thead(html.Tr(header)), html.Tbody(body)],
+                    className="cell-selection-table quick-search-pivot-table",
+                ),
+                className="risk-table-wrap quick-search-pivot-table-wrap",
+                tabIndex=0,
             )
-            for column in columns
-        ]
-        body = []
-        for record in display_frame.to_dict("records"):
-            cells = []
-            for column in columns:
-                value = record.get(column)
-                if column in {"Open", "Current", "Move"}:
-                    text, sign = _quick_search_number(value, column=column)
-                    cells.append(
-                        html.Td(
-                            text,
-                            className=f"metric-cell {sign}",
-                            **{"data-copy-value": "" if pd.isna(value) else str(value)},
-                        )
-                    )
-                else:
-                    cells.append(
-                        html.Th(
-                            _quick_search_text(value),
-                            scope="row",
-                            className="index-cell",
-                            **{
-                                "data-copy-value": _quick_search_text(
-                                    value, fallback=""
-                                )
-                            },
-                        )
-                    )
-            body.append(html.Tr(cells))
-        table = html.Div(
-            html.Table(
-                [html.Thead(html.Tr(header)), html.Tbody(body)],
-                className="cell-selection-table quick-search-pivot-table",
-            ),
-            className="risk-table-wrap quick-search-pivot-table-wrap",
-            tabIndex=0,
-        )
 
     result = html.Div(
         [
@@ -979,7 +1005,7 @@ def build_quick_market_result(
                 className="quick-search-result-count",
             ),
             *([chart] if chart is not None else []),
-            table,
+            *([table] if table is not None else []),
         ],
         className="quick-search-result-set",
     )
@@ -991,6 +1017,34 @@ def build_quick_market_result(
     )
 
 
+
+def quick_market_values_page(
+    frame: pd.DataFrame, page_current: object, *, market_status: str,
+) -> tuple[list[dict], list[dict], int, int]:
+    """Return one page of complete quote rows in existing connector tenor order."""
+    page_size = 50
+    axes = [axis for axis in ("Tenor Swap", "Tenor Option") if _market_axis(frame, axis)]
+    columns = [*axes, "Open", "Current", "Move"]
+    metadata = [
+        {
+            "id": name,
+            "name": market_status if name == "Current" else name,
+            "type": "numeric" if name in {"Open", "Current", "Move"} else "text",
+            **({"format": {"specifier": ",.6~f" if name == "Move" else ",.4f"}} if name in {"Open", "Current", "Move"} else {}),
+        }
+        for name in columns
+    ]
+    count = (len(frame) + page_size - 1) // page_size
+    try:
+        page = int(page_current or 0)
+    except (TypeError, ValueError, OverflowError):
+        page = 0
+    page = max(0, min(page, max(0, count - 1)))
+    if frame.empty:
+        return [], metadata, 0, 0
+    selected = frame.loc[:, columns].iloc[page * page_size:(page + 1) * page_size]
+    records = selected.astype(object).where(pd.notna(selected), None).to_dict("records")
+    return records, metadata, count, page
 __all__ = [
     "QUICK_MARKET_DEFAULT_INDEX",
     "build_quick_market_history_result",

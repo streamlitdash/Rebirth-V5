@@ -407,71 +407,18 @@ def test_public_endpoint_urls_do_not_reuse_internal_route_prefix() -> None:
 
 
 def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
-    source = (
-        Path(__file__).resolve().parent.parent / "assets" / "s12_refresh.js"
-    ).read_text(encoding="utf-8")
-
-    assert "the refresh is still being followed" not in source
-    assert "Refresh state is not confirmed" in source
-    assert "startup_attempt_id" in source
-    assert "baselineRefreshAttemptId" in source
-    assert "refreshAttemptMatches" in source
-    assert "revisionAdvanced" in source
-    assert "progressStartedDuringAttempt" in source
-    assert "server_boot_id" in source
-    assert "previousBackendProgress" in source
-    assert "Server process restarted during refresh" in source
-    assert "previous attempt ended before Python could report an error" in source
-    assert "Last confirmed work:" in source
-    assert 'refreshProgressState.mode === "bootstrap"' in source
-    assert "serverReplaced: false" in source
-    assert "refreshProgressState.serverReplaced = true" in source
-    assert "state.serverReplaced" in source
-    assert "state.serverReplaced = false" in source
-    assert 'state.backendError = ""' in source
-    assert "reload this page to reconnect before using refreshed data" in source
-    assert "const startupAttemptMatches" in source
-    assert "attributeOldValue: true" in source
-    assert "transitionedFromRunning" in source
-    assert 'state.mode === "bootstrap"' in source
-    assert "hasNewError ? 5000 : 300" in source
-    assert "revision <= renderedDataRevisionFloor()" in source
-    assert 'setProps("data-revision-store", { data: revision })' in source
-    revision_sync = source.index("const syncCommittedDataRevision")
-    assert (
-        'refreshProgressState?.mode === "bootstrap"'
-        in source[revision_sync : revision_sync + 500]
-    )
-    revision_sync_source = source[revision_sync : revision_sync + 1_300]
-    assert (
-        'const commitNode = document.getElementById("refresh-commit-revision")'
-        in revision_sync_source
-    )
-    assert "normalizedRevision(commitNode?.textContent)" in revision_sync_source
-    assert "progress?.running === false" in revision_sync_source
-    assert "|| !commitNode" in revision_sync_source
-    assert "Math.max" in revision_sync_source
-    assert 'document.getElementById("data-revision-store")' not in (
-        revision_sync_source
-    )
-    assert "const claimSessionReload" in source
-    assert "dashIsLoading() || Date.now() < handoffDeadline" in source
-    assert "cube-bootstrap-ready-reload:${bootId}:${revision}" in source
-    assert "cube-progress-transport-reload:${bootId}" in source
-    assert "cube-progress-recovery-reload-at" not in source
-    assert "Date.now() - lastRecovery >= 60000" not in source
-    reload_guard = source.index("disconnectedFor >= 45000")
-    assert (
-        'refreshProgressState.mode === "bootstrap"'
-        in source[reload_guard : reload_guard + 180]
-    )
-    completion_guard = source.index(
-        "// Only the refresh callback's running state gates this"
-    )
-    assert (
-        "if (!running) finishRefreshProgress();"
-        in source[completion_guard : completion_guard + 400]
-    )
+    source = (Path(__file__).parents[1] / "assets/s12_refresh.js").read_text(encoding="utf-8")
+    # Lifecycle behavior is exercised in test_v8_hero.cjs; preserve the authority
+    # boundaries here rather than names from the removed observer implementation.
+    assert "Refresh outcome unconfirmed" in source
+    assert "if (!state.result || state.callbackPending)" in source
+    assert "result?.request_id !== state.request.id" in source
+    assert "progress.startup_worker_alive === false" in source
+    assert "if (pendingOwners().length)" in source
+    assert 'terminal("interrupted"' in source
+    assert "state === completed && !state.active" in source
+    assert "the action was not automatically retried" in source
+    assert 'setProps("data-revision-store"' not in source
 
 
 def test_warm_manager_keeps_the_shell_recovery_callback_registered() -> None:
@@ -525,15 +472,16 @@ def test_long_financial_callback_cannot_own_live_revision() -> None:
         for output in _callback_outputs(metadata)
     }
 
-    assert inputs == {
-        ("auto-refresh-interval", "n_intervals"),
-        ("refresh-portfolios-button", "n_clicks"),
-        ("refresh-pl-button", "n_clicks"),
-        ("reload-risk-button", "n_clicks"),
-        ("force-risk-apply-button", "n_clicks"),
-        ("clear-cache-button", "n_clicks"),
-        ("commo-market-toggle", "n_clicks"),
-        ("risk-checker-toggle", "n_clicks"),
+    assert inputs == {("refresh-action-request", "data")}
+    assert ("refresh-action-result", "data") in outputs
+    publisher = next(item for item in app.callback_map.values() if any(
+        output.component_id == "data-revision-store" for output in _callback_outputs(item)
+    ))
+    assert {(item["id"], item["property"]) for item in publisher["inputs"]} == {
+        ("committed-revision-poll", "n_intervals")
+    }
+    assert ("refresh-commit-revision", "children") in {
+        (item["id"], item["property"]) for item in publisher["state"]
     }
     assert (
         "perspective-risk-cube-commodity-market-v1",
@@ -707,7 +655,7 @@ def test_every_callback_output_has_one_nonduplicate_owner() -> None:
     }
     assert duplicates == {}
     assert len(owners[("risk-grid", "children")]) == 1
-    assert ("data-revision-store", "data") not in owners
+    assert len(owners[("data-revision-store", "data")]) == 1
     assert len(owners[("refresh-commit-revision", "children")]) == 1
     assert len(owners[("cube-page-container", "children")]) == 1
     assert len(owners[("_pages_content", "children")]) == 1
@@ -804,8 +752,8 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     assert shell_style == {}
     assert {
         "data-page",
-        "data-history-chart",
-        "data-load-history-button",
+        "data-market-chart",
+        "data-risk-chart",
         "data-underlying",
     } <= data_ids
     assert "data-raw-table" not in data_ids
@@ -891,6 +839,7 @@ def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
         None,
         None,
         [],
+        None,  # refresh-action-request
     )
 
     assert calls == 1

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from cube.ui.s08_refresh_views import refresh_view
+
 import json
 import logging
 from typing import Any, Mapping, Sequence
@@ -12,14 +14,17 @@ from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from cube.ui.s02_aggregation import (
     apply_credit_measure,
+    tree_scope,
     default_open_rows,
     filter_ir_family,
+    frame_for_context,
     ordered_unique,
     parse_row_key,
     row_key,
     selected_underlying_sort_metric,
 )
 from cube.ui.s01_constants import (
+    BASE_GROUPS,
     CREDIT_MEASURES,
     DETAIL_COMPONENT_LABELS,
     DETAIL_COMPONENTS,
@@ -31,7 +36,7 @@ from cube.ui.s01_constants import (
     split_detail_metric,
 )
 from cube.app.s02_contracts import RefreshManagerProtocol
-from cube.services.s08_jtd import JTDReferenceError, jtd_reference_rows
+from cube.services.s08_jtd import JTDReferenceError, jtd_page, jtd_reference_rows
 from cube.ui.s03_filters import (
     BASE_SAVED_VIEW_ID,
     committed_filter_state_values,
@@ -103,6 +108,28 @@ def register_explorer_callbacks(
 ) -> None:
     """Register Cross, Split VA, detail, filters, and tree interactions."""
 
+    @app.callback(
+        Output("jtd-table", "data"),
+        Output("jtd-table", "page_count"),
+        Output("jtd-table", "page_current"),
+        Output("jtd-page-note", "children"),
+        Input("jtd-scope", "data"),
+        Input("jtd-table", "page_current"),
+        Input("jtd-table", "derived_filter_query_structure"),
+        Input("jtd-table", "sort_by"),
+        State("jtd-table", "filter_query"),
+    )
+    def update_jtd_page(underlyings, page_current, filter_tree, sort_by, filter_query):
+        reset_inputs = {"jtd-scope.data", "jtd-table.derived_filter_query_structure", "jtd-table.sort_by"}
+        if reset_inputs.intersection(ctx.triggered_prop_ids):
+            page_current = 0
+        try:
+            frame = jtd_reference_rows(underlyings or [])
+            return jtd_page(frame, page_current, filter_tree, sort_by, filter_query=filter_query)
+        except JTDReferenceError as error:
+            return [], 0, 0, str(error)
+
+
     app.clientside_callback(
         """
         function (context, ready) {
@@ -166,7 +193,7 @@ def register_explorer_callbacks(
         Output("risk-filter-exclude-selected", "value"),
         Input("data-revision-store", "data"),
         Input(RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
-        Input(CLEAR_CACHE_COMPLETE_STORE_ID, "data", allow_optional=True),
+        Input(CLEAR_CACHE_COMPLETE_STORE_ID, "modified_timestamp", allow_optional=True),
         *[State(component_id, "value") for component_id in dimension_filter_ids],
         State("risk-filter-exclude-selected", "value"),
         State(RISK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
@@ -514,29 +541,33 @@ def register_explorer_callbacks(
             )
 
         effective_credit_measure = selected_credit_measure
-        if effective_credit_measure is None and credit_view == "single":
+        if effective_credit_measure is None and (
+            table_view == "alt" or credit_view == "single"
+        ):
             effective_credit_measure = credit_measure
         jtd_reference = None
         jtd_underlying = None
         jtd_error = None
-        if (
-            detail_risk_type == "Credit"
-            and table_view != "alt"
-            and effective_credit_measure == "JTD"
-        ):
-            jtd_underlying = selected_context.get("underlying") or selected_context.get(
-                "reported underlying"
+        if detail_risk_type == "Credit" and effective_credit_measure == "JTD":
+            # A displayed name can be a bucket, group, reported name or raw name.
+            # Follow the same branch rules as the Risk tree, including Other.
+            scoped = filtered
+            for column in ("risk type", *BASE_GROUPS):
+                if column in selected_context:
+                    scoped = tree_scope(scoped, column, selected_context[column])
+            scoped = frame_for_context(scoped, selected_context)
+            jtd_underlying = (
+                scoped["underlying"].dropna().astype(str).drop_duplicates().tolist()
+                if "underlying" in scoped else []
             )
             if jtd_underlying:
                 try:
                     jtd_reference = jtd_reference_rows(jtd_underlying)
                 except JTDReferenceError as error:
-                    LOGGER.exception(
-                        "Could not load JTD reference for %s", jtd_underlying
-                    )
+                    LOGGER.exception("Could not load JTD reference")
                     jtd_error = str(error)
             else:
-                jtd_error = "Select an Underlying row to show its JTD reference."
+                jtd_error = "No raw Underlying values remain in this selected branch."
         return build_detail_panel_with_state(
             filtered,
             detail_selection,
@@ -563,6 +594,7 @@ def register_explorer_callbacks(
         Output("risk-grid", "children"),
         Output("alt-risk-grid", "children"),
         Output("detail-panel", "children"),
+        Output('refresh-view-risk-explorer', "data"),
         Input("risk-type-tabs", "value"),
         Input("ir-family-tabs", "value"),
         Input("data-revision-store", "data"),
@@ -589,7 +621,9 @@ def register_explorer_callbacks(
         State("expanded-metrics", "value"),
         State("risk-view-context-store", "data"),
         State("selected-cell-store", "data"),
+        State("refresh-action-request", "data"),
     )
+    @refresh_view('risk-explorer', revision_arg='data_revision', outputs=14, content=[11, 12, 13], stamp=[11, 12, 13])
     def reduce_and_render_risk_view(
         active_risk_type,
         ir_family,
@@ -953,11 +987,14 @@ def register_explorer_callbacks(
     @app.callback(
         Output("unmapped-books-details", "open"),
         Output("unmapped-books-grid", "children"),
+        Output('refresh-view-unmapped-books', "data"),
         Input("unmapped-books-summary", "n_clicks"),
         Input("data-revision-store", "data"),
         State("unmapped-books-details", "open"),
+        State("refresh-action-request", "data"),
         prevent_initial_call=True,
     )
+    @refresh_view('unmapped-books', revision_arg='_revision', outputs=2, content=[1], stamp=[1])
     def render_unmapped_books(
         _summary_clicks,
         _revision,

@@ -139,6 +139,9 @@ class SearchResultProtocol(Protocol):
     @property
     def total(self) -> int: ...
 
+    @property
+    def full_totals(self) -> Mapping[str, float | None] | None: ...
+
 
 @runtime_checkable
 class RefreshSnapshotProtocol(Protocol):
@@ -313,6 +316,10 @@ class RefreshManagerProtocol(Protocol):
 
     def read_frame(self, name: FrameName) -> FrameReadProtocol: ...
 
+    def data_history_identities(self) -> tuple[object, ...]: ...
+
+    def read_data_history(self, handoff) -> tuple[int, pd.DataFrame]: ...
+
     @property
     def health(self) -> RefreshHealthProtocol: ...
 
@@ -329,6 +336,8 @@ class RefreshManagerProtocol(Protocol):
         self,
         *,
         identity_mode: str = "reported",
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[str, ...]: ...
 
     def market_udl_options(self) -> tuple[str, ...]: ...

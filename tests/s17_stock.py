@@ -956,6 +956,7 @@ def test_v5_current_load_is_lazy_cached_and_defaults_activities_one_to_three(
         "",
         ["Stock", "dStock"],
         [],
+        None,
     )
     assert rendered[0]
     assert rendered[3] == "Rows: 3 of 3"
@@ -1008,6 +1009,7 @@ def test_v5_filter_and_row_click_use_cache_then_prefill_history(
         unmapped,
         crds_options,
         _activity_options,
+        _refresh_receipt,
     ) = render(
         token,
         committed,
@@ -1015,6 +1017,7 @@ def test_v5_filter_and_row_click_use_cache_then_prefill_history(
         "",
         ["Stock", "dStock"],
         open_paths,
+        None,
     )
     selected_row = next(
         row for row in rows if stock_pivot_row_payload(row["id"])["kind"] == "history"
@@ -1051,6 +1054,7 @@ def test_v5_filter_and_row_click_use_cache_then_prefill_history(
         "",
         ["Stock", "dStock"],
         open_paths[:-1],
+        None,
     )
     assert pivot_only[0]
     assert pivot_only[1]
@@ -1272,3 +1276,123 @@ def test_v5_enabled_callback_outputs_have_one_owner_and_exist_in_shell() -> None
         (component_id, "value") in pivot_inputs
         for component_id in STOCK_FILTER_IDS.values()
     )
+
+
+@pytest.fixture
+def stock_refresh_callbacks(tmp_path):
+    """Real Stock callbacks with local dated rows and no startup worker."""
+    from dash import Dash
+    from cube.services.s04_savedviews import SavedFilterViewRepository
+
+    current, prior = _comparison_legs()
+    control = SimpleNamespace(error=None, empty=False, calls=0)
+    manager = SimpleNamespace(health=SimpleNamespace(revision=7))
+
+    def source(stock_date):
+        control.calls += 1
+        if control.error:
+            raise RuntimeError(control.error)
+        frame = current if stock_date == pd.Timestamp("2026-08-14") else prior
+        return frame.iloc[:0].copy() if control.empty else frame
+
+    app = Dash(__name__, suppress_callback_exceptions=True)
+    stock_callbacks.register_callbacks(
+        app, refresh_manager=manager, stock_source=source,
+        stock_portfolio_source=lambda _date: _v5_config(),
+        saved_view_repository=SavedFilterViewRepository(tmp_path, [field.key for field in STOCK_FILTER_FIELDS]),
+    )
+    return SimpleNamespace(
+        app=app, manager=manager, control=control,
+        load=_callback_for_output(app, "stock-loaded-snapshot", "data"),
+        render=_callback_for_output(app, "stock-current-table", "data"),
+        filters=_callback_for_output(app, STOCK_SAVED_VIEW_CONTROLS.initialized_id, "data"),
+        dates={"current_date": "2026-08-14", "prior_date": "2026-08-13"},
+    )
+
+
+def _render_stock_refresh(callbacks, token, request_id="stock-request-7"):
+    return callbacks.render(token, None, list(STOCK_PIVOT_DEFAULT_ROWS), "",
+                            ["Stock", "dStock"], [], {"id": request_id})
+
+
+def test_stock_refresh_ack_follows_final_table_and_stamps_its_count(stock_refresh_callbacks):
+    callbacks = stock_refresh_callbacks
+    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
+    rendered = _render_stock_refresh(callbacks, token)
+    receipt = rendered[-1]
+    assert receipt["owner"] == "stock-current"
+    assert receipt["revision"] == 7 and receipt["request_id"] == "stock-request-7"
+    assert receipt["status"] == "rendered" and rendered[0] and rendered[2]
+    assert rendered[3].children == "Rows: 3 of 3"
+    assert rendered[3].to_plotly_json()["props"]["data-refresh-render"] == receipt["mounts"][0]
+    cached, _ = callbacks.load(2, "7", 0, callbacks.dates)
+    assert cached == token and callbacks.control.calls == 2
+    assert _render_stock_refresh(callbacks, cached)[-1]["status"] == "rendered"
+
+
+@pytest.mark.parametrize("failure", ["connector", "dates", "post-load"])
+def test_stock_load_failure_finishes_with_error_and_keeps_last_good_rows(stock_refresh_callbacks, monkeypatch, failure):
+    callbacks = stock_refresh_callbacks
+    previous, _ = callbacks.load(1, "7", 0, callbacks.dates)
+    assert _render_stock_refresh(callbacks, previous)[0]
+    callbacks.manager.health.revision = 8
+    dates = callbacks.dates
+    if failure == "connector":
+        callbacks.control.error = "Stock feed unavailable"
+    elif failure == "dates":
+        dates = None
+    else:
+        monkeypatch.setattr(stock_callbacks, "stock_display_rows", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("status failed")))
+    failed, status = callbacks.load(2, "8", 0, dates)
+    assert failed["revision"] == 8 and failed["error"] in status
+    filters = callbacks.filters(failed, None, 0, *([[]] * len(STOCK_FILTER_FIELDS)), [], None, True)
+    assert all(value is no_update for value in filters)
+    output = _render_stock_refresh(callbacks, failed, "stock-request-8")
+    assert all(value is no_update for value in output[:-1])
+    assert output[-1]["status"] == "failed"
+    assert output[-1]["revision"] == 8 and output[-1]["request_id"] == "stock-request-8"
+    assert output[-1]["message"] == failed["error"]
+
+
+def test_empty_stock_is_a_completed_zero_row_result(stock_refresh_callbacks):
+    callbacks = stock_refresh_callbacks
+    callbacks.control.empty = True
+    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
+    output = _render_stock_refresh(callbacks, token)
+    assert output[-1]["status"] == "rendered"
+    assert output[3].children == "Rows: 0 of 0"
+    assert output[2] == []
+
+
+def test_old_stock_snapshot_never_acknowledges_a_newer_revision(stock_refresh_callbacks):
+    callbacks = stock_refresh_callbacks
+    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
+    callbacks.manager.health.revision = 8
+    receipt = _render_stock_refresh(callbacks, token, "request-8")[-1]
+    assert receipt["revision"] == 7  # Publisher rejects this for target revision 8.
+
+
+def test_stock_pivot_failure_reports_failed_receipt_without_clearing_table(stock_refresh_callbacks, monkeypatch):
+    callbacks = stock_refresh_callbacks
+    token, _ = callbacks.load(1, "7", 0, callbacks.dates)
+    monkeypatch.setattr(stock_callbacks, "build_stock_pivot", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pivot failed")))
+    output = _render_stock_refresh(callbacks, token)
+    assert all(value is no_update for value in output[:-1])
+    assert output[-1]["status"] == "failed" and output[-1]["message"] == "pivot failed"
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_stock_loader_cannot_publish_after_a_newer_revision_commits(stock_refresh_callbacks, monkeypatch, fail):
+    callbacks = stock_refresh_callbacks
+    load = stock_callbacks.load_stock_page_data
+
+    def superseded_load(**kwargs):
+        result = load(**kwargs)
+        callbacks.manager.health.revision = 8
+        if fail:
+            raise RuntimeError("obsolete request failed")
+        return result
+
+    monkeypatch.setattr(stock_callbacks, "load_stock_page_data", superseded_load)
+    result = callbacks.load(1, "7", 0, callbacks.dates)
+    assert result == (no_update, no_update)
