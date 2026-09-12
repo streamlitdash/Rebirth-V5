@@ -122,105 +122,59 @@ def register_callbacks(
     *,
     data_href: str,
 ) -> None:
-    """Register the only cross-page writer for the session handoff store."""
+    """Each tab owns its controls; inactive Dash tabs are not mounted."""
 
-    @app.callback(
-        Output("quick-search-open-data", "disabled"),
-        Output("quick-market-open-data", "disabled"),
-        Output("risk-explorer-open-data", "disabled"),
-        Input("quick-search-combine-udl", "value"),
-        Input("quick-market-combine-udl", "value"),
-        Input("selected-cell-store", "data"),
-        Input("risk-type-tabs", "value"),
-    )
-    def enable_open_buttons(risk_identity, market_identity, selection, active_risk_type):
-        available = refresh_manager is not None
-        return (
-            not (available and risk_identity),
-            not (available and market_identity),
-            not (available and explorer_identity(selection, active_risk_type)),
+    def register_source(prefix, identity_id, kind, *, explorer=False):
+        identity_property = "data" if explorer else "value"
+
+        @app.callback(
+            Output(f"{prefix}-open-data", "disabled"),
+            Input(identity_id, identity_property),
+            (Input if explorer else State)("risk-type-tabs", "value"),
         )
+        def enable_open(identity, active_risk_type):
+            selected = explorer_identity(identity, active_risk_type) if explorer else identity
+            return not (refresh_manager is not None and selected)
 
-    @app.callback(
-        Output("data-history-handoff-store", "data"),
-        Output("data-route-location", "href"),
-        Output("quick-search-data-status", "children"),
-        Output("quick-market-data-status", "children"),
-        Output("risk-explorer-data-status", "children"),
-        Input("quick-search-open-data", "n_clicks"),
-        Input("quick-market-open-data", "n_clicks"),
-        Input("quick-search-combine-udl", "value"),
-        Input("quick-market-combine-udl", "value"),
-        Input("risk-explorer-open-data", "n_clicks"),
-        Input("selected-cell-store", "data"),
-        State("split-filter", "value"),
-        State("dimension-filter-values-store", "data"),
-        State("risk-filter-exclude-applied-store", "data"),
-        State("reset-generation-store", "data"),
-        State("risk-type-tabs", "value"),
-        prevent_initial_call=True,
-    )
-    def open_in_data(
-        _risk_clicks,
-        _market_clicks,
-        risk_identity,
-        market_identity,
-        _explorer_clicks,
-        selection,
-        selected_splits,
-        dimension_values,
-        exclude_value,
-        reset_generation,
-        active_risk_type,
-    ):
-        if refresh_manager is None:
-            return no_update, no_update, "Data history is unavailable.", no_update, no_update
-        if ctx.triggered_id == "quick-search-combine-udl":
-            return no_update, no_update, "", no_update, no_update
-        if ctx.triggered_id == "quick-market-combine-udl":
-            return no_update, no_update, no_update, "", no_update
-        if ctx.triggered_id == "selected-cell-store":
-            return no_update, no_update, no_update, no_update, ""
-        explorer = ctx.triggered_id == "risk-explorer-open-data"
-        kind = "market" if ctx.triggered_id == "quick-market-open-data" else "risk"
-        try:
-            selected = market_identity if kind == "market" else risk_identity
-            mode = "underlying" if kind == "market" else "reported"
-            if explorer:
-                resolved = explorer_identity(selection, active_risk_type)
-                if resolved is None:
-                    raise ValueError("Select an underlying row with a risk type and Greek first")
-                selected, mode = resolved
-            handoff = build_history_handoff(
-                refresh_manager,
-                kind=kind,
-                combine_udl=selected,
-                identity_mode=mode,
-                reset_generation=reset_generation,
-                selected_splits=selected_splits,
-                dimension_values=dimension_values,
-                exclude_value=exclude_value,
-            )
-        except (
-            AttributeError,
-            LookupError,
-            TypeError,
-            ValueError,
-            RuntimeError,
-        ) as error:
-            message = f"Could not open Data: {error}"
-            if explorer:
-                return no_update, no_update, no_update, no_update, message
-            if kind == "market":
-                return no_update, no_update, no_update, message, no_update
-            return no_update, no_update, message, no_update, no_update
-        message = "Opening exact history…"
-        payload = _handoff_payload(handoff, kind)
-        if explorer:
-            return payload, data_href, no_update, no_update, message
-        if kind == "market":
-            return payload, data_href, no_update, message, no_update
-        return payload, data_href, message, no_update, no_update
+        @app.callback(
+            Output("data-history-handoff-store", "data", allow_duplicate=True),
+            Output("data-route-location", "href", allow_duplicate=True),
+            Output(f"{prefix}-data-status", "children"),
+            Input(f"{prefix}-open-data", "n_clicks"),
+            Input(identity_id, identity_property),
+            State("split-filter", "value"),
+            State("dimension-filter-values-store", "data"),
+            State("risk-filter-exclude-applied-store", "data"),
+            State("reset-generation-store", "data"),
+            State("risk-type-tabs", "value"),
+            prevent_initial_call=True,
+        )
+        def open_in_data(clicks, identity, splits, dimensions, exclude, reset, risk_type):
+            # A remounted tab or changed selection must never navigate by itself.
+            if ctx.triggered_id != f"{prefix}-open-data" or not clicks:
+                return no_update, no_update, ""
+            if refresh_manager is None:
+                return no_update, no_update, "Data history is unavailable."
+            try:
+                mode = "underlying" if kind == "market" else "reported"
+                if explorer:
+                    resolved = explorer_identity(identity, risk_type)
+                    if resolved is None:
+                        raise ValueError("Select an underlying row with a risk type and Greek first")
+                    identity, mode = resolved
+                handoff = build_history_handoff(
+                    refresh_manager, kind=kind, combine_udl=identity,
+                    identity_mode=mode, reset_generation=reset,
+                    selected_splits=splits, dimension_values=dimensions,
+                    exclude_value=exclude,
+                )
+            except (AttributeError, LookupError, TypeError, ValueError, RuntimeError) as error:
+                return no_update, no_update, f"Could not open Data: {error}"
+            return _handoff_payload(handoff, kind), data_href, "Opening exact history…"
+
+    register_source("quick-search", "quick-search-combine-udl", "risk")
+    register_source("quick-market", "quick-market-combine-udl", "market")
+    register_source("risk-explorer", "selected-cell-store", "risk", explorer=True)
 
 
 __all__ = [

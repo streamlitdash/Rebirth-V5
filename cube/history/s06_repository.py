@@ -49,6 +49,7 @@ from .s01_models import (
 )
 from .s01_models import (
     HistoryBundle,
+    HistoryAxisOrder,
     HistoryCatalogEntry,
     HistoryHandoff,
     HistoryIdentity,
@@ -182,6 +183,44 @@ def _risk_projection(handoff: HistoryHandoff) -> tuple[str, ...]:
     return tuple(dict.fromkeys(columns))
 
 
+def _risk_chart_columns(identity: HistoryIdentity) -> tuple[str, ...]:
+    return (SOURCE_TYPE, UNDERLYING, RISK_DATE,
+            *(column for axis in identity.axes for column in (axis.column, axis.order_column)),
+            "Risk")
+
+
+def _risk_chart_rows(frame: pd.DataFrame, identity: HistoryIdentity) -> pd.DataFrame:
+    """Reduce positions before allocating a playback grid or browser payload."""
+    columns = _risk_chart_columns(identity)
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    frame = _numeric_metric(frame, "Risk")
+    return frame.groupby(list(columns[:-1]), as_index=False, sort=False,
+                         observed=True, dropna=False)["Risk"].sum(min_count=1)
+
+
+def _chart_axis_order(frame, axis, date_column):
+    """Ranks belong to a dated source/underlying, not the entire history."""
+    try:
+        return _canonical_axis_order(frame, axis)
+    except HistoryValidationError as error:
+        if "conflicting ranks" not in str(error) and "multiple labels to one rank" not in str(error):
+            raise
+    authority = [SOURCE_TYPE, UNDERLYING, date_column]
+    ranked = frame.dropna(subset=[axis.order_column])
+    conflicts = ranked.groupby([*authority, axis.column], dropna=False)[axis.order_column].nunique()
+    collisions = ranked.groupby([*authority, axis.order_column], dropna=False)[axis.column].nunique()
+    if conflicts.gt(1).any() or collisions.gt(1).any():
+        raise HistoryValidationError(f"Invalid {axis.column} ranks within one dated source/underlying")
+    # Reuse Quick Risk's supplied-rank ordering for combined underlyings.
+    from cube.ui.s02_aggregation import tenor_axis_order
+    labels, _ambiguous = tenor_axis_order(
+        frame.drop_duplicates([*authority, axis.column, axis.order_column]),
+        axis.column, axis.order_column)
+    return HistoryAxisOrder(axis.column, axis.order_column, tuple(labels),
+                            tuple(None for _ in labels), ORDER_AMBIGUOUS)
+
+
 class ArchiveHistoryRepository:
     """Lazy bounded adapter over atomic flat archive leaves."""
 
@@ -312,17 +351,43 @@ class ArchiveHistoryRepository:
             max_rows=self._max_rows,
         )
 
+    def market_pairs(self, handoff: HistoryHandoff) -> pd.DataFrame:
+        """Discover raw quotes for archived Risk without loading its positions."""
+        if handoff.kind != "risk":
+            raise HistoryValidationError("Market counterparts require a Risk identity")
+        identity = handoff.identity
+        columns = (SOURCE_TYPE, UNDERLYING)
+        try:
+            rows = self._store.rows(
+                self.generation(), kind="risk", source_types=identity.source_types,
+                risk_type=identity.risk_type, risk_greek=identity.risk_greek,
+                underlying=identity.underlying, identity_mode=identity.identity_mode,
+                columns=columns, start_date="0001-01-01", end_date="9999-12-31",
+                max_rows=self._max_rows, filter_view=handoff.filter_view, distinct=True,
+            )
+        except RiskArchiveValidationError as error:
+            if "requires completed schema-v4 Parquet" not in str(error):
+                raise
+            rows = _apply_risk_filters(self._legacy_rows(handoff), handoff.filter_view)
+        if len(rows) > self._max_rows:
+            raise HistoryValidationError("Too many Market counterparts for this Risk selection")
+        return rows.loc[:, list(columns)].drop_duplicates()
+
     def read(
         self,
         query: HistoryQuery,
         *,
         current_rows: pd.DataFrame | None = None,
         current_revision: int = 0,
+        chart_only: bool = False,
     ) -> HistoryBundle:
         if not isinstance(query, HistoryQuery):
             raise HistoryValidationError("query must be a HistoryQuery")
         handoff = query.handoff
         identity = handoff.identity
+        risk_totals = chart_only and handoff.kind == "risk"
+        if risk_totals and handoff.metric_column != "Risk":
+            raise HistoryValidationError("Chart-only Risk history requires the Risk metric")
         generation = self.generation()
         date_column = RISK_DATE if handoff.kind == "risk" else MARKET_DATE
         try:
@@ -380,6 +445,9 @@ class ArchiveHistoryRepository:
                 f"history query exceeds its {self._max_dates}-date bound"
             )
         if legacy_raw is not None:
+            if risk_totals:
+                legacy_raw = _risk_chart_rows(
+                    _apply_risk_filters(legacy_raw, handoff.filter_view), identity)
             if legacy_raw.empty or not dates:
                 period_rows = legacy_raw.iloc[0:0].copy()
             else:
@@ -392,14 +460,14 @@ class ArchiveHistoryRepository:
                 ].copy()
         elif not dates:
             projection = (
-                _risk_projection(handoff)
+                _risk_chart_columns(identity) if risk_totals else _risk_projection(handoff)
                 if handoff.kind == "risk"
                 else (SNAPSHOT_DATE, REVISION, *MARKET_ARCHIVE_COLUMNS)
             )
             period_rows = pd.DataFrame(columns=list(projection))
         else:
             projection = (
-                _risk_projection(handoff)
+                _risk_chart_columns(identity) if risk_totals else _risk_projection(handoff)
                 if handoff.kind == "risk"
                 else (SNAPSHOT_DATE, REVISION, *MARKET_ARCHIVE_COLUMNS)
             )
@@ -415,13 +483,15 @@ class ArchiveHistoryRepository:
                 start_date=dates[0].isoformat(),
                 end_date=dates[-1].isoformat(),
                 max_rows=self._max_rows,
+                risk_totals=risk_totals,
+                filter_view=handoff.filter_view if risk_totals else None,
             )
             if len(period_rows) > self._max_rows:
                 raise RiskArchiveValidationError(
                     f"historical {handoff.kind.title()} query exceeds its "
                     f"{self._max_rows}-row bound"
                 )
-            if handoff.kind == "risk":
+            if handoff.kind == "risk" and not risk_totals:
                 period_rows.insert(3, MAPPING_STATUS, MAPPED_HISTORY_VALUE)
         if not live.empty:
             live = live.loc[live[date_column].isin(dates)].copy()
@@ -435,12 +505,14 @@ class ArchiveHistoryRepository:
             ]
             period_rows = period_rows.loc[keep]
         if not live.empty:
-            if len(period_rows) + len(live) > self._max_raw_rows:
+            if risk_totals:
+                live = _risk_chart_rows(live, identity)
+            if not chart_only and len(period_rows) + len(live) > self._max_raw_rows:
                 raise HistoryValidationError(
                     "Current plus archived data is too large; narrow the period or Risk filters."
                 )
             period_rows = pd.concat([period_rows, live], ignore_index=True, sort=False)
-        if handoff.kind == "risk":
+        if handoff.kind == "risk" and not risk_totals:
             period_rows = _apply_risk_filters(period_rows, handoff.filter_view)
         if not period_rows.empty and date_column in period_rows:
             period_rows[date_column] = period_rows[date_column].map(
@@ -455,7 +527,7 @@ class ArchiveHistoryRepository:
             if not period_rows.empty
             else period_rows
         )
-        if len(period_rows) > self._max_raw_rows:
+        if not chart_only and len(period_rows) > self._max_raw_rows:
             suggestion = (
                 "Choose a narrower period or more selective Risk filters."
                 if handoff.kind == "risk"
@@ -466,7 +538,8 @@ class ArchiveHistoryRepository:
                 f"{self._max_raw_rows:,}-row browser budget. {suggestion}"
             )
         axis_orders = tuple(
-            _canonical_axis_order(period_rows, axis) for axis in identity.axes
+            (_chart_axis_order(period_rows, axis, date_column) if chart_only
+             else _canonical_axis_order(period_rows, axis)) for axis in identity.axes
         )
         ordering = HistoryOrdering(
             axes=axis_orders,
@@ -518,7 +591,7 @@ class ArchiveHistoryRepository:
             ordering=ordering,
             values=values,
             selected_rows=selected_rows.reset_index(drop=True),
-            raw_rows=period_rows.reset_index(drop=True),
+            raw_rows=(pd.DataFrame() if chart_only else period_rows.reset_index(drop=True)),
             generation=f"{generation}:current:{current_revision}",
         )
 

@@ -22,6 +22,12 @@
 .stock-simple-history-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .stock-simple-raw > summary { cursor: pointer; font-weight: 700; }
 .stock-simple-raw[open] > summary { margin-bottom: 14px; }
+.risk-table.stock-hierarchy-table { min-width: 600px; width: 100%; }
+.stock-simple-table .stock-hierarchy-table-wrap { height: 65vh; }
+.stock-hierarchy-table :is(th, td) { box-sizing: border-box; height: 36px; padding-top: 0; padding-bottom: 0; }
+.stock-hierarchy-table .index-cell, .stock-hierarchy-table .index-header { width: 60%; }
+.stock-hierarchy-table .metric-cell { width: 20%; color: #111; }
+.stock-hierarchy-table .metric-cell.number-negative { color: #c5221f; }
 #stock-current-table table { width: 100%; }
 #stock-current-table .dash-cell.column-0,
 #stock-current-table .dash-header.column-0 {

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from dash import dcc, no_update
+from dash import no_update
 
 from cube.history import s06_repository as history_module
 from cube.history import (
@@ -141,21 +141,11 @@ def test_quick_identity_change_clears_a_stale_open_in_data_error(
         SimpleNamespace(triggered_id="quick-search-combine-udl"),
     )
 
-    result = callback(
-        0,
-        0,
-        "selected-risk",
-        None,
-        0,
-        None,
-        [],
-        [[] for _field in FILTER_DIMENSION_FIELDS],
-        [],
-        0,
-        "IR",
-    )
+    result = callback(0, "selected-risk", [], {}, [], 0, "IR")
+    assert result == (no_update, no_update, "")
+    assert {item["id"] for item in metadata["inputs"]} == {
+        "quick-search-open-data", "quick-search-combine-udl"}
 
-    assert result == (no_update, no_update, "", no_update, no_update)
 
 
 def _bundle(source_type: str = "ir/delta") -> HistoryBundle:
@@ -259,7 +249,7 @@ class _Repository:
         self.bundle = bundle
         self.calls: list[HistoryQuery] = []
 
-    def read(self, query: HistoryQuery, *, current_rows=None, current_revision=0) -> HistoryBundle:
+    def read(self, query: HistoryQuery, *, current_rows=None, current_revision=0, chart_only=False) -> HistoryBundle:
         self.calls.append(query)
         return replace(self.bundle, query=query)
 
@@ -720,7 +710,6 @@ def test_data_callbacks_use_one_effective_request_for_quick_and_direct_paths() -
 
 
 def test_quick_handoff_prefills_controls_while_full_catalogue_remains_available(monkeypatch) -> None:
-    app = build_app(refresh_manager=build_production_refresh_manager())
     selected = {"risk": _handoff("ir/delta").to_mapping(), "markets": [], "label": "EUR"}
     import cube.pages.data.s04_workspace as workspace
     monkeypatch.setattr(workspace, "selection_for_handoff", lambda *args: selected.copy())
@@ -747,12 +736,13 @@ def test_data_route_and_factory_layout_are_archive_lazy(monkeypatch) -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     root = app.layout() if callable(app.layout) else app.layout
     root_ids = {getattr(item, "id", None) for item in _walk(root)}
-    assert {"data-route-location", "data-history-handoff-store", "data-history-request-store"} <= root_ids
+    assert {"data-route-location", "data-history-handoff-store"} <= root_ids
     page = build_data_page()
     ids = {getattr(item, "id", None) for item in _walk(page)}
     assert {"data-page", "data-underlying", "data-history-kind-tabs", "data-risk-chart", "data-market-chart",
-            "data-current-choices", "data-archive-choices", "data-player-visibility-store"} <= ids
+            "data-current-choices", "data-archive-choices", "data-player-visibility-store",
+            "data-history-request-store", "data-history-handoff-consumed-store"} <= ids
     assert not {"data-history-catalog-store", "data-risk-type", "data-risk-greek", "data-load-history-button",
-                "data-history-projection", "data-history-request-store"} & ids
+                "data-history-projection"} & ids
     modes = next(item for item in _walk(page) if getattr(item,"id",None)=="data-history-kind-tabs")
     assert [option["value"] for option in modes.options] == ["risk", "market", "both"]

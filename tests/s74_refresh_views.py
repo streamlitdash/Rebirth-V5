@@ -64,3 +64,21 @@ def test_error_component_is_failure_and_editor_uses_query_revision():
     _, _, receipt = callback({"revision": 4}, None)
     assert receipt["revision"] == 4 and receipt["status"] == "failed"
     assert receipt["request_id"] is None
+
+
+def test_page_receipt_publishes_without_adding_global_callback_output():
+    from dash._callback_context import context_value
+    from dash._utils import AttributeDict
+    updates = {}
+    context = context_value.set(AttributeDict(updated_props=updates))
+    try:
+        @refresh_view("test", revision_arg="revision", outputs=1, content=[0], publish=True)
+        def callback(revision):
+            return html.Div("Visible page content")
+        result = callback(9, {"id": "request-9"})
+        assert result.children == "Visible page content"
+        receipt = updates["refresh-view-test"]["data"]
+        assert receipt["revision"] == 9 and receipt["request_id"] == "request-9"
+        assert receipt["status"] == "rendered"
+    finally:
+        context_value.reset(context)

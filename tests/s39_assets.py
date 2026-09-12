@@ -28,6 +28,7 @@ JS_FILES = (
     "s12_refresh.js",
     "s13_risk.js",
     "s14_pnl.js",
+    "stock_tree.js",
 )
 
 

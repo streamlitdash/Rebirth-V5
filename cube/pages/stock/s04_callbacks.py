@@ -5,7 +5,7 @@ from math import ceil
 from threading import Lock
 
 import pandas as pd
-from dash import Input, Output, State, ctx, html, no_update
+from dash import Input, Output, State, ctx, html, no_update, set_props
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from cube.ui.s08_refresh_views import refresh_view
@@ -160,10 +160,13 @@ def register_callbacks(
         Input("stock-load-trigger", "n_intervals"),
         Input("refresh-commit-revision", "children"),
         Input("clear-cache-complete-store", "modified_timestamp"),
-        State("stock-date-store", "data"),
+        Input("stock-input-date", "date"),
+        State("refresh-action-request", "data"),
         prevent_initial_call=True,
     )
-    def load_current_stock(_ticks, refresh_revision, _generation, dates):
+    def load_current_stock(_ticks, refresh_revision, _generation, current_date, request):
+        if not current_date:
+            raise PreventUpdate
         captured = revision()
         try:
             if _trigger() == "clear-cache-complete-store":
@@ -171,13 +174,6 @@ def register_callbacks(
                     cache.clear()
                 if hasattr(stock_history_source, "clear"):
                     stock_history_source.clear()
-            current_date = dates["current_date"]
-            if (
-                refresh_manager
-                and captured > 0
-                and hasattr(refresh_manager, "control_snapshot")
-            ):
-                current_date = refresh_manager.control_snapshot.market_date
             token = {"revision": captured, "current_date": str(current_date)}
             key = _stock_snapshot_key(token)
             with lock:
@@ -198,43 +194,42 @@ def register_callbacks(
             if revision() != captured:
                 return no_update, no_update
             message = f"Stock could not be loaded: {error}"
-            return {
+            set_props("refresh-view-stock-current", {"data": {
+                "owner": "stock-current",
                 "revision": max(captured, int(refresh_revision or 0)),
-                "error": message,
-            }, message
+                "request_id": request.get("id") if isinstance(request, Mapping) else None,
+                "status": "failed", "message": message,
+            }})
+            # Keep the browser's last good snapshot usable after a failed load.
+            return no_update, html.Span(message + " · Previous Stock remains displayed.", role="alert")
         if revision() != captured:
             return no_update, no_update
         return token, status
 
+    app.clientside_callback(
+        "function (rows) { return window.dash_clientside.stockTree.render(rows); }",
+        Output("stock-tree-rendered", "children"),
+        Input("stock-tree-rows", "data"),
+        prevent_initial_call=True,
+    )
+
     # Decode clicks in the browser: the complete hierarchy never travels back
     # to Python merely to identify one clicked row.
     app.clientside_callback(
-        """function (active, records, paths) {
+        """function (action, paths) {
             const no = window.dash_clientside.no_update;
-            if (!active || active.column_id !== 'Hierarchy') return [no, no, no];
-            const rows = records || [];
-            const row = rows.find(item => item.id === active.row_id);
-            if (!row) return [no, no, null];
-            const selected = JSON.parse(row.id);
-            const opened = new Set(paths || []);
-            if (paths === null || paths === undefined) {
-                for (const item of rows) {
-                    if (!item.id.includes('"open":true')) continue;
-                    const value = JSON.parse(item.id);
-                    if (value.open) opened.add(value.path);
-                }
-            }
-            if (selected.branch) {
-                if (selected.open) opened.delete(selected.path);
-                else opened.add(selected.path);
-            }
-            return [Array.from(opened).sort(), selected.selection || no, null];
+            if (!action) return [no, no];
+            const selected = action.row;
+            if (action.kind === 'history') return [no, selected.selection || no];
+            if (!selected.branch) return [no, no];
+            const opened = new Set(paths || action.open_paths || []);
+            if (selected.open) opened.delete(selected.path);
+            else opened.add(selected.path);
+            return [Array.from(opened).sort(), no];
         }""",
         Output("stock-pivot-open-paths", "data"),
         Output("stock-history-selection", "data"),
-        Output("stock-current-table", "active_cell"),
-        Input("stock-current-table", "active_cell"),
-        State("stock-current-table", "data"),
+        Input("stock-row-action", "data"),
         State("stock-pivot-open-paths", "data"),
         prevent_initial_call=True,
     )
@@ -247,7 +242,7 @@ def register_callbacks(
         return {} if period == "custom" else {"display": "none"}
 
     @app.callback(
-        Output("stock-current-table", "data"),
+        Output("stock-tree-rows", "data"),
         Output("stock-row-count", "children"),
         Output("stock-raw-table", "data"),
         Output("stock-raw-table", "columns"),
@@ -259,7 +254,6 @@ def register_callbacks(
         Output("stock-history-panel", "style"),
         Output("stock-history-title", "children"),
         Output("stock-raw-table", "page_current"),
-        Output("refresh-view-stock-current", "data"),
         Input("stock-loaded-snapshot", "data"),
         Input("stock-pivot-open-paths", "data"),
         Input("stock-raw-panel", "open"),
@@ -281,7 +275,8 @@ def register_callbacks(
         outputs=12,
         content=[0, 2, 7, 8],
         stamp=[1],
-        ready={0: "stock-current-table", 2: "stock-raw-table", 7: "stock-history-chart"},
+        ready={0: "stock-tree-body", 2: "stock-raw-table", 7: "stock-history-chart"},
+        publish=True,
     )
     def render_current_stock(
         loaded_snapshot,
@@ -299,15 +294,16 @@ def register_callbacks(
     ):
         if not loaded_snapshot:
             raise PreventUpdate
-        if int(loaded_snapshot.get("revision", 0)) != revision():
+        captured = revision()
+        changed = _changed_ids()
+        new_snapshot = bool(changed & {None, "stock-loaded-snapshot"})
+        if new_snapshot and int(loaded_snapshot.get("revision", 0)) != captured:
             raise PreventUpdate
         if loaded_snapshot.get("error"):
             raise RuntimeError(loaded_snapshot["error"])
         page = cache.get(_stock_snapshot_key(loaded_snapshot))
         if page is None:
             raise RuntimeError("Stock snapshot expired. Refresh Stock to reload it.")
-        changed = _changed_ids()
-        new_snapshot = bool(changed & {None, "stock-loaded-snapshot"})
         tree = (
             build_stock_tree(page.raw, opened)
             if new_snapshot or "stock-pivot-open-paths" in changed
@@ -376,6 +372,6 @@ def register_callbacks(
                     {},
                     "Stock history",
                 )
-        if int(loaded_snapshot.get("revision", 0)) != revision():
+        if captured != revision():
             raise PreventUpdate
         return tree, count, *raw, *history, corrected_page

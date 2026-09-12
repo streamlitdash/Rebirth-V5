@@ -24,6 +24,7 @@ from cube.domain.s10_search import (
     UNDERLYING,
 )
 from .s02_contracts import REVISION, RISK_DATE, SNAPSHOT_DATE
+from .s01_models import RiskFilterView
 from cube.domain.s08_pnl import MARKET_DATE
 from cube.app.s03_logging import perf_span
 
@@ -269,6 +270,9 @@ class ArchiveSQLStore:
         start_date: str,
         end_date: str,
         max_rows: int,
+        risk_totals: bool = False,
+        filter_view: RiskFilterView | None = None,
+        distinct: bool = False,
     ) -> pd.DataFrame:
         """Read one bounded exact identity with row and column pushdown."""
 
@@ -280,6 +284,18 @@ class ArchiveSQLStore:
             else UNDERLYING
         )
         projection = ", ".join(_quoted(column) for column in dict.fromkeys(columns))
+        group_clause = ""
+        if distinct:
+            if risk_totals:
+                raise ValueError("Choose distinct identities or Risk totals")
+            projection = "DISTINCT " + projection
+        if risk_totals:
+            if kind != "risk":
+                raise ValueError("Only position Risk can be summed across contributors")
+            keys = [column for column in dict.fromkeys(columns) if column != "Risk"]
+            group_clause = "GROUP BY " + ", ".join(_quoted(column) for column in keys)
+            projection = ", ".join(_quoted(column) for column in keys)
+            projection += ', SUM("Risk") AS "Risk"'
         order_columns = [
             column
             for column in (
@@ -304,8 +320,22 @@ class ArchiveSQLStore:
             *identities,
             start_date,
             end_date,
-            max_rows + 1,
         ]
+        filters = []
+        if filter_view is not None:
+            if kind != "risk" or not isinstance(filter_view, RiskFilterView):
+                raise ValueError("History filters require a typed Risk filter view")
+            for column, values in filter_view.filters:
+                # The immutable demo archive uses the previous fixture prefix.
+                candidates = tuple(dict.fromkeys(candidate for value in values
+                                   for candidate in _identity_candidates(value)))
+                matches = f"COALESCE({_quoted(column)} IN ({', '.join('?' for _ in candidates)}), false)"
+                if filter_view.exclude_selected and column != "Split":
+                    matches = f"NOT ({matches})"
+                filters.append(matches)
+                parameters.extend(candidates)
+        filter_clause = " AND " + " AND ".join(filters) if filters else ""
+        parameters.append(max_rows + 1)
         with self._lock:
             connection = self._current(generation)
             if not self._has_days(connection):
@@ -326,6 +356,8 @@ class ArchiveSQLStore:
                       AND {_quoted(RISK_GREEK)} = ?
                       AND {_quoted(identity_column)} IN ({identity_placeholders})
                       AND CAST({_quoted(date_column)} AS DATE) BETWEEN ? AND ?
+                      {filter_clause}
+                    {group_clause}
                     ORDER BY {order_clause}
                     LIMIT ?
                     """,

@@ -113,6 +113,19 @@
 .empty-state { display: grid; min-height: 180px; padding: 28px; place-items: center; gap: 5px; text-align: center; }
 
 /* 11c. Reduce Plotly hover tooltip font size ---------------------------- */
+.row-detail-button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.row-detail-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
 .js-plotly-plot .plotly .hovertext span {
   font-size: 10px !important;
 }

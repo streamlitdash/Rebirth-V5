@@ -73,8 +73,9 @@ def selection_for_handoff(handoff, manager, repository):
     _revision, rows = manager.read_data_history(handoff) if manager else (0, None)
     if rows is None or rows.empty:
         # This selected archive identity may no longer exist in current Risk.
-        rows = repository.read(HistoryQuery(handoff)).raw_rows
-    rows = _apply_risk_filters(rows, handoff.filter_view)
+        rows = repository.market_pairs(handoff)
+    else:
+        rows = _apply_risk_filters(rows, handoff.filter_view)
     if not rows.empty:
         pairs = rows[["Source Type", "Underlying"]].drop_duplicates()
         for source, underlying in pairs.itertuples(index=False, name=None):

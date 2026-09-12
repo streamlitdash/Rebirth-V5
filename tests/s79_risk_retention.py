@@ -44,8 +44,9 @@ def test_risk_is_lazy_and_navigation_keeps_the_same_browser_tree(monkeypatch):
     assert builds == []
 
     body, style, mounted = mount(app.get_relative_path("/"), False)
-    assert body.id == "cube-page-container"
-    assert body.children.id == "test-cold-risk"
+    assert body.children[0].id == "risk-page-revision"
+    assert body.children[1].id == "cube-page-container"
+    assert body.children[1].children.id == "test-cold-risk"
     assert (style, mounted) == ({}, True)
     assert len(builds) == 1
 

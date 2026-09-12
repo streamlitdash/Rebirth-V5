@@ -60,21 +60,28 @@ def stock_table_records(frame):
 
 def build_stock_page_shell(*, current_date, prior_date=None, history_available=False):
     del prior_date
-    columns = stock_table_columns(
-        pd.DataFrame(
-            {
-                "Hierarchy": pd.Series(dtype=str),
-                "Stock": pd.Series(dtype=float),
-                "dStock": pd.Series(dtype=float),
-            }
-        )
-    )
     return html.Main(
         [
             html.H1("Stock", className="page-title"),
-            dcc.Store(id="stock-date-store", data={"current_date": str(current_date)}),
+            html.Div(
+                [
+                    html.Label("Stock date", htmlFor="stock-input-date"),
+                    dcc.DatePickerSingle(
+                        id="stock-input-date",
+                        date=pd.Timestamp(current_date).date().isoformat(),
+                        display_format="YYYY-MM-DD",
+                        clearable=False,
+                        persistence=True,
+                        persistence_type="session",
+                    ),
+                ],
+                className="stock-simple-history-controls",
+            ),
             dcc.Store(id="stock-loaded-snapshot"),
             dcc.Store(id="stock-pivot-open-paths", data=None),
+            dcc.Store(id="stock-row-action"),
+            dcc.Store(id="stock-tree-rows"),
+            html.Span(id="stock-tree-rendered", hidden=True),
             dcc.Store(id="stock-history-selection"),
             dcc.Interval(id="stock-load-trigger", interval=100, max_intervals=1),
             html.P(
@@ -90,53 +97,7 @@ def build_stock_page_shell(*, current_date, prior_date=None, history_available=F
                         className="page-note",
                     ),
                     html.P(id="stock-row-count", className="page-note"),
-                    dash_table.DataTable(
-                        id="stock-current-table",
-                        columns=columns,
-                        data=[],
-                        active_cell=None,
-                        cell_selectable=True,
-                        sort_action="none",
-                        page_action="none",
-                        virtualization=True,
-                        fixed_rows={"headers": True},
-                        style_table={
-                            "overflowX": "auto",
-                            "height": "65vh",
-                            "width": "100%",
-                        },
-                        # Virtual rows keep a constant height as branches change.
-                        style_cell={
-                            **TABLE_CELL,
-                            "height": "36px",
-                            "lineHeight": "20px",
-                            "whiteSpace": "nowrap",
-                            "overflow": "hidden",
-                            "textOverflow": "ellipsis",
-                        },
-                        style_cell_conditional=[
-                            {
-                                "if": {"column_id": "Hierarchy"},
-                                "width": "60%",
-                                "minWidth": "300px",
-                                "cursor": "pointer",
-                            },
-                            {
-                                "if": {"column_type": "numeric"},
-                                "textAlign": "right",
-                                "width": "20%",
-                            },
-                        ],
-                        style_data_conditional=stock_number_styles(columns)
-                        + [
-                            {
-                                "if": {
-                                    "filter_query": '{Hierarchy} contains "Promoted"'
-                                },
-                                "fontWeight": 700,
-                            }
-                        ],
-                    ),
+                    html.Div(id="stock-current-table", className="risk-table-wrap stock-hierarchy-table-wrap"),
                 ],
                 className="page-card stock-simple-table",
             ),

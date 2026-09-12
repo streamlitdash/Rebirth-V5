@@ -6,7 +6,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 
-from dash import html, no_update
+from dash import html, no_update, set_props
 from dash.exceptions import PreventUpdate
 
 LOGGER = logging.getLogger(__name__)
@@ -23,16 +23,26 @@ def _error_message(value):
     return _error_message(props.get("children"))
 
 
-def refresh_view(owner, *, revision_arg, outputs, content, stamp=(), ready=None):
-    """Append one receipt; the final callback State is the browser request.
+def refresh_view(owner, *, revision_arg, outputs, content, stamp=(), ready=None, publish=False):
+    """Report completion; the final callback State is the browser request.
 
     ``ready`` maps non-children outputs (table data/graph figures) to their DOM
     IDs. Only updated outputs are awaited; closed or unchanged views add no work.
     This observes existing work. It neither starts work nor stores financial rows.
-    Keep this decorator directly below @app.callback, which owns the extra Output.
+    By default @app.callback owns one extra receipt Output. Page callbacks may
+    use ``publish=True`` to send that receipt with set_props instead, so every
+    declared Output belongs to the mounted page. This prevents global receipt
+    stores from triggering callbacks whose page inputs are absent.
     """
     def decorate(function):
         signature = inspect.signature(function)
+
+        def finish(result, receipt):
+            if publish:
+                if receipt is not no_update:
+                    set_props(f"refresh-view-{owner}", {"data": receipt})
+                return tuple(result) if outputs > 1 else result[0]
+            return (*result, receipt)
 
         @wraps(function)
         def wrapped(*args, **kwargs):
@@ -58,13 +68,13 @@ def refresh_view(owner, *, revision_arg, outputs, content, stamp=(), ready=None)
             except Exception as exc:
                 LOGGER.exception("Refresh view %s failed", owner)
                 receipt.update(status="failed", message=str(exc)[:1000])
-                return (*([no_update] * outputs), receipt)
+                return finish([no_update] * outputs, receipt)
             result = tuple(result) if outputs > 1 else (result,)
             if len(result) != outputs:
                 raise ValueError(f"{owner}: expected {outputs} outputs, got {len(result)}")
             # Hidden/inactive callbacks and refresh revision zero acknowledge nothing.
             if revision <= 0 or all(result[index] is no_update for index in content):
-                return (*result, no_update)
+                return finish(result, no_update)
             message = _error_message([result[index] for index in content])
             if message:
                 receipt.update(status="failed", message=message)
@@ -81,7 +91,7 @@ def refresh_view(owner, *, revision_arg, outputs, content, stamp=(), ready=None)
                 render_id = f"refresh-render-{uuid.uuid4().hex}"
                 result[index] = html.Div(result[index], **{"data-refresh-render": render_id})
                 receipt["mounts"].append(render_id)
-            return (*result, receipt)
+            return finish(result, receipt)
 
         return wrapped
     return decorate

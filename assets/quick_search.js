@@ -4,7 +4,7 @@
     const api = window.dash_clientside = window.dash_clientside || {};
     api.quickSearch = {
         options: function (index, query, current) {
-            const unchanged = api.no_update;
+            const unchanged = window.dash_clientside.no_update;
             if (!index || !Array.isArray(index.rows)) return [[], unchanged];
             const typed = String(query || "").slice(0, 256);
             const terms = typed.normalize("NFKC")

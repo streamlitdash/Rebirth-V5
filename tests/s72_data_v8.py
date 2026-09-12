@@ -1,5 +1,4 @@
 """V8 Data search, cross-page scope and current-plus-archive regression tests."""
-from dataclasses import replace
 from datetime import date, datetime, timezone
 from threading import RLock
 from types import SimpleNamespace
@@ -196,17 +195,16 @@ def test_remount_empty_value_retains_scope_mode_period_and_raw_market(tmp_path, 
     assert result[1] == selection["token"]
     assert result[4] == market_index
     assert result[5] == "both"
-    assert result[8:] == (period, saved["start_date"], saved["end_date"])
+    assert result[8:11] == (period, saved["start_date"], saved["end_date"])
     if scoped:
         assert "preserved" in result[7]
     followup = callback(result[1], None, 0, result[0], "both", "consumed", saved)
-    assert followup == (no_update,) * 11
+    assert followup == (no_update,) * 12
 
 
 def test_layout_and_callbacks_use_one_search_without_old_catalog_or_picker(tmp_path):
     app = Dash(__name__, suppress_callback_exceptions=True)
-    app.layout = html.Div([dcc.Store(id="data-history-handoff-store"), dcc.Store(id="data-history-handoff-consumed-store"),
-        dcc.Store(id="data-history-request-store"), dcc.Store(id="reset-generation-store", data=0),
+    app.layout = html.Div([dcc.Store(id="data-history-handoff-store"), dcc.Store(id="reset-generation-store", data=0),
         dcc.Store(id="refresh-action-request"), dcc.Store(id="refresh-view-data-history"),
         dcc.Interval(id="committed-revision-poll", interval=1000),
         dcc.Store(id="clear-cache-complete-store", data=0), html.Span("7", id="refresh-commit-revision"), build_data_page()])
@@ -222,3 +220,84 @@ def test_layout_and_callbacks_use_one_search_without_old_catalog_or_picker(tmp_p
     assert "data-risk-type" not in layout and "data-history-projection" not in layout
     server_search_inputs = [item for item in dependencies if not item.get("clientside_function") and any(i["property"] == "search_value" for i in item["inputs"])]
     assert server_search_inputs == []
+
+
+def test_chart_query_aggregates_large_position_history_before_browser_budget(tmp_path):
+    frame = pd.concat([risk_rows()] * 6000, ignore_index=True)
+    frame["Portfolio"] = [f"BOOK-{index}" for index in range(len(frame))]
+    snapshot = SimpleNamespace(revision=1, refreshed_at=datetime(2026, 9, 10, 22, tzinfo=timezone.utc),
+        system_date=pd.Timestamp("2026-09-10"), market_date=pd.Timestamp("2026-09-10"), market_status="OFFICIAL", errors=(),
+        dashboard_frame=frame, market_frame=market_rows("2026-09-10"), risk_dates={"ir/delta": pd.Timestamp("2026-09-10")})
+    archive_official_snapshot(snapshot, lambda _day: frame[["Portfolio", "Underlying", "Risk Type", "Risk Greek", "PL"]], tmp_path)
+    repository = ArchiveHistoryRepository(tmp_path)
+    chart = repository.read(HistoryQuery(handoff()), chart_only=True)
+    assert chart.raw_rows.empty and len(chart.values) == 1
+    assert chart.values["Risk"].tolist() == [frame["Risk"].sum()]
+    with pytest.raises(ValueError, match="browser budget"):
+        repository.read(HistoryQuery(handoff()))
+    for exclude, expected in [(False, frame.iloc[0]["Risk"]), (True, frame["Risk"].sum() - frame.iloc[0]["Risk"])]:
+        scoped = handoff(scope=RiskFilterView(filters=(("Portfolio", ("BOOK-0",)),), exclude_selected=exclude))
+        assert repository.read(HistoryQuery(scoped), chart_only=True).values["Risk"].tolist() == [expected]
+    # An archived-only selection discovers raw markets through DISTINCT keys,
+    # without reading 12,000 contributors or building the playback grid.
+    selection = selection_for_handoff(handoff(), None, repository)
+    assert {item["identity"]["underlying"] for item in selection["markets"]} == {"EUR", "USD"}
+
+
+def test_current_chart_aggregates_100k_rows_and_same_date_overwrites_archive(tmp_path):
+    archive_day(tmp_path, "2026-09-10", 1.)
+    manager = Manager()
+    manager._snapshot.dashboard_frame = pd.concat([risk_rows()] * 50_001, ignore_index=True)
+    revision, rows = manager.read_data_history(handoff())
+    chart = ArchiveHistoryRepository(tmp_path).read(HistoryQuery(handoff()), current_rows=rows,
+                                                   current_revision=revision, chart_only=True)
+    assert len(chart.values) == 1 and chart.raw_rows.empty
+    assert chart.values["Risk"].tolist() == [1300. * 50_001]
+
+
+def test_rank_authority_is_per_dated_source_underlying(tmp_path):
+    from cube.history.s06_repository import _chart_axis_order
+    axis = handoff().identity.axes[0]
+    frame = pd.DataFrame({"Source Type": ["ir/delta"] * 4, "Underlying": ["EUR"] * 4,
+                          "Risk Date": ["2026-09-10"] * 2 + ["2026-09-11"] * 2,
+                          "Tenor Swap": ["1Y", "5Y", "1Y", "5Y"], "Tenor Swap Order": [1, 2, 2, 3]})
+    order = _chart_axis_order(frame, axis, "Risk Date")
+    assert order.labels == ("1Y", "5Y")
+    invalid = frame.copy()
+    invalid["Risk Date"] = "2026-09-11"
+    with pytest.raises(ValueError, match="within one dated"):
+        _chart_axis_order(invalid, axis, "Risk Date")
+
+
+def test_selection_and_its_option_arrive_together_and_empty_hydration_keeps_them(tmp_path, monkeypatch):
+    import cube.pages.data.s03_callbacks as callbacks
+    from dash import no_update
+    app = Dash(__name__)
+    register_callbacks(app, ArchiveHistoryRepository(tmp_path), Manager())
+    callback = next(item["callback"].__wrapped__ for key, item in app.callback_map.items() if "data-selection-store.data" in key)
+    monkeypatch.setattr(callbacks, "ctx", SimpleNamespace(triggered_id="data-underlying"))
+    token = encode_choice("risk", "IR | Delta | Rates")
+    result = callback(token, None, 0, None, "risk", None, None)
+    assert result[11] == [result[2]] and result[11][0]["value"] == result[1] == token
+    hydrated = callback(None, None, 0, result[0], "risk", None, None)
+    assert hydrated[0]["token"] == token and hydrated[11][0]["value"] == token
+    assert callback(token, None, 0, hydrated[0], "risk", None, None) == (no_update,) * 12
+
+
+def test_full_year_market_surface_fits_but_cell_guard_still_precedes_grid(tmp_path, monkeypatch):
+    from cube.history.s01_models import HISTORY_CANONICAL_CELL_BUDGET
+    assert HISTORY_CANONICAL_CELL_BUDGET == 64_000
+    identity = HistoryIdentity(("ir/deltavega",), "IR", "DeltaVega", "EUR", "underlying")
+    selected = HistoryHandoff(schema_version=1, kind="market", identity=identity, metric="current",
+                              source_revision=7, snapshot_date=date(2026, 9, 11))
+    dates = pd.bdate_range(end="2026-09-11", periods=263)
+    frame = pd.DataFrame([{"Source Type": "ir/deltavega", "Underlying": "EUR", "Market Date": day, "Snapshot Date": day,
+                           "Tenor Swap": f"S{s}", "Tenor Swap Order": s,
+                           "Tenor Option": f"O{o}", "Tenor Option Order": o, "Current": float(s-o)}
+                          for day in dates for s in range(9) for o in range(7)])
+    bundle = ArchiveHistoryRepository(tmp_path).read(HistoryQuery(selected), current_rows=frame, chart_only=True)
+    assert len(bundle.values) == 16_569 and bundle.raw_rows.empty
+    import cube.history.s06_repository as module
+    monkeypatch.setattr(module, "_canonical_values", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Allocated too early")))
+    with pytest.raises(ValueError, match="cell browser budget"):
+        ArchiveHistoryRepository(tmp_path, max_cells=16_000).read(HistoryQuery(selected), current_rows=frame, chart_only=True)

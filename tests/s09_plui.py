@@ -157,7 +157,21 @@ def _registered_pl_app(
 
 def _callback(app: Dash, output_fragment: str):
     key = next(key for key in app.callback_map if output_fragment in key)
-    return app.callback_map[key]["callback"].__wrapped__
+    function = app.callback_map[key]["callback"].__wrapped__
+    if function.__name__ != "reduce_and_render_pl_summary":
+        return function
+    def call(*args):
+        from dash._callback_context import context_value
+        from dash._utils import AttributeDict
+        from dash import no_update
+        updates = {}
+        context = context_value.set(AttributeDict(updated_props=updates))
+        try:
+            result = function(*args)
+            return (*result, updates.get("refresh-view-pnl-summary", {}).get("data", no_update))
+        finally:
+            context_value.reset(context)
+    return call
 
 
 def _callback_metadata(app: Dash, output_fragment: str) -> dict[str, object]:

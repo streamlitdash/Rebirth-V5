@@ -55,11 +55,16 @@ def expanded_rows(frame):
 
 def invoke(function, *args, trigger=None):
     triggers = trigger if isinstance(trigger, (list, tuple)) else ([trigger] if trigger else [])
-    token = context_value.set(AttributeDict(triggered_inputs=(
+    updated = {}
+    token = context_value.set(AttributeDict(updated_props=updated, triggered_inputs=(
         [{"prop_id": value, "value": None} for value in triggers]
     )))
     try:
-        return function(*args)
+        result = function(*args)
+        if function.__name__ == "render_current_stock":
+            receipt = updated.get("refresh-view-stock-current", {}).get("data", no_update)
+            return (*result, receipt)
+        return result
     finally:
         context_value.reset(token)
 
@@ -79,11 +84,11 @@ def callbacks(raw, *, source=None, history=None):
     def callback(output):
         return next(item["callback"].__wrapped__ for key, item in app.callback_map.items() if output in key)
 
-    return manager, calls, callback("stock-loaded-snapshot.data"), callback("stock-current-table.data")
+    return manager, calls, callback("stock-loaded-snapshot.data"), callback("stock-tree-rows.data")
 
 
 def load(fn, revision=1, *, trigger="stock-load-trigger.n_intervals"):
-    return invoke(fn, 1, revision, None, {"current_date": "2026-09-10"}, trigger=trigger)
+    return invoke(fn, 1, revision, None, "2026-09-10", {"id": f"refresh-{revision}"}, trigger=trigger)
 
 
 def render(fn, token, *, opened=None, raw_open=False, selection=None,
@@ -152,7 +157,8 @@ def test_one_collapsed_raw_area_and_only_stock_measures_in_main_table():
     raw = next(node for node in nodes if getattr(node, "id", None) == "stock-raw-panel")
     assert raw.open is False
     tables = {node.id: node for node in nodes if isinstance(node, dash_table.DataTable)}
-    assert [column["id"] for column in tables["stock-current-table"].columns] == ["Hierarchy", "Stock", "dStock"]
+    assert "stock-current-table" not in tables  # native Risk Explorer hierarchy, no pages
+    assert any(getattr(node, "id", None) == "stock-tree-rows" for node in nodes)
     assert tables["stock-raw-table"].filter_action == "custom"
     assert tables["stock-raw-table"].page_action == "custom"
     assert tables["stock-raw-table"].style_table["width"] == "100%"
@@ -165,9 +171,6 @@ def test_numeric_source_columns_have_commas_red_negatives_and_black_positives(ra
     assert all(column["format"].to_plotly_json()["specifier"] == ",.2f" for column in numeric)
     styles = stock_number_styles(columns)
     assert all(rule["if"]["filter_query"].endswith("< 0") and rule["color"] == "#c5221f" for rule in styles)
-    table = next(node for node in walk(build_stock_page_shell(current_date="2026-09-11"))
-                 if getattr(node, "id", None) == "stock-current-table")
-    assert table.style_cell["color"] == "#111111"
 
 
 def test_raw_filter_uses_all_rows_then_sorts_and_pages_without_mutating_source():
@@ -215,11 +218,12 @@ def test_load_failure_retains_display_then_same_revision_retry_recovers(raw):
     manager.health.revision = 2
     fail[0] = True
     failed, status = load(loader, 2)
-    result = render(renderer, failed, request="refresh-2")
-    assert "Connector offline" in status
-    assert all(value is no_update for value in result[:-1])
-    assert result[-1]["status"] == "failed" and result[-1]["revision"] == 2
-    assert result[-1]["request_id"] == "refresh-2"
+    assert failed is no_update
+    assert "Connector offline" in str(status)
+    # A failed refresh keeps last-good rows clickable instead of replacing
+    # their token with an error that rejects every subsequent click.
+    result = render(renderer, good, opened=[], trigger="stock-pivot-open-paths.data", request="refresh-2")
+    assert result[0] is not no_update
     fail[0] = False
     recovered, _ = load(loader, 2)
     assert render(renderer, recovered, request="refresh-2")[-1]["status"] == "rendered"
@@ -351,3 +355,11 @@ def test_history_uses_identifier_all_dates_and_current_observation_wins(raw, ide
     assert pd.Series(change.y).dropna().tolist() == [3.0, 4.0, 45_000.0]  # supplied change
     assert stock.connectgaps is False
     pd.testing.assert_frame_equal(rows, before)
+
+
+def test_stock_picker_date_reaches_connector_without_main_risk_date_override(raw):
+    _, calls, loader, _ = callbacks(raw)
+    invoke(loader, 1, 1, None, "2026-08-04", None, trigger="stock-input-date.date")
+    assert calls == [pd.Timestamp("2026-08-04")]
+    invoke(loader, 1, 1, None, "2026-08-05", None, trigger="stock-input-date.date")
+    assert calls[-1] == pd.Timestamp("2026-08-05")

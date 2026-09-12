@@ -33,6 +33,8 @@ def _panel(kind):
 def build_data_page(*, cube_href="/", pnl_href="/pnl", stock_href="/stock"):
     del cube_href, pnl_href, stock_href
     return html.Main([
+        dcc.Store(id="data-history-handoff-consumed-store", storage_type="session"),
+        dcc.Store(id="data-history-request-store", storage_type="session"),
         dcc.Store(id="data-current-choices", data={}),
         dcc.Store(id="data-archive-choices", data={}),
         dcc.Store(id="data-selection-store"),

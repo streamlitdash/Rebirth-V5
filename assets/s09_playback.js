@@ -92,11 +92,21 @@
   }
 
   function play(payload, clicks, ticks, slider, visibility, prior) {
+    if (typeof document.getElementById === "function" && !document.getElementById("data-page")) {
+      return Array(22).fill(window.dash_clientside.no_update);
+    }
     const bundles = payload?.bundles || {}, mode = payload?.mode || "risk";
     const dates = [...new Set(Object.values(bundles).flatMap(bundle => bundle?.dates || []))].sort();
     const old = prior || {}, changed = old.key !== payload?.key;
     const count = dates.length;
     let at = changed ? Math.max(0, count - 1) : Math.max(0, Math.min(Number(old.index) || 0, count - 1));
+    if (changed && mode === "both" && bundles.risk && bundles.market) {
+      // Start a comparison on a date both series actually contain. Today's
+      // live Market remains on the slider; never relabel yesterday's Risk.
+      const marketDates = new Set(bundles.market.dates);
+      const shared = bundles.risk.dates.filter(day => marketDates.has(day)).sort();
+      if (shared.length) at = dates.indexOf(shared[shared.length - 1]);
+    }
     let playing = !changed && Boolean(old.playing) && count > 1;
     if (document.hidden || visibility?.hidden) playing = false;
     else if (!changed && Number(clicks || 0) !== Number(old.clicks || 0)) playing = !playing && count > 1;
@@ -107,12 +117,18 @@
     const [riskRows, riskColumns, riskStyle] = table(bundles.risk, day);
     const [marketRows, marketColumns, marketStyle] = table(bundles.market, day);
     const title = kind => `${kind === "risk" ? "Risk" : "Market"}${bundles[kind] ? " · " + bundles[kind].handoff.identity.underlying : ""}`;
+    if (payload?.refresh) {
+      window.dash_clientside.set_props("refresh-view-data-history", {data: {
+        ...payload.refresh, mounts: [payload.key],
+        ready_ids: (mode === "both" ? ["risk", "market"] : [mode]).map(kind => `data-${kind}-chart`),
+      }});
+    }
     return [figure(bundles.risk, day, payload?.errors?.risk), figure(bundles.market, day, payload?.errors?.market),
       riskRows, riskColumns, marketRows, marketColumns, riskStyle, marketStyle,
       mode === "market" ? {display: "none"} : {}, mode === "risk" ? {display: "none"} : {}, title("risk"), title("market"),
       Math.max(0, count - 1), marks, at, count < 2, day, playing ? "Pause" : "Play", count < 2, !playing,
       {key: payload?.key || null, index: at, playing, clicks: Number(clicks || 0), ticks: Number(ticks || 0)},
-      payload?.key || "", payload?.refresh ? {...payload.refresh, mounts: [payload.key]} : window.dash_clientside.no_update];
+      payload?.key || ""];
   }
   let lastSearch;
   function searchCurrent(query, selected, _tick, current, archive, value) {
@@ -123,8 +139,9 @@
     lastSearch = args;
     return search(current, archive, query, selected, value);
   }
-  window.dash_clientside = Object.assign({}, window.dash_clientside, {cubeData: {
+  const clientside = window.dash_clientside = window.dash_clientside || {};
+  clientside.cubeData = {
     search, play,
     searchCurrent,
-  }});
+  };
 })();

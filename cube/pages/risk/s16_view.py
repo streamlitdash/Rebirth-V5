@@ -649,6 +649,15 @@ def build_layout(
             )
             if include_shared_refresh_shell
             else None,
+            dcc.Store(id="refresh-view-risk-explorer", data=None),
+            dcc.Store(id="refresh-view-unmapped-books", data=None),
+            dcc.Store(id="refresh-view-aggregate-pl", data=None),
+            dcc.Store(id="refresh-view-top-promotions", data=None),
+            dcc.Store(id="refresh-view-quick-risk-options", data=None),
+            dcc.Store(id="refresh-view-quick-risk-table", data=None),
+            dcc.Store(id="refresh-view-quick-risk-chart", data=None),
+            dcc.Store(id="refresh-view-quick-market-options", data=None),
+            dcc.Store(id="refresh-view-quick-market", data=None),
             dcc.Store(
                 id="open-rows-store",
                 data=initial_open_rows,

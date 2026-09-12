@@ -23,13 +23,6 @@ from cube.history import (
     HistoryQuery,
     HistoryValidationError,
 )
-from .s01_selection import (
-    direct_history_handoff,
-    risk_greek_options,
-    risk_type_options,
-    selected_value,
-    underlying_options,
-)
 
 
 QUICK_HANDOFF_ENTRY_KEY = "__quick_handoff__"
@@ -269,17 +262,18 @@ def query_history_bundle(
         refresh_manager.read_data_history(handoff)
         if refresh_manager is not None else (0, pd.DataFrame())
     )
-    bundle = repository.read(query, current_rows=rows, current_revision=revision)
+    bundle = repository.read(query, current_rows=rows, current_revision=revision,
+                             chart_only=True)
     payload = serialize_history_bundle(bundle)
     if bundle.empty:
         status = "No current or archived rows match this identity and period."
     else:
         status = (
-            f"Loaded {len(bundle.dates):,} dates and {len(bundle.raw_rows):,} exact "
-            f"rows ({bundle.resolved_start} to {bundle.resolved_end})."
+            f"Loaded {len(bundle.dates):,} dates and {len(bundle.values):,} plotted "
+            f"values ({bundle.resolved_start} to {bundle.resolved_end})."
         )
         if bundle.ordering.status != "ORDERED":
-            status += " Tenor order is a deterministic fallback (ORDER_AMBIGUOUS)."
+            status += " Shared tenor order is used where dated underlyings have different ranks."
     return payload, status
 
 
@@ -372,12 +366,13 @@ def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_
 
     app.clientside_callback(
         ClientsideFunction(namespace="cubeData", function_name="searchCurrent"),
-        Output("data-underlying", "options"), Output("data-search-status", "children"),
+        Output("data-underlying", "options", allow_duplicate=True), Output("data-search-status", "children"),
         Input("data-underlying", "search_value"), Input("data-selected-option", "data"),
         Input("committed-revision-poll", "n_intervals"),
         State("data-current-choices", "data"),
         State("data-archive-choices", "data"),
         State("data-underlying", "value"),
+        prevent_initial_call=True,
     )
 
     @app.callback(
@@ -388,6 +383,7 @@ def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_
         Output("data-selection-status", "children"),
         Output("data-period", "value"), Output("data-custom-range", "start_date"),
         Output("data-custom-range", "end_date"),
+        Output("data-underlying", "options"),
         Input("data-underlying", "value"), Input("data-history-handoff-store", "data"),
         Input("reset-generation-store", "data"),
         State("data-selection-store", "data"), State("data-history-kind-tabs", "value"),
@@ -396,27 +392,32 @@ def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_
     )
     def choose_identity(token, raw_handoff, reset, selected, mode, consumed, saved):
         trigger = ctx.triggered_id
-        unchanged = (no_update,) * 11
+        unchanged = (no_update,) * 12
         restored = False
         try:
             nonce = _stored_handoff_nonce(raw_handoff) if raw_handoff else ""
-            incoming = raw_handoff and nonce != str(consumed or "") and trigger in {None, "data-history-handoff-store"}
+            incoming = raw_handoff and nonce != str(consumed or "")
             if incoming:
                 handoff = replace(_stored_history_handoff(raw_handoff), reset_generation=int(reset or 0))
                 token = encode_choice("handoff", handoff.to_mapping())
                 mode = handoff.kind
-            elif not token and isinstance(saved, Mapping) and saved.get("selection"):
+            elif (not token and isinstance(saved, Mapping) and saved.get("selection")
+                  and (not selected or selected.get("token") == saved["selection"].get("token"))):
                 selected = saved["selection"]
                 token = selected["token"]
                 mode = saved.get("display_mode", "risk")
                 handoff = choices.resolve(token, reset)
                 restored = True
+            elif not token and isinstance(selected, Mapping) and selected.get("token"):
+                # Empty dropdown hydration must not clear a newer selection.
+                token = selected["token"]
+                handoff = choices.resolve(token, reset)
             elif token:
                 if selected and selected.get("token") == token and trigger != "reset-generation-store":
                     return unchanged
                 handoff = choices.resolve(token, reset)
             else:
-                return None, None, None, [], None, no_update, no_update, "Choose an underlying above.", no_update, no_update, no_update
+                return None, None, None, [], None, no_update, no_update, "Choose an underlying above.", no_update, no_update, no_update, no_update
             selection = selection_for_handoff(handoff, refresh_manager, repository)
             selection["token"] = token
             options = [{"label": describe(HistoryHandoff.from_mapping(raw)), "value": str(index)}
@@ -431,11 +432,13 @@ def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_
                 market_value = next((str(index) for index, market in enumerate(selection["markets"])
                                      if market["identity"] == saved_market), market_value)
             period_values = (saved.get("period", "all"), saved.get("start_date"), saved.get("end_date")) if restored else (no_update,) * 3
-            return (selection, token, {"label": label, "value": token}, options, market_value,
-                    mode or handoff.kind, (nonce if incoming else no_update), scope, *period_values)
+            selected_option = {"label": label, "value": token}
+            return (selection, token, selected_option, options, market_value,
+                    mode or handoff.kind, (nonce if incoming else no_update), scope, *period_values,
+                    [selected_option])
         except (OSError, RuntimeError, LookupError, TypeError, ValueError) as error:
             return (None, no_update, no_update, [], None, no_update, no_update,
-                    f"Could not select this identity: {error}", no_update, no_update, no_update)
+                    f"Could not select this identity: {error}", no_update, no_update, no_update, no_update)
 
     @app.callback(
         Output("data-history-request-store", "data"),
@@ -517,7 +520,6 @@ def register_callbacks(app: Dash, repository: ArchiveHistoryRepository, refresh_
         Output("data-player-button", "disabled"), Output("data-player-interval", "disabled"),
         Output("data-player-state-store", "data"),
         Output("data-history-results", "data-refresh-render"),
-        Output("refresh-view-data-history", "data"),
         Input("data-history-bundle-store", "data"), Input("data-player-button", "n_clicks"),
         Input("data-player-interval", "n_intervals"), Input("data-player-slider", "value"),
         Input("data-player-visibility-store", "data"), State("data-player-state-store", "data"),

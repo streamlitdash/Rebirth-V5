@@ -66,7 +66,21 @@ def _callback_for_output(app, component_id: str, component_property: str):
             for output in _callback_outputs(metadata)
         )
     )
-    return metadata["callback"].__wrapped__
+    function = metadata["callback"].__wrapped__
+    if function.__name__ != "reduce_and_render_pl_summary":
+        return function
+    def call(*args):
+        from dash._callback_context import context_value
+        from dash._utils import AttributeDict
+        from dash import no_update
+        updates = {}
+        context = context_value.set(AttributeDict(updated_props=updates))
+        try:
+            result = function(*args)
+            return (*result, updates.get("refresh-view-pnl-summary", {}).get("data", no_update))
+        finally:
+            context_value.reset(context)
+    return call
 
 
 def _native_page(
@@ -650,14 +664,18 @@ def test_every_callback_output_has_one_nonduplicate_owner() -> None:
                 output.component_property,
             )
             owners[identity].append(callback_key)
-            assert output.allow_duplicate is False
+            if identity not in {("data-history-handoff-store", "data"), ("data-route-location", "href"), ("data-underlying", "options")}:
+                assert output.allow_duplicate is False
 
     duplicates = {
         f"{component_id}.{component_property}": callbacks
         for (component_id, component_property), callbacks in owners.items()
         if len(callbacks) != 1
     }
-    assert duplicates == {}
+    assert set(duplicates) == {"data-history-handoff-store.data", "data-route-location.href", "data-underlying.options"}
+    assert len(owners[("data-history-handoff-store", "data")]) == 3
+    assert len(owners[("data-route-location", "href")]) == 3
+    assert len(owners[("data-underlying", "options")]) == 2
     assert len(owners[("risk-grid", "children")]) == 1
     assert len(owners[("data-revision-store", "data")]) == 1
     assert len(owners[("refresh-commit-revision", "children")]) == 1

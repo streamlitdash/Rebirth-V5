@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from dash import Dash, html, no_update
+from dash import Dash, html
 
 from cube.domain.s10_search import ResolvedHistoryIdentity
 from cube.pages.risk import s04_handoff as handoff_module
@@ -79,19 +79,17 @@ def test_explorer_button_callback_carries_typed_identity_and_shared_filters(monk
 
     app = Dash(__name__, suppress_callback_exceptions=True)
     handoff_module.register_callbacks(app, Manager(), data_href="/data")
-    button = next(meta["callback"].__wrapped__ for meta in app.callback_map.values()
-                  if any(output.component_id == "risk-explorer-open-data" for output in meta["output"]))
-    callback = next(meta["callback"].__wrapped__ for meta in app.callback_map.values()
-                    if any(output.component_id == "data-history-handoff-store" for output in meta["output"]))
+    button = app.callback_map["risk-explorer-open-data.disabled"]["callback"].__wrapped__
+    callback = next(meta["callback"].__wrapped__ for key, meta in app.callback_map.items()
+                    if "risk-explorer-data-status.children" in key)
     selection = actual_underlying_selection(mode)
-    assert button(None, None, selection, "Credit") == (True, True, False)
+    assert button(selection, "Credit") is False
     values = [["P1"] if field.key == "portfolio" else [] for field in RISK_FILTER_DIMENSION_FIELDS]
     monkeypatch.setattr(handoff_module, "ctx", SimpleNamespace(triggered_id="risk-explorer-open-data"))
-    result = callback(0, 0, None, None, 1, selection, ["Risk"], values, [], 3, "Credit")
-    payload, href, risk_status, market_status, explorer_status = result
+    result = callback(1, selection, ["Risk"], values, [], 3, "Credit")
+    payload, href, explorer_status = result
     assert calls == [("risk", f"Credit | Delta | {label}", mode)]
-    assert href == "/data" and risk_status is no_update and market_status is no_update
-    assert explorer_status
+    assert href == "/data" and explorer_status
     raw = payload["handoff"]
     assert raw["identity"]["underlying"] == label
     assert raw["identity"]["identity_mode"] == mode

@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const noUpdate = {};
-const context = {window:{dash_clientside:{no_update:noUpdate}}, document:{hidden:false}, console};
+let receipt;
+const context = {window:{dash_clientside:{no_update:noUpdate,set_props:(id, props)=>{receipt=props.data;}}}, document:{hidden:false}, console};
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../assets/s09_playback.js'),'utf8'),context);
 const {search, searchCurrent, play} = context.window.dash_clientside.cubeData;
@@ -29,15 +30,15 @@ const bundle={key:'large',kind:'risk',date_column:'Risk Date',dates:['2026-09-11
  handoff:{identity:{underlying:'Test'}}};
 const payload={key:'render-a',mode:'risk',bundles:{risk:bundle},refresh:{owner:'data-history',revision:4,request_id:'request-a',status:'rendered'}};
 const result=play(payload,0,0,0,{},null);
-assert.equal(result.length,23);
+assert.equal(result.length,22);
 assert.equal(result[0].data[0].type,'heatmap');
 assert.equal(result[0].data[0].zmin,-1234);
 assert.equal(result[0].data[0].zmax,1234);
 assert.equal(result[0].layout.yaxis.autorange,'reversed');
 assert.equal(result[0].data[0].colorscale[2][1],'#4C8A4A');
 assert.equal(result[21],'render-a');
-assert.equal(result[22].request_id,'request-a');
-assert.equal(result[22].mounts[0],'render-a');
+assert.equal(receipt.request_id,'request-a');
+assert.equal(receipt.mounts[0],'render-a');
 assert.equal(result[6][0].if.filter_query,'{Risk} < 0');
 
 const curve={...bundle,key:'curve',axes:[{column:'Tenor Swap',labels:['1Y','5Y']}],values:[
@@ -69,6 +70,14 @@ assert.equal(both[0].data[0].type,'bar');
 assert.equal(both[1].data[0].type,'scatter');
 assert.equal(both[1].data[0].mode,'lines+markers');
 assert.deepEqual(Array.from(both[1].data[0].y),[3.75,3.9]);
+// Live Market may be a day newer. Both starts on an actual shared date,
+// while retaining the live day in the slider and its original Market date.
+const newerMarket={...market,dates:['2026-09-10','2026-09-11','2026-09-12'],values:[
+ ...market.values,{'Market Date':'2026-09-12','Tenor Swap':'1Y',Current:4.1}]};
+const compared=play({key:'different-dates',mode:'both',bundles:{risk:curve,market:newerMarket}},0,0,0,{},null);
+assert.equal(compared[16],'2026-09-11');
+assert.equal(compared[12],2);
+assert.equal(compared[0].data[0].type,'bar');
 for (const kind of ['risk','market']) {
  const dateColumn=kind==='risk'?'Risk Date':'Market Date';
  const metric=kind==='risk'?'Risk':'Current';
@@ -82,4 +91,14 @@ for (const kind of ['risk','market']) {
  assert.equal(figure.layout.xaxis.title.text,'Date');
  assert.deepEqual(Array.from(figure.data[0].x),['2026-09-10','2026-09-11']);
 }
+
+// Full-app asset registration can replace the namespace before Dash installs
+// no_update. Quick search must read the live sentinel, never a stale reference.
+const quickContext = {window:{dash_clientside:{}}};
+vm.createContext(quickContext);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../assets/quick_search.js'),'utf8'),quickContext);
+quickContext.window.dash_clientside={...quickContext.window.dash_clientside,no_update:noUpdate};
+const quickResult=quickContext.window.dash_clientside.quickSearch.options({rows:[['IR | Delta | EUR','ir delta eur']]},'EUR','IR | Delta | EUR');
+assert.equal(quickResult[1],noUpdate);
+
 console.log('Data: local search, 250,000-cell heatmap, Risk tenor bars, Market curves, spot history lines, nulls, palette, receipts and playback passed.');

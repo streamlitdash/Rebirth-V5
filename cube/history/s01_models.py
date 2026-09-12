@@ -43,7 +43,9 @@ HISTORY_PERIODS = frozenset({"wtd", "mtd", "ytd", "1y", "5y", "all", "custom"})
 RISK_METRICS = {"risk": "Risk", "drisk": "dRisk", "pl": "PL"}
 MARKET_METRICS = {"open": OPEN, "current": CURRENT, "move": MOVE}
 HISTORY_RAW_ROW_BUDGET = 10_000
-HISTORY_CANONICAL_CELL_BUDGET = 16_000
+# A full trading year of ordinary 12 x 12 surfaces fits, while oversized
+# date/tenor products are still rejected before allocating the grid.
+HISTORY_CANONICAL_CELL_BUDGET = 64_000
 _MAX_HANDOFF_TEXT = 500
 _TENOR_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([dDwWmMyY])\s*$")
 _NATURAL_PART = re.compile(r"(\d+)")

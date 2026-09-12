@@ -400,10 +400,13 @@ def build_app(
             include_shared_refresh_shell=False,
         )
 
-    def cube_page_body() -> html.Main:
+    def cube_page_body() -> html.Div:
         """Mount the revision-aware Risk page and schedule one cold writer."""
         schedule_cold_start()
-        return html.Main(current_cube_page(), id="cube-page-container")
+        return html.Div([
+            dcc.Store(id="risk-page-revision", data=None),
+            html.Main(current_cube_page(), id="cube-page-container"),
+        ])
 
     def current_shared_snapshot():
         """Return the compact committed view used by the shared page shell."""
@@ -586,15 +589,7 @@ def build_app(
                     id="data-history-handoff-store",
                     storage_type="session",
                 ),
-                dcc.Store(
-                    id="data-history-handoff-consumed-store",
-                    storage_type="session",
-                ),
-                # The handoff callback is registered globally, so its request
-                # output must exist before the Data page is mounted.
-                dcc.Store(id="data-history-request-store", storage_type="memory"),
                 dcc.Store(id="risk-page-mounted", data=False),
-                dcc.Store(id="risk-page-revision", data=None),
                 html.Div(id="risk-page-host", style={"display": "none"}),
                 page_container,
             ],
